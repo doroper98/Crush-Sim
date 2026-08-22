@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Nb B-66 (Nb-5Mo-5V-1Zr)
+E: 103000.0
+nu: 0.38
+rho: 8.68e-09
+sigma_y: 490.0
+uts: 580.0
+K: 103.98913336938195
+n: 0.12
+t_default: 0.3
+law2:
+  A: 490.0
+  B: 103.98913336938195
+  n: 0.12
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 8680.0

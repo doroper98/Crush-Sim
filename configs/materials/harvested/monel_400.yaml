@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Monel 400
+E: 179000.0
+nu: 0.32
+rho: 8.8e-09
+sigma_y: 240.0
+uts: 550.0
+K: 472.46457897583775
+n: 0.35
+t_default: 0.3
+law2:
+  A: 240.0
+  B: 472.46457897583775
+  n: 0.35
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 8800.0

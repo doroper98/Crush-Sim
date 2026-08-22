@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Ti-5Al-2.5Sn (Grade 6)
+E: 110000.0
+nu: 0.31
+rho: 4.48e-09
+sigma_y: 830.0
+uts: 860.0
+K: 31.480121836838748
+n: 0.04
+t_default: 0.3
+law2:
+  A: 830.0
+  B: 31.480121836838748
+  n: 0.04
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 4480.0

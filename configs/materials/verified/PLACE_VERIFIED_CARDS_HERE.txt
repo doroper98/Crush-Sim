@@ -1,0 +1,4 @@
+# Promoted material cards (ADR-05).
+# A card graduates here only after a literature cross-check (verification:
+# literature) or a calibration against a physical test (verification:
+# calibrated). Cards here take precedence over configs/materials/harvested/.

@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Ti-6Al-4V STA
+E: 114000.0
+nu: 0.34
+rho: 4.43e-09
+sigma_y: 1100.0
+uts: 1170.0
+K: 74.34332436558743
+n: 0.05
+t_default: 0.3
+law2:
+  A: 1100.0
+  B: 74.34332436558743
+  n: 0.05
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 4430.0

@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Rhenium (Re)
+E: 463000.0
+nu: 0.3
+rho: 2.102e-08
+sigma_y: 290.0
+uts: 520.0
+K: 310.7760356056179
+n: 0.25
+t_default: 0.3
+law2:
+  A: 290.0
+  B: 310.7760356056179
+  n: 0.25
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 21020.0

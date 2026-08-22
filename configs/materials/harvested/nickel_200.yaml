@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Nickel 200
+E: 207000.0
+nu: 0.31
+rho: 8.89e-09
+sigma_y: 148.0
+uts: 462.0
+K: 508.2543989889467
+n: 0.4
+t_default: 0.3
+law2:
+  A: 148.0
+  B: 508.2543989889467
+  n: 0.4
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 8890.0

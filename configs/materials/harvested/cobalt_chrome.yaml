@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: CoCr F75
+E: 210000.0
+nu: 0.3
+rho: 8.3e-09
+sigma_y: 450.0
+uts: 655.0
+K: 254.60799400379037
+n: 0.18
+t_default: 0.3
+law2:
+  A: 450.0
+  B: 254.60799400379037
+  n: 0.18
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 8300.0

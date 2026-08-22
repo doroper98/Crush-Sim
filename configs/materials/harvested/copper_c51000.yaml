@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Phosphor Bronze C51000
+E: 110000.0
+nu: 0.34
+rho: 8.86e-09
+sigma_y: 410.0
+uts: 560.0
+K: 186.29853219789538
+n: 0.18
+t_default: 0.3
+law2:
+  A: 410.0
+  B: 186.29853219789538
+  n: 0.18
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 8860.0

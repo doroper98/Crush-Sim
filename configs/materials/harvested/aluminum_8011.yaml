@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Aluminum 8011-O (Foil)
+E: 69000.0
+nu: 0.33
+rho: 2.71e-09
+sigma_y: 40.0
+uts: 115.0
+K: 118.51005143095831
+n: 0.38
+t_default: 0.015
+law2:
+  A: 40.0
+  B: 118.51005143095831
+  n: 0.38
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 2710.0

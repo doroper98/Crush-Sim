@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Leaded Bronze C93200 (SAE 660)
+E: 76000.0
+nu: 0.34
+rho: 8.93e-09
+sigma_y: 125.0
+uts: 240.0
+K: 146.30985820203009
+n: 0.2
+t_default: 0.3
+law2:
+  A: 125.0
+  B: 146.30985820203009
+  n: 0.2
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 8930.0

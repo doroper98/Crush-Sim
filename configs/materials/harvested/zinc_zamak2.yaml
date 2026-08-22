@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: ZAMAK 2 (Kirksite)
+E: 85000.0
+nu: 0.33
+rho: 6.5999999999999995e-09
+sigma_y: 360.0
+uts: 425.0
+K: 71.57208289560418
+n: 0.08
+t_default: 0.5
+law2:
+  A: 360.0
+  B: 71.57208289560418
+  n: 0.08
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 6600.0

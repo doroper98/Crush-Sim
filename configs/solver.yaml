@@ -1,0 +1,32 @@
+# OpenRadioss toolchain configuration (FR-05, spec §6).
+#
+# The release tag is PINNED: results are only comparable across runs when the
+# solver binary is identical. Update version_tag and the paths together, and
+# re-validate the generated deck syntax against the new starter
+# (see crushsim/deck/writer.py).
+#
+# Paths below are placeholders. Fill them in on each machine; `csim doctor`
+# reports which ones are missing.
+
+# NOTE: this tag is a placeholder chosen at scaffold time. Before first use,
+# replace it with an actual tag from https://github.com/OpenRadioss/OpenRadioss/releases
+# (scripts/install_openradioss.* builds the download URL from this value).
+version_tag: "openradioss-2025.10"
+
+# Root of the extracted OpenRadioss release. When set, the conventional
+# executable names are searched under <install_root>, <install_root>/exec and
+# <install_root>/bin before falling back to PATH.
+install_root: ""
+
+executables:
+  # Solver stages.
+  starter: ""          # e.g. /opt/OpenRadioss/exec/starter_linux64_gf
+  engine: ""           # e.g. /opt/OpenRadioss/exec/engine_linux64_gf
+  # Official result converters - writing an in-house binary parser is
+  # forbidden (spec §13.4).
+  th_to_csv: ""        # e.g. /opt/OpenRadioss/exec/th_to_csv
+  anim_to_vtk: ""      # e.g. /opt/OpenRadioss/exec/anim_to_vtk
+
+# Extra environment variables exported to the solver subprocesses.
+# RAD_CFG_PATH is derived from install_root when left unset.
+env: {}

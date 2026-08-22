@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: PEEK GF30 (30% Glass Filled)
+E: 10000.0
+nu: 0.38
+rho: 1.51e-09
+sigma_y: 145.0
+uts: 160.0
+K: 15.551691101684003
+n: 0.03
+t_default: 0.5
+law2:
+  A: 145.0
+  B: 15.551691101684003
+  n: 0.03
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 1510.0

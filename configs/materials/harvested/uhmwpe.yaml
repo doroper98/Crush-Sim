@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: UHMWPE
+E: 700.0
+nu: 0.46
+rho: 9.3e-10
+sigma_y: 21.0
+uts: 48.0
+K: 41.15014074950845
+n: 0.35
+t_default: 2.0
+law2:
+  A: 21.0
+  B: 41.15014074950845
+  n: 0.35
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 930.0

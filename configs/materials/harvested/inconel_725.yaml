@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Inconel 725 (Ni-Cr-Mo-Nb)
+E: 204000.0
+nu: 0.3
+rho: 8.31e-09
+sigma_y: 860.0
+uts: 1170.0
+K: 358.18479271676006
+n: 0.12
+t_default: 0.3
+law2:
+  A: 860.0
+  B: 358.18479271676006
+  n: 0.12
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 8310.0

@@ -1,0 +1,373 @@
+"""FR-05 - OpenRadioss execution wrapper.
+
+Runs the pinned starter and then the engine as subprocesses, tails their logs
+into structured data (:mod:`crushsim.solver.logparse`), and writes
+``run_summary.json``.
+
+No solver is bundled and none is emulated (ADR-01). When an executable is
+missing the wrapper raises :class:`~crushsim.errors.SolverError` naming the
+configuration file, the key and the expected path - it never falls back to an
+approximate answer.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from ..config import SolverPaths, load_solver_config
+from ..errors import SolverError
+from ..units import UNIT_SYSTEM
+from .logparse import LogSummary, parse_log, tail
+
+_STARTER_CANDIDATES: tuple[str, ...] = (
+    "starter_linux64_gf",
+    "starter_win64.exe",
+    "starter_linux64_gf_ompi",
+)
+_ENGINE_CANDIDATES: tuple[str, ...] = (
+    "engine_linux64_gf",
+    "engine_win64.exe",
+    "engine_linux64_gf_ompi",
+)
+
+
+@dataclass(slots=True)
+class StageResult:
+    """Outcome of one solver stage (starter or engine)."""
+
+    stage: str
+    command: list[str]
+    returncode: int
+    duration_s: float
+    log_path: Path | None
+    log: LogSummary
+
+    @property
+    def ok(self) -> bool:
+        """Whether the stage exited cleanly and reported no error."""
+        return self.returncode == 0 and not self.log.errors
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialisable form for ``run_summary.json``."""
+        return {
+            "stage": self.stage,
+            "command": list(self.command),
+            "returncode": self.returncode,
+            "duration_s": self.duration_s,
+            "log_path": str(self.log_path) if self.log_path else None,
+            "log": self.log.to_dict(),
+            "ok": self.ok,
+        }
+
+
+@dataclass(slots=True)
+class RunResult:
+    """Outcome of a full starter + engine run."""
+
+    run_name: str
+    run_dir: Path
+    stages: list[StageResult] = field(default_factory=list)
+    summary_path: Path | None = None
+    solver_version_tag: str = "unpinned"
+    config_copy: Path | None = None
+    git_commit: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        """Whether every stage succeeded."""
+        return bool(self.stages) and all(s.ok for s in self.stages)
+
+    @property
+    def engine_log(self) -> LogSummary | None:
+        """The engine stage log summary, if the engine ran."""
+        for stage in self.stages:
+            if stage.stage == "engine":
+                return stage.log
+        return None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialisable form for ``run_summary.json`` (spec §4 FR-05)."""
+        return {
+            "run_name": self.run_name,
+            "run_dir": str(self.run_dir),
+            "unit_system": UNIT_SYSTEM,
+            "solver_version_tag": self.solver_version_tag,
+            "git_commit": self.git_commit,
+            "config_copy": str(self.config_copy) if self.config_copy else None,
+            "ok": self.ok,
+            "stages": [s.to_dict() for s in self.stages],
+        }
+
+
+def _git_commit() -> str | None:
+    """Best-effort short commit hash of the working tree (never raises)."""
+    git = shutil.which("git")
+    if git is None:
+        return None
+    try:
+        out = subprocess.run(
+            [git, "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):  # pragma: no cover - defensive
+        return None
+    value = out.stdout.strip()
+    return value or None
+
+
+def resolve_executable(paths: SolverPaths, kind: str) -> Path:
+    """Resolve the starter or engine executable.
+
+    Resolution order: the explicit path in ``configs/solver.yaml``, then the
+    conventional file names under ``install_root``, then ``PATH``.
+
+    Args:
+        paths: Loaded solver configuration.
+        kind: ``"starter"`` or ``"engine"``.
+
+    Raises:
+        SolverError: If the executable cannot be found, with the exact keys to
+            fill in.
+    """
+    if kind not in ("starter", "engine"):
+        raise SolverError(f"Unknown solver stage {kind!r}")
+    configured = paths.starter if kind == "starter" else paths.engine
+    candidates = _STARTER_CANDIDATES if kind == "starter" else _ENGINE_CANDIDATES
+
+    if configured is not None:
+        p = Path(configured)
+        if p.is_file():
+            return p
+        if p.name and (found := shutil.which(p.name)):
+            return Path(found)
+
+    if paths.install_root is not None:
+        for name in candidates:
+            for sub in ("", "exec", "bin"):
+                candidate = Path(paths.install_root) / sub / name
+                if candidate.is_file():
+                    return candidate
+
+    for name in candidates:
+        found = shutil.which(name)
+        if found:
+            return Path(found)
+
+    source = paths.source or "configs/solver.yaml"
+    raise SolverError(
+        f"OpenRadioss {kind} executable not found.\n"
+        f"  configured: {configured if configured else '<empty>'}\n"
+        f"  searched install_root: {paths.install_root if paths.install_root else '<empty>'}\n"
+        f"  searched PATH for: {', '.join(candidates)}\n"
+        f"Fix: install the OpenRadioss release pinned as version_tag "
+        f"'{paths.version_tag}' and set executables.{kind} in {source}."
+    )
+
+
+def _solver_env(paths: SolverPaths, threads: int) -> dict[str, str]:
+    """Build the subprocess environment (OpenMP threads plus configured vars)."""
+    env = dict(os.environ)
+    env.update(paths.env)
+    env.setdefault("OMP_NUM_THREADS", str(max(1, threads)))
+    env["OMP_NUM_THREADS"] = str(max(1, threads))
+    if paths.install_root is not None:
+        env.setdefault("RAD_CFG_PATH", str(Path(paths.install_root) / "hm_cfg_files"))
+    return env
+
+
+def _run_stage(
+    *,
+    stage: str,
+    executable: Path,
+    deck: Path,
+    run_dir: Path,
+    threads: int,
+    env: dict[str, str],
+    timeout_s: float | None,
+) -> StageResult:
+    """Run one solver stage and capture its log."""
+    command = [str(executable), "-i", deck.name]
+    if stage == "engine":
+        command += ["-nt", str(max(1, threads))]
+    else:
+        command += ["-np", "1"]
+
+    log_path = run_dir / f"{deck.stem}.{stage}.log"
+    started = time.monotonic()
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(run_dir),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise SolverError(f"Could not execute the {stage}: {executable} ({exc})") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise SolverError(
+            f"The {stage} exceeded its timeout of {timeout_s} s. "
+            "Raise solver.timeout_s or reduce the model size."
+        ) from exc
+    duration = time.monotonic() - started
+
+    text = (completed.stdout or "") + "\n" + (completed.stderr or "")
+    # OpenRadioss also writes its own listing files; fold them in when present.
+    for extra in sorted(run_dir.glob(f"{deck.stem}*.out")):
+        text += "\n" + extra.read_text(encoding="utf-8", errors="replace")
+    log_path.write_text(text, encoding="utf-8")
+
+    return StageResult(
+        stage=stage,
+        command=command,
+        returncode=completed.returncode,
+        duration_s=duration,
+        log_path=log_path,
+        log=parse_log(text),
+    )
+
+
+def run_solver(
+    starter_deck: str | Path,
+    engine_deck: str | Path,
+    *,
+    solver_config: str | Path = "configs/solver.yaml",
+    threads: int = 4,
+    timeout_s: float | None = None,
+    stop_on_energy_error: bool = True,
+    stop_on_negative_volume: bool = True,
+    run_name: str | None = None,
+) -> RunResult:
+    """Run the starter then the engine, and write ``run_summary.json``.
+
+    Args:
+        starter_deck: Path to ``*_0000.rad``.
+        engine_deck: Path to ``*_0001.rad``.
+        solver_config: Path to the pinned solver configuration.
+        threads: OpenMP threads for the engine.
+        timeout_s: Per-stage timeout in seconds.
+        stop_on_energy_error: Abort if the engine reports an energy error.
+        stop_on_negative_volume: Abort if a negative volume is reported.
+        run_name: Name recorded in the summary; defaults to the deck stem.
+
+    Returns:
+        A :class:`RunResult`; ``run_summary.json`` is written next to the decks.
+
+    Raises:
+        SolverError: If an executable is missing, a stage fails, or a
+            monitored condition trips.
+    """
+    starter_path = Path(starter_deck)
+    engine_path = Path(engine_deck)
+    for label, deck in (("starter", starter_path), ("engine", engine_path)):
+        if not deck.is_file():
+            raise SolverError(f"{label} deck not found: {deck}")
+    run_dir = starter_path.parent
+    paths = load_solver_config(solver_config)
+
+    starter_exe = resolve_executable(paths, "starter")
+    engine_exe = resolve_executable(paths, "engine")
+    env = _solver_env(paths, threads)
+
+    name = run_name or starter_path.stem.removesuffix("_0000")
+    result = RunResult(
+        run_name=name,
+        run_dir=run_dir,
+        solver_version_tag=paths.version_tag,
+        git_commit=_git_commit(),
+        config_copy=Path(paths.source) if paths.source else None,
+    )
+
+    starter_stage = _run_stage(
+        stage="starter",
+        executable=starter_exe,
+        deck=starter_path,
+        run_dir=run_dir,
+        threads=1,
+        env=env,
+        timeout_s=timeout_s,
+    )
+    result.stages.append(starter_stage)
+    if not starter_stage.ok:
+        write_run_summary(result)
+        raise SolverError(
+            f"OpenRadioss starter failed (exit {starter_stage.returncode}).\n"
+            f"Log: {starter_stage.log_path}\n"
+            + tail("\n".join(starter_stage.log.errors) or "", 20)
+        )
+
+    engine_stage = _run_stage(
+        stage="engine",
+        executable=engine_exe,
+        deck=engine_path,
+        run_dir=run_dir,
+        threads=threads,
+        env=env,
+        timeout_s=timeout_s,
+    )
+    result.stages.append(engine_stage)
+    summary_path = write_run_summary(result)
+    result.summary_path = summary_path
+
+    if not engine_stage.ok:
+        raise SolverError(
+            f"OpenRadioss engine failed (exit {engine_stage.returncode}).\n"
+            f"Log: {engine_stage.log_path}\n"
+            + ("\n".join(engine_stage.log.errors[:10]) or "(no error line parsed)")
+        )
+    if stop_on_negative_volume and engine_stage.log.negative_volume:
+        raise SolverError(
+            f"Negative volume detected during the run. Log: {engine_stage.log_path}. "
+            "Refine the mesh or reduce the timestep scale factor."
+        )
+    if stop_on_energy_error:
+        from ..units import ENERGY_ERROR_MAX  # local import keeps the limit in one place
+
+        worst = engine_stage.log.max_energy_error
+        if worst is not None and worst > ENERGY_ERROR_MAX:
+            raise SolverError(
+                f"Energy error {worst:.1%} exceeds the limit {ENERGY_ERROR_MAX:.0%} "
+                f"(units.ENERGY_ERROR_MAX). Log: {engine_stage.log_path}"
+            )
+    return result
+
+
+def write_run_summary(result: RunResult, path: str | Path | None = None) -> Path:
+    """Write ``run_summary.json`` for a run (spec §4 FR-05)."""
+    target = Path(path) if path is not None else result.run_dir / "run_summary.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
+    result.summary_path = target
+    return target
+
+
+def solver_status(solver_config: str | Path = "configs/solver.yaml") -> dict[str, Any]:
+    """Report solver availability without raising - used by ``csim doctor``."""
+    try:
+        paths = load_solver_config(solver_config)
+    except Exception as exc:  # noqa: BLE001 - doctor never raises
+        return {"configured": False, "reason": str(exc)}
+    status: dict[str, Any] = {
+        "configured": True,
+        "version_tag": paths.version_tag,
+        "install_root": str(paths.install_root) if paths.install_root else None,
+    }
+    for kind in ("starter", "engine"):
+        try:
+            status[kind] = str(resolve_executable(paths, kind))
+        except SolverError as exc:
+            status[kind] = None
+            status[f"{kind}_reason"] = str(exc).splitlines()[0]
+    return status

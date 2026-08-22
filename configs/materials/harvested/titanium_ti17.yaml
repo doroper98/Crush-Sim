@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Ti-17 (Ti-5Al-2Sn-2Zr-4Mo-4Cr)
+E: 112000.0
+nu: 0.32
+rho: 4.65e-09
+sigma_y: 1050.0
+uts: 1170.0
+K: 130.5517681733049
+n: 0.07
+t_default: 0.3
+law2:
+  A: 1050.0
+  B: 130.5517681733049
+  n: 0.07
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 4650.0

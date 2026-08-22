@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Magnesium ZE41A-T5 (Zr-RE)
+E: 45000.0
+nu: 0.35
+rho: 1.84e-09
+sigma_y: 140.0
+uts: 205.0
+K: 76.93365772614325
+n: 0.14
+t_default: 0.5
+law2:
+  A: 140.0
+  B: 76.93365772614325
+  n: 0.14
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 1840.0

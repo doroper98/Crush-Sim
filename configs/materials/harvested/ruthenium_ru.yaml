@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Ruthenium (Ru)
+E: 447000.0
+nu: 0.25
+rho: 1.237e-08
+sigma_y: 80.0
+uts: 165.0
+K: 129.54673939660069
+n: 0.35
+t_default: 0.3
+law2:
+  A: 80.0
+  B: 129.54673939660069
+  n: 0.35
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 12370.0

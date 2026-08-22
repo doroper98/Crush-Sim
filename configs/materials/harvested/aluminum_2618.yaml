@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Aluminum 2618-T61
+E: 74000.0
+nu: 0.33
+rho: 2.76e-09
+sigma_y: 370.0
+uts: 440.0
+K: 78.95614111038496
+n: 0.1
+t_default: 0.3
+law2:
+  A: 370.0
+  B: 78.95614111038496
+  n: 0.1
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 2760.0

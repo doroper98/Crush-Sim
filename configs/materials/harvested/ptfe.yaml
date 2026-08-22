@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: PTFE (Teflon)
+E: 500.0
+nu: 0.46
+rho: 2.2e-09
+sigma_y: 10.0
+uts: 27.0
+K: 27.516957907044887
+n: 0.4
+t_default: 2.0
+law2:
+  A: 10.0
+  B: 27.516957907044887
+  n: 0.4
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 2200.0

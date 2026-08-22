@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ title }} - Crush-Sim report</title>
+<style>
+  :root {
+    --bg: #f7f8fa; --panel: #ffffff; --ink: #14181f; --muted: #5b6472;
+    --line: #dfe3ea; --accent: #1f4e79; --pass: #14733f; --fail: #b3261e;
+    --warn: #8a5a00;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.55 ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 28px 20px 64px; }
+  header { border-bottom: 2px solid var(--accent); padding-bottom: 12px; margin-bottom: 22px; }
+  h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  h2 { font-size: 15px; margin: 26px 0 10px; text-transform: uppercase;
+       letter-spacing: 0.06em; color: var(--accent); }
+  .sub { color: var(--muted); font-size: 12.5px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+           padding: 14px 16px; margin-bottom: 14px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase;
+       letter-spacing: 0.04em; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11.5px;
+           font-weight: 700; letter-spacing: 0.03em; }
+  .badge.pass { background: #e3f4ea; color: var(--pass); }
+  .badge.fail { background: #fdeae8; color: var(--fail); }
+  .badge.warn { background: #fdf3e0; color: var(--warn); }
+  .stamp { border: 3px solid var(--fail); color: var(--fail); font-weight: 800;
+           letter-spacing: 0.14em; padding: 8px 14px; border-radius: 6px;
+           display: inline-block; transform: rotate(-2deg); margin-bottom: 14px; }
+  .reasons { margin: 6px 0 0 0; padding-left: 18px; color: var(--fail); font-size: 13px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+  .kv { font-size: 13px; }
+  .kv div { display: flex; justify-content: space-between; gap: 12px;
+            border-bottom: 1px dotted var(--line); padding: 3px 0; }
+  .kv span:first-child { color: var(--muted); }
+  .kv span:last-child { font-variant-numeric: tabular-nums; }
+  img.curve { max-width: 100%; border: 1px solid var(--line); border-radius: 4px; }
+  ul.links { list-style: none; padding: 0; margin: 0; }
+  ul.links li { padding: 3px 0; }
+  a { color: var(--accent); }
+  .note { font-size: 12.5px; color: var(--warn); background: #fdf7ea;
+          border-left: 3px solid var(--warn); padding: 8px 12px; margin: 8px 0; border-radius: 3px; }
+  footer { margin-top: 34px; color: var(--muted); font-size: 12px;
+           border-top: 1px solid var(--line); padding-top: 12px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>{{ title }}</h1>
+  <div class="sub">
+    Crush-Sim automated report &middot; units {{ unit_system }} &middot; generated {{ generated_at }}
+  </div>
+</header>
+
+{% if unverified %}
+<div class="stamp">UNVERIFIED</div>
+<ul class="reasons">
+  {% for reason in unverified_reasons %}
+  <li>{{ reason }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+<h2>Input summary</h2>
+<div class="panel grid">
+  <div class="kv">
+    {% for key, value in case.items() %}
+    <div><span>{{ key }}</span><span>{{ value }}</span></div>
+    {% endfor %}
+  </div>
+  <div class="kv">
+    {% for key, value in geometry.items() %}
+    <div><span>{{ key }}</span><span>{{ value }}</span></div>
+    {% endfor %}
+  </div>
+  <div class="kv">
+    <div><span>material</span><span>{{ material.get('name', '-') }}</span></div>
+    <div><span>key</span><span>{{ material.get('key', '-') }}</span></div>
+    <div><span>E [MPa]</span><span>{{ material.get('E', '-') }}</span></div>
+    <div><span>nu</span><span>{{ material.get('nu', '-') }}</span></div>
+    <div><span>rho [t/mm3]</span><span>{{ material.get('rho', '-') }}</span></div>
+    <div><span>sigma_y [MPa]</span><span>{{ material.get('sigma_y', '-') }}</span></div>
+    <div><span>K [MPa]</span><span>{{ material.get('K', '-') }}</span></div>
+    <div><span>n</span><span>{{ material.get('n', '-') }}</span></div>
+    <div><span>verified</span>
+      <span>
+        {% if material.get('is_verified') %}
+        <span class="badge pass">VERIFIED</span>
+        {% else %}
+        <span class="badge fail">UNVERIFIED</span>
+        {% endif %}
+      </span>
+    </div>
+    <div><span>source</span><span>{{ material.get('source', '-') }}</span></div>
+  </div>
+</div>
+
+{% if meshes %}
+<h2>Mesh statistics</h2>
+<div class="panel">
+  <table>
+    <thead>
+      <tr>
+        <th>Part</th><th class="num">Nodes</th><th class="num">Elements</th>
+        <th class="num">Quads</th><th class="num">Tris</th><th class="num">Tri fraction</th>
+        <th class="num">Free edges</th><th class="num">Non-manifold</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for m in meshes %}
+      <tr>
+        <td>{{ m.get('name', '-') }}</td>
+        <td class="num">{{ m.get('nodes', '-') }}</td>
+        <td class="num">{{ m.get('elements', '-') }}</td>
+        <td class="num">{{ m.get('quads', '-') }}</td>
+        <td class="num">{{ m.get('tris', '-') }}</td>
+        <td class="num">{{ '%.3f'|format(m.get('triangle_fraction', 0)) }}</td>
+        <td class="num">{{ m.get('free_edges', '-') }}</td>
+        <td class="num">{{ m.get('non_manifold_edges', '-') }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<h2>Quality gates</h2>
+{% if gates %}
+{% for gate in gates %}
+<div class="panel">
+  <div>
+    <strong>{{ gate.name }}</strong>
+    {% if gate.passed %}
+    <span class="badge pass">PASS</span>
+    {% else %}
+    <span class="badge fail">FAIL</span>
+    {% endif %}
+  </div>
+  <table>
+    <thead>
+      <tr><th>Metric</th><th class="num">Value</th><th>Limit</th><th>Verdict</th></tr>
+    </thead>
+    <tbody>
+      {% for metric in gate.metrics %}
+      <tr>
+        <td>{{ metric.name }}{% if metric.unit %} [{{ metric.unit }}]{% endif %}</td>
+        <td class="num">{{ '%.5g'|format(metric.value) }}</td>
+        <td>{{ '<=' if metric.mode == 'max' else '>=' }} {{ '%.5g'|format(metric.limit) }}</td>
+        <td>
+          {% if metric.passed %}
+          <span class="badge pass">PASS</span>
+          {% else %}
+          <span class="badge fail">FAIL</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% for rec in gate.recommendations %}
+  <div class="note">{{ rec }}</div>
+  {% endfor %}
+</div>
+{% endfor %}
+{% else %}
+<div class="panel sub">No gate results recorded for this run.</div>
+{% endif %}
+
+{% if metrics %}
+<h2>Load-displacement results</h2>
+<div class="panel grid">
+  <div class="kv">
+    {% for key, value in metrics.items() %}
+    <div><span>{{ key }}</span>
+      <span>{% if value is number %}{{ '%.6g'|format(value) }}{% else %}{{ value }}{% endif %}</span>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{% if artifacts.get('curve_png') %}
+<div class="panel">
+  <img class="curve" src="{{ artifacts['curve_png'] }}" alt="Force-displacement curve">
+</div>
+{% endif %}
+
+{% if energy %}
+<h2>Energy balance</h2>
+<div class="panel">
+  <table>
+    <thead><tr><th>Quantity</th><th class="num">Value</th></tr></thead>
+    <tbody>
+      {% for key, value in energy.items() %}
+      {% if key != 'gate' %}
+      <tr>
+        <td>{{ key }}</td>
+        <td class="num">
+          {% if value is number %}{{ '%.6g'|format(value) }}{% else %}{{ value }}{% endif %}
+        </td>
+      </tr>
+      {% endif %}
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% if deck or solver %}
+<h2>Deck and solver</h2>
+<div class="panel grid">
+  {% if deck %}
+  <div class="kv">
+    {% for key, value in deck.items() %}
+    {% if value is not mapping and value is not sequence or value is string or value is number %}
+    <div><span>{{ key }}</span><span>{{ value }}</span></div>
+    {% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% if solver %}
+  <div class="kv">
+    {% for key, value in solver.items() %}
+    {% if value is not mapping and value is not sequence or value is string or value is number %}
+    <div><span>{{ key }}</span><span>{{ value }}</span></div>
+    {% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if artifacts %}
+<h2>Artefacts</h2>
+<div class="panel">
+  <ul class="links">
+    {% for name, href in artifacts.items() %}
+    <li><a href="{{ href }}">{{ name }}</a> &mdash; <code>{{ href }}</code></li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+{% if notices %}
+<h2>Notices</h2>
+{% for notice in notices %}
+<div class="note">{{ notice }}</div>
+{% endfor %}
+{% endif %}
+
+<footer>
+  Crush-Sim automated report. Results are for trend analysis until calibrated
+  against physical can tests (spec §8). Units: {{ unit_system }}.
+</footer>
+
+</div>
+</body>
+</html>

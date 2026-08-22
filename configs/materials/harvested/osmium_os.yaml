@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Osmium (Os)
+E: 560000.0
+nu: 0.25
+rho: 2.259e-08
+sigma_y: 100.0
+uts: 200.0
+K: 143.50387341664472
+n: 0.3
+t_default: 0.3
+law2:
+  A: 100.0
+  B: 143.50387341664472
+  n: 0.3
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 22590.0

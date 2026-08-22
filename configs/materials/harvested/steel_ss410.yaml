@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: SS 410 Martensitic
+E: 200000.0
+nu: 0.28
+rho: 7.75e-09
+sigma_y: 1100.0
+uts: 1310.0
+K: 231.23288320118274
+n: 0.08
+t_default: 0.5
+law2:
+  A: 1100.0
+  B: 231.23288320118274
+  n: 0.08
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 7750.0

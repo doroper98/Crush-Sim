@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Pb-6Sb (Battery Grid)
+E: 18000.0
+nu: 0.44
+rho: 1.11e-08
+sigma_y: 20.0
+uts: 42.0
+K: 30.81972288868969
+n: 0.28
+t_default: 0.5
+law2:
+  A: 20.0
+  B: 30.81972288868969
+  n: 0.28
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 11100.0

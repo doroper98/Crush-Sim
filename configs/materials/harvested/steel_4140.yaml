@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: AISI 4140 (Cr-Mo)
+E: 205000.0
+nu: 0.29
+rho: 7.849999999999999e-09
+sigma_y: 655.0
+uts: 1020.0
+K: 421.7337075536046
+n: 0.12
+t_default: 0.3
+law2:
+  A: 655.0
+  B: 421.7337075536046
+  n: 0.12
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 7850.0

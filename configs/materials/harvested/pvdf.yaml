@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: PVDF (Polyvinylidene Fluoride)
+E: 2100.0
+nu: 0.38
+rho: 1.78e-09
+sigma_y: 50.0
+uts: 52.0
+K: 2.098674789122583
+n: 0.04
+t_default: 0.5
+law2:
+  A: 50.0
+  B: 2.098674789122583
+  n: 0.04
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 1780.0

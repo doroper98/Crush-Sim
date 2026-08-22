@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Lead (Pb)
+E: 16000.0
+nu: 0.44
+rho: 1.134e-08
+sigma_y: 11.0
+uts: 17.0
+K: 9.144475722112988
+n: 0.35
+t_default: 0.5
+law2:
+  A: 11.0
+  B: 9.144475722112988
+  n: 0.35
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 11340.0

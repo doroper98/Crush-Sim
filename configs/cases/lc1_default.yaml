@@ -1,0 +1,54 @@
+# LC-1 - axial crush (strength). Spec §5.3.
+#
+# A beverage-can-like parametric shell is crushed between the fixed FLOOR at
+# Z = 0 and a rigid top platen driven in -Z under displacement control.
+# Primary outputs: peak and mean crush load, folding pattern.
+
+name: lc1_default
+load_case: LC-1
+description: >-
+  Axial crush of a parametric beverage-can shell (R33 x H115 x t0.1) between a
+  fixed floor and a rigid top platen. Displacement controlled, quasi-static.
+
+geometry:
+  kind: parametric_can
+  radius: 33.0        # mm, outer radius
+  height: 115.0       # mm
+  thickness: 0.1      # mm, wall thickness (shell property)
+  closed_bottom: false
+  closed_top: false
+
+material:
+  key: aluminum_3003  # harvested card, verified: false -> UNVERIFIED watermark
+
+mesh:
+  target_size: 1.2    # mm (units.MESH_TARGET_SIZE_DEFAULT_MM)
+  recombine: true
+  curvature_points: 12
+
+loading:
+  tool: platen
+  direction: [0.0, 0.0, -1.0]   # -Z, onto the can top
+  stroke: 40.0                  # mm total imposed displacement
+  velocity: 2.0                 # m/s, inside the 1-5 m/s quasi-static band
+  ramp_fraction: 0.1            # smooth start, keeps KE/IE inside the gate
+  tool_gap: 0.5                 # mm initial clearance
+
+contact:
+  friction: 0.15                # units.CONTACT_FRICTION_DEFAULT
+  gap_scale: 0.8
+  stiffness_scale: 1.0
+
+solver:
+  config: configs/solver.yaml
+  threads: 8
+  end_time: auto                # derived from stroke / velocity
+  animation_frames: 25
+  time_history_points: 500
+  stop_on_energy_error: true
+  stop_on_negative_volume: true
+
+output:
+  dir: runs/lc1_default
+  render: true
+  report: true

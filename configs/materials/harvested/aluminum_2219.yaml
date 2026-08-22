@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Aluminum 2219-T87
+E: 73000.0
+nu: 0.33
+rho: 2.84e-09
+sigma_y: 393.0
+uts: 455.0
+K: 73.38287352339817
+n: 0.14
+t_default: 0.3
+law2:
+  A: 393.0
+  B: 73.38287352339817
+  n: 0.14
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 2840.0

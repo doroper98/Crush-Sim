@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: GFRP (Epoxy/E-Glass UD)
+E: 45000.0
+nu: 0.28
+rho: 2.0999999999999998e-09
+sigma_y: 800.0
+uts: 800.0
+K: 0.0
+n: 0.01
+t_default: 0.5
+law2:
+  A: 800.0
+  B: 0.0
+  n: 0.01
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 2100.0

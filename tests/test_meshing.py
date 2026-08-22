@@ -1,0 +1,254 @@
+"""FR-03 meshing tests plus the §7 mesh gate.
+
+Meshes are kept deliberately coarse: the point is to exercise the Gmsh path and
+the gate logic headlessly and fast, not to produce a solver-grade mesh.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from crushsim.errors import GateFailure, MeshingError
+from crushsim.geometry.parametric import make_can, make_tool
+from crushsim.meshing.gates import evaluate_mesh_gate, evaluate_solution_gate
+from crushsim.meshing.mesh_data import ShellMesh, read_mesh_npz, write_mesh_npz
+from crushsim.meshing.mesher import mesh_parametric_can, mesh_step_surfaces, mesh_tool
+from crushsim.units import (
+    MESH_MAX_ASPECT_RATIO,
+    MESH_MAX_TRIANGLE_FRACTION,
+    MESH_MIN_EDGE_LENGTH_MM,
+    MESH_MIN_SICN,
+)
+
+COARSE = 6.0
+"""Target element size [mm] used throughout: keeps the tests to ~0.2 s each."""
+
+
+@pytest.fixture(scope="module")
+def coarse_can_mesh():
+    """A coarse but gate-passing can mesh, shared by the tests in this module."""
+    return mesh_parametric_can(make_can(33.0, 115.0, 0.1), target_size=COARSE, name="CAN")
+
+
+# ---------------------------------------------------------------------------
+# Gate logic (pure, no Gmsh)
+# ---------------------------------------------------------------------------
+
+
+def test_mesh_gate_passes_on_good_statistics() -> None:
+    gate = evaluate_mesh_gate(
+        min_sicn=0.5, max_aspect_ratio=2.0, min_edge_length=0.9, triangle_fraction=0.02
+    )
+    assert gate.passed
+    assert gate.failures == []
+
+
+def test_mesh_gate_uses_the_limits_from_units() -> None:
+    gate = evaluate_mesh_gate(
+        min_sicn=0.5, max_aspect_ratio=2.0, min_edge_length=0.9, triangle_fraction=0.02
+    )
+    limits = {m.name: m.limit for m in gate.metrics}
+    assert limits["min_sicn"] == MESH_MIN_SICN
+    assert limits["max_aspect_ratio"] == MESH_MAX_ASPECT_RATIO
+    assert limits["min_edge_length"] == MESH_MIN_EDGE_LENGTH_MM
+    assert limits["triangle_fraction"] == MESH_MAX_TRIANGLE_FRACTION
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "failing"),
+    [
+        ({"min_sicn": 0.1}, "min_sicn"),
+        ({"max_aspect_ratio": 9.0}, "max_aspect_ratio"),
+        ({"min_edge_length": 0.05}, "min_edge_length"),
+        ({"triangle_fraction": 0.4}, "triangle_fraction"),
+        ({"non_manifold_edges": 3}, "non_manifold_edges"),
+    ],
+)
+def test_mesh_gate_flags_each_violation(kwargs: dict, failing: str) -> None:
+    base = {
+        "min_sicn": 0.5,
+        "max_aspect_ratio": 2.0,
+        "min_edge_length": 0.9,
+        "triangle_fraction": 0.02,
+    }
+    gate = evaluate_mesh_gate(**{**base, **kwargs})
+    assert not gate.passed
+    assert [m.name for m in gate.failures] == [failing]
+    assert gate.recommendations()
+
+
+def test_solution_gate_thresholds() -> None:
+    ok = evaluate_solution_gate(
+        energy_error=0.01, hourglass_ratio=0.02, kinetic_ratio=0.01, added_mass_ratio=0.005
+    )
+    assert ok.passed
+    bad = evaluate_solution_gate(
+        energy_error=0.09, hourglass_ratio=0.2, kinetic_ratio=0.3, added_mass_ratio=0.5
+    )
+    assert not bad.passed
+    assert len(bad.failures) == 4
+
+
+def test_gate_describe_is_human_readable() -> None:
+    gate = evaluate_mesh_gate(
+        min_sicn=0.1, max_aspect_ratio=2.0, min_edge_length=0.9, triangle_fraction=0.02
+    )
+    text = gate.describe()
+    assert "FAIL" in text
+    assert "min_sicn" in text
+
+
+def test_gate_serialises() -> None:
+    payload = evaluate_mesh_gate(
+        min_sicn=0.5, max_aspect_ratio=2.0, min_edge_length=0.9, triangle_fraction=0.02
+    ).to_dict()
+    assert payload["passed"] is True
+    assert len(payload["metrics"]) == 5
+
+
+# ---------------------------------------------------------------------------
+# ShellMesh container
+# ---------------------------------------------------------------------------
+
+
+def test_shell_mesh_rejects_empty_mesh() -> None:
+    with pytest.raises(MeshingError):
+        ShellMesh(
+            node_ids=np.array([], dtype=np.int64),
+            nodes=np.zeros((0, 3)),
+            quads=np.zeros((0, 4), dtype=np.int64),
+            tris=np.zeros((0, 3), dtype=np.int64),
+        )
+
+
+def test_shell_mesh_counts_edges(can_mesh_fixture: ShellMesh) -> None:
+    assert can_mesh_fixture.n_quads == 4
+    assert can_mesh_fixture.non_manifold_edge_count() == 0
+    assert can_mesh_fixture.free_edge_count() == 8
+
+
+def test_shell_mesh_renumber_offsets_ids(can_mesh_fixture: ShellMesh) -> None:
+    shifted = can_mesh_fixture.renumber(100)
+    assert int(shifted.node_ids.min()) == 101
+    assert int(shifted.quads.min()) >= 101
+    assert shifted.n_quads == can_mesh_fixture.n_quads
+
+
+def test_shell_mesh_npz_round_trip(can_mesh_fixture: ShellMesh, tmp_path: Path) -> None:
+    path = write_mesh_npz(can_mesh_fixture, tmp_path / "mesh.npz")
+    back = read_mesh_npz(path)
+    assert back.n_nodes == can_mesh_fixture.n_nodes
+    assert np.array_equal(back.quads, can_mesh_fixture.quads)
+
+
+def test_read_mesh_npz_missing_raises(tmp_path: Path) -> None:
+    with pytest.raises(MeshingError, match="not found"):
+        read_mesh_npz(tmp_path / "missing.npz")
+
+
+# ---------------------------------------------------------------------------
+# Real Gmsh meshing
+# ---------------------------------------------------------------------------
+
+
+def test_can_mesh_is_quad_dominant(coarse_can_mesh) -> None:
+    assert coarse_can_mesh.mesh.triangle_fraction <= MESH_MAX_TRIANGLE_FRACTION
+    assert coarse_can_mesh.mesh.n_quads > 0
+
+
+def test_can_mesh_passes_the_gate(coarse_can_mesh) -> None:
+    assert coarse_can_mesh.passed, coarse_can_mesh.gate.describe()
+    assert coarse_can_mesh.attempts == 1
+
+
+def test_can_mesh_lies_on_the_mid_surface(coarse_can_mesh) -> None:
+    nodes = coarse_can_mesh.mesh.nodes
+    radii = np.hypot(nodes[:, 0], nodes[:, 1])
+    assert radii.min() == pytest.approx(32.95, rel=2e-3)
+    assert radii.max() == pytest.approx(32.95, rel=2e-3)
+    assert nodes[:, 2].min() == pytest.approx(0.0, abs=1e-6)
+    assert nodes[:, 2].max() == pytest.approx(115.0, abs=1e-6)
+
+
+def test_can_mesh_is_manifold(coarse_can_mesh) -> None:
+    assert coarse_can_mesh.mesh.non_manifold_edge_count() == 0
+
+
+def test_finer_target_size_produces_more_elements() -> None:
+    coarse = mesh_parametric_can(make_can(20.0, 40.0, 0.2), target_size=8.0)
+    fine = mesh_parametric_can(make_can(20.0, 40.0, 0.2), target_size=4.0)
+    assert fine.mesh.n_elements > coarse.mesh.n_elements
+
+
+def test_mesh_writes_msh_file(tmp_path: Path) -> None:
+    result = mesh_parametric_can(
+        make_can(20.0, 40.0, 0.2), target_size=8.0, out_path=tmp_path / "can.msh"
+    )
+    assert result.msh_path is not None
+    assert result.msh_path.is_file()
+    assert result.msh_path.stat().st_size > 0
+
+
+def test_gate_failure_is_raised_and_remeshing_was_attempted() -> None:
+    """An impossible edge-length limit must abort after the retry budget."""
+    with pytest.raises(GateFailure) as excinfo:
+        mesh_parametric_can(
+            make_can(2.0, 3.0, 0.05),
+            target_size=0.25,
+            min_size=0.05,
+            max_attempts=3,
+        )
+    assert "Mesh gate failed" in str(excinfo.value)
+    assert "min_edge_length" in str(excinfo.value)
+
+
+def test_gate_can_be_reported_without_enforcement() -> None:
+    result = mesh_parametric_can(
+        make_can(2.0, 3.0, 0.05), target_size=0.25, min_size=0.05, max_attempts=1, enforce=False
+    )
+    assert not result.passed
+    assert result.quality.worst_elements
+
+
+def test_worst_elements_are_reported_for_the_defect_report(coarse_can_mesh) -> None:
+    worst = coarse_can_mesh.quality.worst_elements
+    assert worst
+    assert {"element_tag", "sicn", "x", "y", "z"} <= set(worst[0])
+    assert worst[0]["sicn"] == pytest.approx(coarse_can_mesh.quality.min_sicn)
+
+
+@pytest.mark.parametrize("kind", ["platen", "jig_plane", "v_block", "indenter"])
+def test_every_parametric_tool_meshes(kind: str) -> None:
+    can = make_can(33.0, 115.0, 0.1)
+    direction = (0.0, 0.0, -1.0) if kind == "platen" else (1.0, 0.0, 0.0)
+    tool = make_tool(can, kind, direction)
+    result = mesh_tool(tool, can_height=can.height, target_size=10.0)
+    assert result.mesh.n_elements > 0
+
+
+def test_unknown_tool_kind_raises() -> None:
+    can = make_can(33.0, 115.0, 0.1)
+    tool = make_tool(can, "step", (1.0, 0.0, 0.0))
+    with pytest.raises(MeshingError, match="step_path"):
+        mesh_tool(tool, can_height=can.height)
+
+
+def test_step_meshing_produces_shells(example_step: Path) -> None:
+    result = mesh_step_surfaces(example_step, target_size=5.0, enforce=False, name="STEP")
+    assert result.mesh.n_elements > 0
+    assert result.mesh.n_quads > 0
+
+
+def test_step_meshing_missing_file_raises() -> None:
+    with pytest.raises(MeshingError, match="not found"):
+        mesh_step_surfaces("/nonexistent/part.stp")
+
+
+def test_mesh_result_serialises(coarse_can_mesh) -> None:
+    payload = coarse_can_mesh.summary()
+    assert payload["gate"]["passed"] is True
+    assert payload["mesh"]["elements"] == coarse_can_mesh.mesh.n_elements
+    assert payload["quality"]["min_sicn"] >= MESH_MIN_SICN

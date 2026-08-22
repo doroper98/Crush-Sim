@@ -33,6 +33,10 @@ csim all --config configs/cases/lc2_default.yaml
 (Python·Gmsh·PyVista 오프스크린·ffmpeg·솔버 바이너리). 솔버가 없으면
 메싱·덱 생성까지 수행되고, 해석 단계에서 설치 안내와 함께 명확히 중단된다.
 
+> **Linux 헤드리스 서버/컨테이너 유의**: Gmsh·PyVista가 요구하는 시스템
+> 라이브러리가 없으면 `csim doctor`가 해당 항목에서 실패한다. Debian/Ubuntu 기준:
+> `apt-get install libglu1-mesa libxft2 libxinerama1 libxcursor1 libfontconfig1 libxrender1 libosmesa6`
+
 ### 환경별 가능 범위
 
 | 환경 | 변환(FR-01) | 메싱·덱 | 해석 | 후처리·리포트 |
