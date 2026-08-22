@@ -30,10 +30,17 @@ loading:
   tool: jig_plane
   direction: [1.0, 0.0, 0.0]    # radial, +X towards the can axis
   stroke: 20.0                  # mm; ~30% of the diameter
-  velocity: 2.0                 # m/s
+  velocity: 0.5                 # m/s - at 2 m/s the 6.5 g can responds
+                                # dynamically (deformable KE/IE ~ 50%);
+                                # 0.5 m/s keeps the quasi-static gate honest
+                                # within the spec's minutes-to-2h budget
   ramp_fraction: 0.1
   tool_gap: 0.5
   tool_size: 120.0              # mm plate edge length
+  support: v_block              # fixed cradle opposite the jig - without it the
+                                # can just slides across the floor instead of
+                                # being crushed
+  support_size: 120.0
 
 contact:
   friction: 0.15

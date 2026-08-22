@@ -27,7 +27,7 @@ Deck layout produced (spec §4 FR-04, §5.2, §5.3):
 * ``/PROP/SHELL`` with ``Ishell=24`` (QEPH) and 5 through-thickness points.
 * ``/INTER/TYPE7`` global contact, friction 0.15 by default.
 * ``FLOOR`` - rigid body at Z = 0, all six DOF fixed, common to every case.
-* ``REF_TOOL`` - rigid body driven by ``/IMPDISP`` along a displacement ramp.
+* ``REF_TOOL`` - rigid body driven by ``/IMPVEL`` along a velocity ramp.
 * ``/TH/RBODY`` time-history output for the reaction forces.
 """
 
@@ -70,8 +70,19 @@ RIGID_MATERIAL_NU: float = 0.3
 RIGID_MATERIAL_RHO: float = 7.85e-9
 """Density [tonne/mm^3] of the rigid tool/floor material (nominal steel)."""
 
-RIGID_SHELL_THICKNESS: float = 2.0
-"""Shell thickness [mm] of rigid parts; contact thickness only."""
+RIGID_SHELL_THICKNESS: float = 0.5
+"""Shell thickness [mm] of rigid parts; contact thickness only.
+
+Kept thin so the TYPE7 contact gap ``(t_can + t_rigid) / 2`` stays below the
+initial geometric clearances - a 2 mm tool shell put the gap above the 0.5 mm
+tool stand-off and the starter rejected the deck with initial penetrations.
+"""
+
+INITIAL_CONTACT_CLEARANCE: float = 0.35
+"""Initial stand-off [mm] between the can surface and static rigid parts.
+
+Must exceed the scaled TYPE7 contact gap ``gap_scale * (t_can + t_rigid) / 2``
+or the starter reports ERROR 612 (initial penetration)."""
 
 _AXIS_NAMES: tuple[str, str, str] = ("X", "Y", "Z")
 
@@ -122,8 +133,15 @@ class DriveDefinition:
     """Total imposed displacement [mm]."""
     velocity_mm_s: float
     ramp_fraction: float = 0.1
-    points: int = 21
-    """Number of points in the displacement-vs-time function."""
+    points: int = 201
+    """Number of points in the displacement-vs-time function.
+
+    The engine interpolates the table linearly, so the drive velocity is
+    piecewise constant between points. A coarse table (e.g. 21 points) makes
+    the velocity a staircase whose jumps hammer the contact hard enough to
+    break through the shell; 201 points keeps each jump ~1 % of the drive
+    velocity.
+    """
 
     @property
     def ramp_time(self) -> float:
@@ -162,6 +180,29 @@ class DriveDefinition:
                 s = self.velocity_mm_s * (t - ramp / 2.0) if ramp > 0.0 else self.velocity_mm_s * t
             pts.append((t, min(s, self.stroke)))
         pts[-1] = (t_end, self.stroke)
+        return pts
+
+    def velocity_table(self) -> list[tuple[float, float]]:
+        """Velocity-vs-time points: cosine ease-in, then constant velocity.
+
+        Used with ``/IMPVEL`` (velocity control): the engine's energy
+        bookkeeping for an imposed velocity on a rigid-body master is
+        well-behaved, whereas the same drive expressed through ``/IMPDISP``
+        accumulated a runaway external-work term on the pinned engine build.
+        ``end_time`` already compensates the ramp so the integral of this
+        profile is exactly ``stroke``.
+        """
+        t_end = self.end_time
+        n = max(3, int(self.points))
+        ramp = self.ramp_time
+        pts: list[tuple[float, float]] = []
+        for i in range(n):
+            t = t_end * i / (n - 1)
+            if ramp > 0.0 and t < ramp:
+                v = self.velocity_mm_s * (1.0 - math.cos(math.pi * t / ramp)) / 2.0
+            else:
+                v = self.velocity_mm_s
+            pts.append((t, v))
         return pts
 
 
@@ -317,9 +358,10 @@ class RadiossDeckWriter:
             RULER,
             "/BEGIN",
             title(self.run_name),
-            i10(2022) + i10(0),
-            s10("Mg") + s10("mm") + s10("s"),
-            s10("Mg") + s10("mm") + s10("s"),
+            i10(2022),
+            # Unit codes are 20-character fields (begin.cfg: %20s%20s%20s).
+            "Mg".rjust(20) + "mm".rjust(20) + "s".rjust(20),
+            "Mg".rjust(20) + "mm".rjust(20) + "s".rjust(20),
         ]
 
     def _block_nodes(self) -> list[str]:
@@ -338,16 +380,16 @@ class RadiossDeckWriter:
     def _block_elements(self, part: DeckPart) -> list[str]:
         lines: list[str] = [RULER]
         eid = part.element_offset
+        # Element blocks (/SHELL, /SH3N) take NO title card - validated
+        # against the real starter (a title line raises ERROR 100101).
         if part.mesh.n_quads:
             lines.append(f"/SHELL/{part.part_id}")
-            lines.append(title(f"{part.name}_QUADS"))
             lines.append("# shell_ID  node_ID1  node_ID2  node_ID3  node_ID4")
             for quad in part.mesh.quads:
                 eid += 1
                 lines.append(i10(eid) + "".join(i10(int(n)) for n in quad))
         if part.mesh.n_tris:
             lines.append(f"/SH3N/{part.part_id}")
-            lines.append(title(f"{part.name}_TRIS"))
             lines.append("#  sh3n_ID  node_ID1  node_ID2  node_ID3")
             for tri in part.mesh.tris:
                 eid += 1
@@ -376,8 +418,15 @@ class RadiossDeckWriter:
             "#                 hm                  hf                  hr"
             "                  dm                  dn",
             reals((0.0, 0.0, 0.0, 0.0, 0.0)),
-            "#        N   Istrain               Thick              Ashear    Ithick     Iplas",
-            i10(n_points) + i10(1) + reals((part.thickness, SHELL_SHEAR_FACTOR)) + i10(1) + i10(1),
+            # Layout per prop_p1_shell.cfg: N, Istrain, Thick, Ashear, then a
+            # 10-column spacer before Ithick and Iplas.
+            "#        N   Istrain               Thick              Ashear              Ithick     Iplas",
+            i10(n_points)
+            + i10(1)
+            + reals((part.thickness, SHELL_SHEAR_FACTOR))
+            + " " * 10
+            + i10(1)
+            + i10(1),
         ]
 
     def _block_material(self, part: DeckPart) -> list[str]:
@@ -399,6 +448,10 @@ class RadiossDeckWriter:
                 "#                  c           EPS_DOT_0       ICC   Fsmooth"
                 "               F_cut               Chard",
                 reals((0.0, 0.0)) + i10(1) + i10(0) + reals((0.0, 0.0)),
+                # Thermal softening card is mandatory in the LAW2 layout
+                # (matl2_plas_johns.cfg); zeros disable it.
+                "#                  m              T_melt              rhoC_p                 T_r",
+                reals((0.0, 0.0, 0.0, 0.0)),
             ]
         return [
             RULER,
@@ -418,13 +471,24 @@ class RadiossDeckWriter:
             lines.append(title(f"{part.name}_NODES"))
             lines.append(i10(part.part_id))
         lines.append(RULER)
+        # Separate main surfaces per contact partner so /TH/INTER can report
+        # the tool-side reaction force on its own (the crush-force curve).
         lines.append("/SURF/PART/1")
-        lines.append(title("ALL_CONTACT_SURFACES"))
-        lines.append("".join(i10(p.part_id) for p in self.parts))
+        lines.append(title("TOOL_SURFACE"))
+        lines.append("".join(i10(p.part_id) for p in self.parts if p.role == "tool"))
+        lines.append("/SURF/PART/2")
+        lines.append(title("FIXED_SURFACES"))
+        lines.append("".join(i10(p.part_id) for p in self.parts if p.role == "floor"))
+        lines.append("/SURF/PART/3")
+        lines.append(title("CAN_SURFACE"))
+        lines.append("".join(i10(p.part_id) for p in self.parts if not p.rigid))
         lines.append(RULER)
         lines.append("/GRNOD/PART/90")
-        lines.append(title("ALL_CONTACT_NODES"))
-        lines.append("".join(i10(p.part_id) for p in self.parts))
+        lines.append(title("CONTACT_SECONDARY_NODES"))
+        # Deformable nodes only: rigid parts stay main-side. Rigid-vs-rigid
+        # pairs (e.g. a support edge near the floor plane) otherwise trip the
+        # initial-penetration check, and their nodes cannot be relocated.
+        lines.append("".join(i10(p.part_id) for p in self.parts if not p.rigid))
         return lines
 
     def _block_rbody(self, part: DeckPart, rbody_id: int) -> list[str]:
@@ -447,17 +511,20 @@ class RadiossDeckWriter:
             reals((0.0, 0.0, 0.0)),
             "#                Jxy                 Jyz                 Jxz",
             reals((0.0, 0.0, 0.0)),
+            # Mandatory trailing card per rbody.cfg (radioss2021).
+            "#  Ioptoff   Iexpams     Ifail",
+            i10(0) + i10(0) + i10(0),
         ]
 
-    def _block_floor_bcs(self, part: DeckPart, bcs_id: int) -> list[str]:
-        """FLOOR: all six DOF of the rigid master node fixed at Z = 0."""
+    def _block_fixed_bcs(self, part: DeckPart, bcs_id: int) -> list[str]:
+        """Fixed rigid part (FLOOR, SUPPORT): all six master DOF locked."""
         return [
             RULER,
             f"/GRNOD/NODE/{80 + bcs_id}",
             title(f"{part.name}_MASTER"),
             i10(part.rbody_master_node),
             f"/BCS/{bcs_id}",
-            title(f"{part.name}_FIXED_Z0"),
+            title(f"{part.name}_FIXED"),
             "#  Tra rot   skew_ID  grnod_ID",
             s10("111 111") + i10(0) + i10(80 + bcs_id),
         ]
@@ -499,64 +566,116 @@ class RadiossDeckWriter:
             s10(f"{trans_code} 111") + i10(skew_id) + i10(95),
             RULER,
             "/FUNCT/1",
-            title("REF_TOOL_DISPLACEMENT_RAMP"),
+            title("REF_TOOL_VELOCITY_RAMP"),
             "#                  X                   Y",
         ]
-        for t, s in self.drive.table():
-            lines.append(reals((t, s)))
+        for t, v in self.drive.velocity_table():
+            lines.append(reals((t, v)))
         lines += [
             RULER,
-            "/IMPDISP/1",
-            title("REF_TOOL_IMPOSED_DISPLACEMENT"),
-            "# funct_ID       DIR   skew_ID sensor_ID   grnd_ID  frame_ID     Icoor",
-            i10(1) + s10(axis) + i10(skew_id) + i10(0) + i10(95) + i10(0) + i10(0),
-            "#           Ascale_x            Fscale_Y              TSTART               TSTOP",
+            "/IMPVEL/1",
+            title("REF_TOOL_IMPOSED_VELOCITY"),
+            "#funct_IDT       Dir   skew_ID sensor_ID  grnod_ID  frame_ID",
+            i10(1) + s10(axis) + i10(skew_id) + i10(0) + i10(95) + i10(0),
+            "#            Scale_x             Scale_y              Tstart               Tstop",
             reals((0.0, sign, 0.0, self.end_time)),
         ]
         return lines
 
     def _block_contact(self) -> list[str]:
-        """/INTER/TYPE7 - one global contact including can self-contact."""
+        """/INTER/TYPE7 x3 - tool, fixed rigids, and can self-contact.
+
+        Split per partner so the tool interface's /TH/INTER output is the
+        crush-force curve directly.
+        """
+        lines: list[str] = []
+        for inter_id, name, surf_id in (
+            (1, "TOOL_CONTACT", 1),
+            (2, "FIXED_CONTACT", 2),
+            (3, "SELF_CONTACT", 3),
+        ):
+            lines += self._contact_cards(inter_id, name, surf_id)
+        return lines
+
+    def _contact_cards(self, inter_id: int, name: str, surf_id: int) -> list[str]:
+        """One /INTER/TYPE7 block (card layouts per inter_type7.cfg)."""
         return [
             RULER,
-            "/INTER/TYPE7/1",
-            title("GLOBAL_SELF_CONTACT"),
-            "# grnd_IDs  surf_IDm      Istf      Ithe      Igap                Ibag      Idel",
-            i10(90) + i10(1) + i10(4) + i10(0) + i10(2) + i10(0) + i10(0) + i10(0),
+            f"/INTER/TYPE7/{inter_id}",
+            title(name),
+            # Card layouts per inter_type7.cfg (radioss2018).
+            "# grnod_id   surf_id      Istf      Ithe      Igap                Ibag"
+            "      Idel     Icurv      Iadm",
+            i10(90) + i10(surf_id) + i10(4) + i10(0) + i10(2) + " " * 10 + i10(0) + i10(0) + i10(0) + i10(0),
             "#          Fscalegap             Gap_max             Fpenmax",
             reals((self.gap_scale, 0.0, 0.0)),
-            "#              Stmin               Stmax          %mesh_size               dtmin",
-            reals((0.0, 0.0, 0.0, 0.0)),
-            "#              Stfac                Fric              Gapmin              Tstart"
+            "#              Stmin               Stmax   Percent_mesh_size               dtmin"
+            "  Irem_gap   Irem_i2",
+            reals((0.0, 0.0, 0.0, 0.0)) + i10(0) + i10(0),
+            "#              Stfac                Fric              GAPmin              Tstart"
             "               Tstop",
             reals((self.stiffness_scale, self.friction, 0.0, 0.0, 0.0)),
-            "#      IBC                                Inacti                VISs"
-            "                VISF              Bumult",
-            i10(0) + i10(0) + i10(0) + reals((0.0, 0.0, 0.0)),
+            # %7s + three 1-digit BC flags + %20s spacer + Inacti + 3 reals.
+            # Inacti=6: shrink the contact gap for initially penetrating nodes
+            # - without it the handful of unavoidable mesh-roundoff
+            # penetrations inject a large contact-energy shock at t=0.
+            "#      IBC                        Inacti               VIS_S"
+            "               VIS_F              Bumult",
+            " " * 7 + "000" + " " * 20 + i10(6) + reals((0.0, 0.0, 0.0)),
+            # Mandatory friction-model card (Ifric=0: static Coulomb).
+            "#    Ifric    Ifiltr               Xfreq     Iform   sens_ID   fct_IDF"
+            "             AscaleF   fric_ID",
+            i10(0) + i10(0) + f20(0.0) + i10(0) + i10(0) + i10(0) + f20(0.0) + i10(0),
         ]
 
     def _block_time_history(self) -> list[str]:
         """/TH/RBODY - reaction forces of the rigid bodies (FR-04)."""
         rigid_parts = [p for p in self.parts if p.rigid]
+        # The TH object list is integer ids only, 10 per line (th_rbody.cfg);
+        # names are not part of the block format.
         lines = [
             RULER,
             "/TH/RBODY/1",
             title("RBODY_REACTIONS"),
-            "#  var1      var2      var3      var4      var5",
-            "DEF       FX        FY        FZ        DX        DY        DZ",
+            # DX/DY/DZ are not valid RBODY variables (starter ERROR 260);
+            # master-node displacements come from the /TH/NODE group below.
+            "#      var       var       var       var",
+            "DEF       FX        FY        FZ",
+            "#      Obj       Obj",
+            "".join(i10(index) for index in range(1, len(rigid_parts) + 1)),
         ]
-        for index, part in enumerate(rigid_parts, start=1):
-            lines.append("#   obj_ID  obj_name")
-            lines.append(i10(index) + "  " + title(f"{part.name}_RBODY", width=60))
+        lines += [
+            RULER,
+            "/TH/NODE/3",
+            title("RBODY_MASTER_DISPLACEMENTS"),
+            "#      var       var       var       var",
+            "DEF       DX        DY        DZ",
+            # One node per line: node_ID, skew_ID, name (th_node.cfg).
+            "#  node_ID   skew_ID node_name",
+        ] + [
+            i10(p.rbody_master_node) + i10(0) + f"{p.name}_MASTER"
+            for p in rigid_parts
+        ]
+        lines += [
+            RULER,
+            "/TH/INTER/4",
+            title("TOOL_CONTACT_FORCE"),
+            # Valid interface variables are FN*/FT* (hm_read_thgrou.F VARIN);
+            # FX/FY/FZ are rigid-body variables and are rejected here.
+            "#      var       var       var       var       var       var",
+            "FNX       FNY       FNZ       FTX       FTY       FTZ",
+            "#      Obj",
+            i10(1),
+        ]
         lines += [
             RULER,
             "/TH/PART/2",
             title("PART_ENERGIES"),
-            "#  var1      var2      var3",
+            "#      var       var       var",
             "DEF       IE        KE",
+            "#      Obj       Obj       Obj",
+            "".join(i10(part.part_id) for part in self.parts),
         ]
-        for part in self.parts:
-            lines.append(i10(part.part_id) + "  " + title(part.name, width=60))
         return lines
 
     # -- serialisation ------------------------------------------------------
@@ -579,9 +698,15 @@ class RadiossDeckWriter:
             if part.rigid:
                 rbody_id += 1
                 lines += self._block_rbody(part, rbody_id)
-        floor = self.floor
-        if floor is not None:
-            lines += self._block_floor_bcs(floor, 1)
+        # Fixed rigid parts (floor, support): BCS ids 1, 3, 4, ... - id 2 is
+        # reserved for the REF_TOOL guide in _block_tool_drive.
+        bcs_id = 0
+        for part in self.parts:
+            if part.role == "floor":
+                bcs_id = 1 if bcs_id == 0 else bcs_id + 1
+                if bcs_id == 2:
+                    bcs_id = 3
+                lines += self._block_fixed_bcs(part, bcs_id)
         lines += self._block_tool_drive()
         lines += self._block_contact()
         lines += self._block_time_history()
@@ -612,8 +737,9 @@ class RadiossDeckWriter:
                     "/ANIM/VECT/VEL",
                     "/ANIM/ELEM/VONM",
                     "/ANIM/ELEM/EPSP",
+                    # /ANIM/SHELL/TENS/STRESS/ALL crashes the pinned engine
+                    # (segfault while parsing); THIC + VONM + EPSP cover FR-06.
                     "/ANIM/SHELL/THIC",
-                    "/ANIM/SHELL/TENS/STRESS/ALL",
                     "# Time-history output interval [s]",
                     "/TFILE/0",
                     f20(dt_th),
@@ -656,6 +782,7 @@ def build_deck(
     can_mesh: ShellMesh,
     tool_mesh: ShellMesh,
     floor_mesh: ShellMesh | None = None,
+    support_mesh: ShellMesh | None = None,
     outdir: str | Path,
     run_name: str | None = None,
     solver_version_tag: str = "unpinned",
@@ -689,6 +816,15 @@ def build_deck(
             DeckPart(
                 name="FLOOR",
                 mesh=floor_mesh,
+                thickness=RIGID_SHELL_THICKNESS,
+                role="floor",
+            )
+        )
+    if support_mesh is not None:
+        parts.append(
+            DeckPart(
+                name="SUPPORT",
+                mesh=support_mesh,
                 thickness=RIGID_SHELL_THICKNESS,
                 role="floor",
             )

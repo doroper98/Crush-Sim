@@ -189,7 +189,9 @@ def _solver_env(paths: SolverPaths, threads: int) -> dict[str, str]:
     env = dict(os.environ)
     env.update(paths.env)
     env["OMP_NUM_THREADS"] = str(max(1, threads))
+    # Thread-stack size for both OpenMP runtimes (Intel and GNU builds).
     env.setdefault("KMP_STACKSIZE", "400m")
+    env.setdefault("OMP_STACKSIZE", "400m")
     if paths.install_root is not None:
         # install_root is often given relative to the repo root, but the solver
         # subprocess runs with cwd=run_dir - every path handed to the loader
@@ -222,6 +224,28 @@ def _solver_env(paths: SolverPaths, threads: int) -> dict[str, str]:
     return env
 
 
+_CHILD_STACK_LIMIT_BYTES: int = 64 * 1024 * 1024
+
+
+def _sane_child_rlimits() -> None:  # pragma: no cover - runs in the child
+    """Restore a bounded stack limit in the solver child process.
+
+    The Gmsh library raises the parent's RLIMIT_STACK soft limit to
+    ``unlimited`` when it initialises; the solver child inherits that across
+    ``exec`` and the GNU OpenMP runtime then lays out thread stacks in a way
+    that crashes the OpenRadioss engine with SIGSEGV before cycle 0. A plain
+    8 MB soft limit is known-good; 64 MB adds headroom.
+    """
+    import resource  # noqa: PLC0415 - POSIX-only module
+
+    soft, hard = resource.getrlimit(resource.RLIMIT_STACK)
+    if soft == resource.RLIM_INFINITY:
+        limit = _CHILD_STACK_LIMIT_BYTES
+        if hard != resource.RLIM_INFINITY:
+            limit = min(limit, hard)
+        resource.setrlimit(resource.RLIMIT_STACK, (limit, hard))
+
+
 def _run_stage(
     *,
     stage: str,
@@ -250,6 +274,7 @@ def _run_stage(
             text=True,
             timeout=timeout_s,
             check=False,
+            preexec_fn=_sane_child_rlimits if os.name != "nt" else None,
         )
     except FileNotFoundError as exc:
         raise SolverError(f"Could not execute the {stage}: {executable} ({exc})") from exc

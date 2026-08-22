@@ -24,8 +24,30 @@ from ..errors import PostProcessError
 from ..meshing.gates import GateResult, evaluate_solution_gate
 
 _TIME_KEYS: tuple[str, ...] = ("time", "t", "tempo")
-_DISPLACEMENT_KEYS: tuple[str, ...] = ("disp", "dx", "dy", "dz", "displacement", "stroke")
-_FORCE_KEYS: tuple[str, ...] = ("force", "fx", "fy", "fz", "reaction", "rf")
+# The crushsim deck names its TH groups so the driven tool's columns are
+# identifiable even though th_to_csv anonymises variables as "var NN": the
+# first variable of REF_TOOL_MASTER (a /TH/NODE group) is DX and the first of
+# REF_TOOL_RBODY (a /TH/RBODY group) is FX. Those specific keys come first;
+# the generic ones keep foreign CSVs working.
+_DISPLACEMENT_KEYS: tuple[str, ...] = (
+    "ref_tool_master",
+    "disp",
+    "dx",
+    "dy",
+    "dz",
+    "displacement",
+    "stroke",
+)
+_FORCE_KEYS: tuple[str, ...] = (
+    "toolcontact",
+    "ref_tool_rbody",
+    "force",
+    "fx",
+    "fy",
+    "fz",
+    "reaction",
+    "rf",
+)
 _ENERGY_KEYS: dict[str, tuple[str, ...]] = {
     "internal": ("internal", "ie", "i-energy", "i_energy"),
     "kinetic": ("kinetic", "ke", "k-energy", "k_energy"),
@@ -282,10 +304,22 @@ def extract_energy_balance(
         else:
             energy_error = 0.0
 
+    # Quasi-static gate: judge the DEFORMABLE kinetic energy where the /TH
+    # part group provides it ("CAN ... KE"). The global KE is dominated by the
+    # driven rigid tool, whose steady translation says nothing about whether
+    # the can response is quasi-static; the energy-error estimate above still
+    # uses the global balance.
+    deformable_ke = values["kinetic"]
+    can_ke_col = _match_column(columns, ("canke",))
+    if can_ke_col is not None:
+        series = pd.to_numeric(frame[can_ke_col], errors="coerce").dropna()
+        if not series.empty:
+            deformable_ke = float(series.iloc[-1])
+
     gate = evaluate_solution_gate(
         energy_error=energy_error,
         hourglass_ratio=values["hourglass"] / values["internal"],
-        kinetic_ratio=values["kinetic"] / values["internal"],
+        kinetic_ratio=deformable_ke / values["internal"],
         added_mass_ratio=added_mass_ratio,
         info={"source": "time-history CSV"},
     )

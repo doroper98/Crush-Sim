@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import CaseConfig, MaterialCard, load_case
-from .deck.writer import DeckResult, build_deck
+from .deck.writer import INITIAL_CONTACT_CLEARANCE, DeckResult, build_deck
 from .errors import CrushSimError, SolverError
 from .geometry.parametric import CanShell, ToolShape, make_can, make_tool
 from .meshing.gates import GateResult
@@ -39,6 +39,7 @@ class GeometryStage:
     can: CanShell
     tool: ToolShape
     floor: ToolShape
+    support: ToolShape | None = None
     step_path: Path | None = None
 
     def summary(self) -> dict[str, Any]:
@@ -46,6 +47,7 @@ class GeometryStage:
         return {
             **self.can.summary(),
             "tool": self.tool.summary(),
+            "support": self.support.summary() if self.support else None,
             "step_path": str(self.step_path) if self.step_path else None,
         }
 
@@ -116,13 +118,28 @@ def build_geometry(case: CaseConfig) -> GeometryStage:
         can,
         "platen",
         (0.0, 0.0, 1.0),
-        gap=0.0,
+        # A touching floor sits inside the TYPE7 contact gap and the starter
+        # rejects the deck with initial penetrations (ERROR 612).
+        gap=INITIAL_CONTACT_CLEARANCE,
         size=can.diameter * FLOOR_TOOL_SIZE_FACTOR,
     )
+    support = None
+    if case.loading.support is not None:
+        # Fixed support opposite the drive: without it a radially driven jig
+        # just pushes the can across the floor instead of crushing it.
+        opposite = tuple(-c for c in case.loading.direction)
+        support = make_tool(
+            can,
+            case.loading.support,
+            opposite,
+            gap=INITIAL_CONTACT_CLEARANCE,
+            size=case.loading.support_size or case.loading.tool_size,
+        )
     return GeometryStage(
         can=can,
         tool=tool,
         floor=floor,
+        support=support,
         step_path=case.geometry.step_path,
     )
 
@@ -183,7 +200,16 @@ def build_meshes(
         out_path=outdir / "ref_tool.msh",
         name="REF_TOOL",
     )
-    return {"can": can_mesh, "floor": floor_mesh, "tool": tool_mesh}
+    meshes = {"can": can_mesh, "floor": floor_mesh, "tool": tool_mesh}
+    if geometry.support is not None:
+        meshes["support"] = mesh_tool(
+            geometry.support,
+            can_height=geometry.can.height,
+            target_size=rigid_target,
+            out_path=outdir / "support.msh",
+            name="SUPPORT",
+        )
+    return meshes
 
 
 def run_pipeline(
@@ -241,6 +267,7 @@ def run_pipeline(
         can_mesh=result.meshes["can"].mesh,
         tool_mesh=result.meshes["tool"].mesh,
         floor_mesh=result.meshes["floor"].mesh,
+        support_mesh=result.meshes["support"].mesh if "support" in result.meshes else None,
         outdir=run_dir / "deck",
         solver_version_tag=_solver_tag(solver_cfg),
     )
