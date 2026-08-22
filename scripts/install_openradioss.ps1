@@ -19,18 +19,41 @@ $Url = "https://github.com/OpenRadioss/OpenRadioss/releases/download/$Tag/$Asset
 $Dest = "tools\openradioss"
 New-Item -ItemType Directory -Force -Path $Dest | Out-Null
 
-Write-Host "Downloading $Url ..."
+$Zip = Join-Path $Dest $Asset
+
+if (-not (Test-Path $Zip)) {
+    Write-Host "Downloading $Url ..."
+    try {
+        # The progress bar makes Windows PowerShell 5.1 downloads drastically slower.
+        $ProgressPreference = "SilentlyContinue"
+        Invoke-WebRequest -Uri $Url -OutFile $Zip
+    } catch {
+        Write-Warning "Download failed ($($_.Exception.Message)) — the asset name may differ for tag $Tag."
+        Write-Warning "Download manually from https://github.com/OpenRadioss/OpenRadioss/releases/tag/$Tag"
+        Write-Warning "and put the zip into $Dest\, then re-run this script to extract it."
+        exit 1
+    }
+} else {
+    Write-Host "Using already-downloaded $Zip"
+}
+
+# Windows PowerShell 5.1's Expand-Archive chokes on this archive; the built-in
+# bsdtar (Windows 10 1803+) handles it fine, so prefer it.
 try {
-    Invoke-WebRequest -Uri $Url -OutFile (Join-Path $Dest $Asset)
-    Expand-Archive -Path (Join-Path $Dest $Asset) -DestinationPath $Dest -Force
-    Remove-Item (Join-Path $Dest $Asset)
+    if (Get-Command tar -ErrorAction SilentlyContinue) {
+        tar -xf $Zip -C $Dest
+        if ($LASTEXITCODE -ne 0) { throw "tar exited with code $LASTEXITCODE" }
+    } else {
+        Expand-Archive -Path $Zip -DestinationPath $Dest -Force
+    }
+    Remove-Item $Zip
     Write-Host "Extracted to $Dest\. Now:"
     Write-Host "  1. Follow the README inside the extracted archive for env setup (paths, OMP threads)."
-    Write-Host "  2. Point configs\solver.yaml starter/engine paths at the extracted executables."
+    Write-Host "  2. Set install_root (or the starter/engine paths) in configs\solver.yaml."
     Write-Host "  3. Re-run: csim doctor"
 } catch {
-    Write-Warning "Download failed — the asset name may differ for tag $Tag."
-    Write-Warning "Download manually from https://github.com/OpenRadioss/OpenRadioss/releases/tag/$Tag"
-    Write-Warning "and extract into $Dest\, then update configs\solver.yaml."
+    Write-Warning "Extraction failed: $($_.Exception.Message)"
+    Write-Warning "The zip is kept at $Zip — extract it manually (right-click > Extract All,"
+    Write-Warning "or 'tar -xf $Asset' inside $Dest\), then update configs\solver.yaml."
     exit 1
 }
