@@ -185,7 +185,8 @@ def test_starter_carries_the_validation_warning(lc1_starter: str) -> None:
 
 def test_starter_declares_the_working_unit_system(lc1_starter: str) -> None:
     assert "mm-s-tonne-N-MPa" in lc1_starter
-    assert "        Mg        mm         s" in lc1_starter
+    # Unit codes are 20-character fields (begin.cfg %20s%20s%20s).
+    assert "                  Mg                  mm                   s" in lc1_starter
 
 
 def test_starter_contains_every_required_keyword(lc1_starter: str) -> None:

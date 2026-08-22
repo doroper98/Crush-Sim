@@ -15,7 +15,7 @@ version_tag: "latest-20260728"
 # Root of the extracted OpenRadioss release. When set, the conventional
 # executable names are searched under <install_root>, <install_root>/exec and
 # <install_root>/bin before falling back to PATH.
-install_root: ""
+install_root: "tools/openradioss/OpenRadioss"
 
 executables:
   # Solver stages.

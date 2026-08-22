@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import CaseConfig, MaterialCard, load_case
-from .deck.writer import DeckResult, build_deck
+from .deck.writer import INITIAL_CONTACT_CLEARANCE, DeckResult, build_deck
 from .errors import CrushSimError, SolverError
 from .geometry.parametric import CanShell, ToolShape, make_can, make_tool
 from .meshing.gates import GateResult
@@ -116,7 +116,9 @@ def build_geometry(case: CaseConfig) -> GeometryStage:
         can,
         "platen",
         (0.0, 0.0, 1.0),
-        gap=0.0,
+        # A touching floor sits inside the TYPE7 contact gap and the starter
+        # rejects the deck with initial penetrations (ERROR 612).
+        gap=INITIAL_CONTACT_CLEARANCE,
         size=can.diameter * FLOOR_TOOL_SIZE_FACTOR,
     )
     return GeometryStage(

@@ -15,7 +15,6 @@
 /ANIM/ELEM/VONM
 /ANIM/ELEM/EPSP
 /ANIM/SHELL/THIC
-/ANIM/SHELL/TENS/STRESS/ALL
 # Time-history output interval [s]
 /TFILE/0
       2.10526316e-05
