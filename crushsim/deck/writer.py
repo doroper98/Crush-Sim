@@ -476,8 +476,11 @@ class RadiossDeckWriter:
         lines.append("".join(i10(p.part_id) for p in self.parts))
         lines.append(RULER)
         lines.append("/GRNOD/PART/90")
-        lines.append(title("ALL_CONTACT_NODES"))
-        lines.append("".join(i10(p.part_id) for p in self.parts))
+        lines.append(title("CONTACT_SECONDARY_NODES"))
+        # Deformable nodes only: rigid parts stay main-side. Rigid-vs-rigid
+        # pairs (e.g. a support edge near the floor plane) otherwise trip the
+        # initial-penetration check, and their nodes cannot be relocated.
+        lines.append("".join(i10(p.part_id) for p in self.parts if not p.rigid))
         return lines
 
     def _block_rbody(self, part: DeckPart, rbody_id: int) -> list[str]:

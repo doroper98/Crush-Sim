@@ -238,6 +238,8 @@ def make_tool(
         origin = (0.0, 0.0, contact_z - unit[2] * gap)
     else:
         # Radial tool (LC-2/LC-3): sits off the side wall at mid height.
+        # For the V-block the apex is the nearest feature (the 45-degree arms
+        # trail away from the can), so the same surface+gap offset applies.
         surface = can.radius + (indenter_radius if kind == "indenter" else 0.0)
         offset = surface + gap
         origin = (-unit[0] * offset, -unit[1] * offset, 0.5 * can.height)
