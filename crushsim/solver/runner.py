@@ -175,13 +175,41 @@ def resolve_executable(paths: SolverPaths, kind: str) -> Path:
 
 
 def _solver_env(paths: SolverPaths, threads: int) -> dict[str, str]:
-    """Build the subprocess environment (OpenMP threads plus configured vars)."""
+    """Build the subprocess environment (OpenMP threads plus configured vars).
+
+    When ``install_root`` is set this reproduces what the official OpenRadioss
+    run scripts export: ``RAD_CFG_PATH`` (starter configuration files),
+    ``RAD_H3D_PATH`` (H3D writer library), and the ``extlib`` runtime-library
+    directories on the loader path - PATH on Windows, LD_LIBRARY_PATH
+    elsewhere. Without the loader-path entries the executables die at startup
+    with STATUS_DLL_NOT_FOUND (exit 3221225781 / 0xC0000135) on Windows.
+    """
     env = dict(os.environ)
     env.update(paths.env)
-    env.setdefault("OMP_NUM_THREADS", str(max(1, threads)))
     env["OMP_NUM_THREADS"] = str(max(1, threads))
+    env.setdefault("KMP_STACKSIZE", "400m")
     if paths.install_root is not None:
-        env.setdefault("RAD_CFG_PATH", str(Path(paths.install_root) / "hm_cfg_files"))
+        root = Path(paths.install_root)
+        env.setdefault("RAD_CFG_PATH", str(root / "hm_cfg_files"))
+        arch_dirs = [
+            root / "extlib" / "hm_reader" / "win64",
+            root / "extlib" / "hm_reader" / "linux64",
+            root / "extlib" / "h3d" / "lib" / "win64",
+            root / "extlib" / "h3d" / "lib" / "linux64",
+            root / "exec",
+            root / "bin",
+        ]
+        lib_dirs = [d for d in arch_dirs if d.is_dir()]
+        for d in lib_dirs:
+            if d.parent.name == "h3d" or d.parent.parent.name == "h3d":
+                env.setdefault("RAD_H3D_PATH", str(d))
+                break
+        if lib_dirs:
+            joined = os.pathsep.join(str(d) for d in lib_dirs)
+            env["PATH"] = joined + os.pathsep + env.get("PATH", "")
+            if os.name != "nt":
+                current = env.get("LD_LIBRARY_PATH", "")
+                env["LD_LIBRARY_PATH"] = joined + (os.pathsep + current if current else "")
     return env
 
 
