@@ -202,7 +202,7 @@ def test_starter_contains_every_required_keyword(lc1_starter: str) -> None:
         "/RBODY/1",
         "/BCS/1",
         "/FUNCT/1",
-        "/IMPDISP/1",
+        "/IMPVEL/1",
         "/TH/RBODY/1",
         "/END",
     ):
@@ -235,7 +235,7 @@ def test_floor_is_fully_fixed(lc1_starter: str) -> None:
 
 
 def test_axial_drive_uses_the_z_axis_without_a_skew(lc1_starter: str) -> None:
-    block = lc1_starter.split("/IMPDISP/1")[1]
+    block = lc1_starter.split("/IMPVEL/1")[1]
     assert "         Z" in block
     assert "/SKEW/FIX" not in lc1_starter
 
@@ -253,7 +253,7 @@ def test_radial_drive_uses_the_x_axis(
         run_name="lc2_golden",
         load_case="LC-2",
     ).starter_text()
-    block = text.split("/IMPDISP/1")[1]
+    block = text.split("/IMPVEL/1")[1]
     assert "         X" in block
     assert "/SKEW/FIX" not in text
 

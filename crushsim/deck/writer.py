@@ -27,7 +27,7 @@ Deck layout produced (spec §4 FR-04, §5.2, §5.3):
 * ``/PROP/SHELL`` with ``Ishell=24`` (QEPH) and 5 through-thickness points.
 * ``/INTER/TYPE7`` global contact, friction 0.15 by default.
 * ``FLOOR`` - rigid body at Z = 0, all six DOF fixed, common to every case.
-* ``REF_TOOL`` - rigid body driven by ``/IMPDISP`` along a displacement ramp.
+* ``REF_TOOL`` - rigid body driven by ``/IMPVEL`` along a velocity ramp.
 * ``/TH/RBODY`` time-history output for the reaction forces.
 """
 
@@ -180,6 +180,29 @@ class DriveDefinition:
                 s = self.velocity_mm_s * (t - ramp / 2.0) if ramp > 0.0 else self.velocity_mm_s * t
             pts.append((t, min(s, self.stroke)))
         pts[-1] = (t_end, self.stroke)
+        return pts
+
+    def velocity_table(self) -> list[tuple[float, float]]:
+        """Velocity-vs-time points: cosine ease-in, then constant velocity.
+
+        Used with ``/IMPVEL`` (velocity control): the engine's energy
+        bookkeeping for an imposed velocity on a rigid-body master is
+        well-behaved, whereas the same drive expressed through ``/IMPDISP``
+        accumulated a runaway external-work term on the pinned engine build.
+        ``end_time`` already compensates the ramp so the integral of this
+        profile is exactly ``stroke``.
+        """
+        t_end = self.end_time
+        n = max(3, int(self.points))
+        ramp = self.ramp_time
+        pts: list[tuple[float, float]] = []
+        for i in range(n):
+            t = t_end * i / (n - 1)
+            if ramp > 0.0 and t < ramp:
+                v = self.velocity_mm_s * (1.0 - math.cos(math.pi * t / ramp)) / 2.0
+            else:
+                v = self.velocity_mm_s
+            pts.append((t, v))
         return pts
 
 
@@ -532,18 +555,18 @@ class RadiossDeckWriter:
             s10(f"{trans_code} 111") + i10(skew_id) + i10(95),
             RULER,
             "/FUNCT/1",
-            title("REF_TOOL_DISPLACEMENT_RAMP"),
+            title("REF_TOOL_VELOCITY_RAMP"),
             "#                  X                   Y",
         ]
-        for t, s in self.drive.table():
-            lines.append(reals((t, s)))
+        for t, v in self.drive.velocity_table():
+            lines.append(reals((t, v)))
         lines += [
             RULER,
-            "/IMPDISP/1",
-            title("REF_TOOL_IMPOSED_DISPLACEMENT"),
-            "# funct_ID       DIR   skew_ID sensor_ID   grnd_ID  frame_ID     Icoor",
-            i10(1) + s10(axis) + i10(skew_id) + i10(0) + i10(95) + i10(0) + i10(0),
-            "#           Ascale_x            Fscale_Y              TSTART               TSTOP",
+            "/IMPVEL/1",
+            title("REF_TOOL_IMPOSED_VELOCITY"),
+            "#funct_IDT       Dir   skew_ID sensor_ID  grnod_ID  frame_ID",
+            i10(1) + s10(axis) + i10(skew_id) + i10(0) + i10(95) + i10(0),
+            "#            Scale_x             Scale_y              Tstart               Tstop",
             reals((0.0, sign, 0.0, self.end_time)),
         ]
         return lines
