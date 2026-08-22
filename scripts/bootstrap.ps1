@@ -13,10 +13,12 @@ if (-not (Test-Path ".venv")) {
 }
 & .\.venv\Scripts\Activate.ps1
 
+# Always go through `python -m pip`: calling the pip.exe shim right after pip
+# upgrades itself fails on Windows ("unknown command ...pip.exe").
 python -m pip install --upgrade pip
 # Windows machines get the CATIA COM extra (pywin32) and CAD extra (OCP) on top of dev deps.
-pip install -e ".[dev,windows,cad]"
-if ($LASTEXITCODE -ne 0) { pip install -e "." }
+python -m pip install -e ".[dev,windows,cad]"
+if ($LASTEXITCODE -ne 0) { python -m pip install -e "." }
 
 Write-Host ""
 Write-Host "=== Environment self-check (Phase 0 Day-1 gate) ==="

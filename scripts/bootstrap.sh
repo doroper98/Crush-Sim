@@ -15,8 +15,10 @@ fi
 # shellcheck disable=SC1091
 source .venv/bin/activate
 
+# Always go through `python -m pip`: the pip shim can break right after pip
+# upgrades itself (seen on Windows; harmless to avoid everywhere).
 python -m pip install --upgrade pip
-pip install -e ".[dev]" || pip install -e .
+python -m pip install -e ".[dev]" || python -m pip install -e .
 
 echo
 echo "=== Environment self-check (Phase 0 Day-1 gate) ==="
