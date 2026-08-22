@@ -16,9 +16,20 @@ from typing import Any
 
 from ..config import SolverPaths, load_solver_config
 from ..errors import PostProcessError
+from ..solver.runner import _solver_env
 
-_TH_CANDIDATES: tuple[str, ...] = ("th_to_csv", "th_to_csv.exe", "th_to_csv_linux64_gf")
-_ANIM_CANDIDATES: tuple[str, ...] = ("anim_to_vtk", "anim_to_vtk.exe", "anim_to_vtk_linux64_gf")
+_TH_CANDIDATES: tuple[str, ...] = (
+    "th_to_csv",
+    "th_to_csv.exe",
+    "th_to_csv_linux64_gf",
+    "th_to_csv_win64.exe",
+)
+_ANIM_CANDIDATES: tuple[str, ...] = (
+    "anim_to_vtk",
+    "anim_to_vtk.exe",
+    "anim_to_vtk_linux64_gf",
+    "anim_to_vtk_win64.exe",
+)
 
 
 @dataclass(slots=True)
@@ -58,22 +69,24 @@ def resolve_converter(paths: SolverPaths, kind: str) -> Path:
     else:
         raise PostProcessError(f"Unknown converter {kind!r}")
 
+    # Always return absolute paths: the converters run with cwd set to the
+    # output directory, where repo-relative paths do not resolve.
     if configured is not None:
         p = Path(configured)
         if p.is_file():
-            return p
+            return p.resolve()
         if p.name and (found := shutil.which(p.name)):
-            return Path(found)
+            return Path(found).resolve()
     if paths.install_root is not None:
         for name in candidates:
             for sub in ("", "exec", "bin", "tools"):
                 candidate = Path(paths.install_root) / sub / name
                 if candidate.is_file():
-                    return candidate
+                    return candidate.resolve()
     for name in candidates:
         found = shutil.which(name)
         if found:
-            return Path(found)
+            return Path(found).resolve()
 
     source = paths.source or "configs/solver.yaml"
     raise PostProcessError(
@@ -87,7 +100,13 @@ def resolve_converter(paths: SolverPaths, kind: str) -> Path:
     )
 
 
-def _run(command: list[str], *, cwd: Path, stdout_path: Path | None = None) -> str:
+def _run(
+    command: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str] | None = None,
+    stdout_path: Path | None = None,
+) -> str:
     """Run a converter, returning its stdout.
 
     Raises:
@@ -97,6 +116,7 @@ def _run(command: list[str], *, cwd: Path, stdout_path: Path | None = None) -> s
         completed = subprocess.run(
             command,
             cwd=str(cwd),
+            env=env,
             capture_output=True,
             text=False,
             check=False,
@@ -140,7 +160,8 @@ def convert_time_history(
     work.mkdir(parents=True, exist_ok=True)
 
     before = set(work.glob("*.csv"))
-    _run([str(converter), str(src.resolve())], cwd=work)
+    # The converters need the same loader path as the solver (extlib DLLs).
+    _run([str(converter), str(src.resolve())], cwd=work, env=_solver_env(paths, 1))
     produced = sorted(set(work.glob("*.csv")) - before)
     if not produced:
         # Some builds write next to the input instead of the working directory.
@@ -185,11 +206,12 @@ def convert_animation(
     out = Path(outdir)
     out.mkdir(parents=True, exist_ok=True)
 
+    env = _solver_env(paths, 1)
     outputs: list[Path] = []
     for index, src in enumerate(sorted(inputs)):
         target = out / f"{src.name}.vtk"
         # anim_to_vtk writes the VTK legacy file to stdout.
-        _run([str(converter), str(src.resolve())], cwd=out, stdout_path=target)
+        _run([str(converter), str(src.resolve())], cwd=out, env=env, stdout_path=target)
         if not target.is_file() or target.stat().st_size == 0:
             raise PostProcessError(
                 f"anim_to_vtk produced an empty file for {src} (frame {index}). "

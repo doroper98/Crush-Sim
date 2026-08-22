@@ -471,9 +471,17 @@ class RadiossDeckWriter:
             lines.append(title(f"{part.name}_NODES"))
             lines.append(i10(part.part_id))
         lines.append(RULER)
+        # Separate main surfaces per contact partner so /TH/INTER can report
+        # the tool-side reaction force on its own (the crush-force curve).
         lines.append("/SURF/PART/1")
-        lines.append(title("ALL_CONTACT_SURFACES"))
-        lines.append("".join(i10(p.part_id) for p in self.parts))
+        lines.append(title("TOOL_SURFACE"))
+        lines.append("".join(i10(p.part_id) for p in self.parts if p.role == "tool"))
+        lines.append("/SURF/PART/2")
+        lines.append(title("FIXED_SURFACES"))
+        lines.append("".join(i10(p.part_id) for p in self.parts if p.role == "floor"))
+        lines.append("/SURF/PART/3")
+        lines.append(title("CAN_SURFACE"))
+        lines.append("".join(i10(p.part_id) for p in self.parts if not p.rigid))
         lines.append(RULER)
         lines.append("/GRNOD/PART/90")
         lines.append(title("CONTACT_SECONDARY_NODES"))
@@ -575,15 +583,30 @@ class RadiossDeckWriter:
         return lines
 
     def _block_contact(self) -> list[str]:
-        """/INTER/TYPE7 - one global contact including can self-contact."""
+        """/INTER/TYPE7 x3 - tool, fixed rigids, and can self-contact.
+
+        Split per partner so the tool interface's /TH/INTER output is the
+        crush-force curve directly.
+        """
+        lines: list[str] = []
+        for inter_id, name, surf_id in (
+            (1, "TOOL_CONTACT", 1),
+            (2, "FIXED_CONTACT", 2),
+            (3, "SELF_CONTACT", 3),
+        ):
+            lines += self._contact_cards(inter_id, name, surf_id)
+        return lines
+
+    def _contact_cards(self, inter_id: int, name: str, surf_id: int) -> list[str]:
+        """One /INTER/TYPE7 block (card layouts per inter_type7.cfg)."""
         return [
             RULER,
-            "/INTER/TYPE7/1",
-            title("GLOBAL_SELF_CONTACT"),
+            f"/INTER/TYPE7/{inter_id}",
+            title(name),
             # Card layouts per inter_type7.cfg (radioss2018).
             "# grnod_id   surf_id      Istf      Ithe      Igap                Ibag"
             "      Idel     Icurv      Iadm",
-            i10(90) + i10(1) + i10(4) + i10(0) + i10(2) + " " * 10 + i10(0) + i10(0) + i10(0) + i10(0),
+            i10(90) + i10(surf_id) + i10(4) + i10(0) + i10(2) + " " * 10 + i10(0) + i10(0) + i10(0) + i10(0),
             "#          Fscalegap             Gap_max             Fpenmax",
             reals((self.gap_scale, 0.0, 0.0)),
             "#              Stmin               Stmax   Percent_mesh_size               dtmin"
@@ -632,6 +655,15 @@ class RadiossDeckWriter:
         ] + [
             i10(p.rbody_master_node) + i10(0) + f"{p.name}_MASTER"
             for p in rigid_parts
+        ]
+        lines += [
+            RULER,
+            "/TH/INTER/4",
+            title("TOOL_CONTACT_FORCE"),
+            "#      var       var       var       var",
+            "DEF       FX        FY        FZ",
+            "#      Obj",
+            i10(1),
         ]
         lines += [
             RULER,

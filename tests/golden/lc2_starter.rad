@@ -151,8 +151,14 @@ REF_TOOL_NODES
          3
 #---1----|----2----|----3----|----4----|----5----|----6----|----7----|----8----|----9----|---10----|
 /SURF/PART/1
-ALL_CONTACT_SURFACES
-         1         2         3
+TOOL_SURFACE
+         3
+/SURF/PART/2
+FIXED_SURFACES
+         2
+/SURF/PART/3
+CAN_SURFACE
+         1
 #---1----|----2----|----3----|----4----|----5----|----6----|----7----|----8----|----9----|---10----|
 /GRNOD/PART/90
 CONTACT_SECONDARY_NODES
@@ -409,9 +415,39 @@ REF_TOOL_IMPOSED_VELOCITY
                    0                   1                   0        0.0105263158
 #---1----|----2----|----3----|----4----|----5----|----6----|----7----|----8----|----9----|---10----|
 /INTER/TYPE7/1
-GLOBAL_SELF_CONTACT
+TOOL_CONTACT
 # grnod_id   surf_id      Istf      Ithe      Igap                Ibag      Idel     Icurv      Iadm
         90         1         4         0         2                   0         0         0         0
+#          Fscalegap             Gap_max             Fpenmax
+                 0.8                   0                   0
+#              Stmin               Stmax   Percent_mesh_size               dtmin  Irem_gap   Irem_i2
+                   0                   0                   0                   0         0         0
+#              Stfac                Fric              GAPmin              Tstart               Tstop
+                   1                0.15                   0                   0                   0
+#      IBC                        Inacti               VIS_S               VIS_F              Bumult
+       000                             6                   0                   0                   0
+#    Ifric    Ifiltr               Xfreq     Iform   sens_ID   fct_IDF             AscaleF   fric_ID
+         0         0                   0         0         0         0                   0         0
+#---1----|----2----|----3----|----4----|----5----|----6----|----7----|----8----|----9----|---10----|
+/INTER/TYPE7/2
+FIXED_CONTACT
+# grnod_id   surf_id      Istf      Ithe      Igap                Ibag      Idel     Icurv      Iadm
+        90         2         4         0         2                   0         0         0         0
+#          Fscalegap             Gap_max             Fpenmax
+                 0.8                   0                   0
+#              Stmin               Stmax   Percent_mesh_size               dtmin  Irem_gap   Irem_i2
+                   0                   0                   0                   0         0         0
+#              Stfac                Fric              GAPmin              Tstart               Tstop
+                   1                0.15                   0                   0                   0
+#      IBC                        Inacti               VIS_S               VIS_F              Bumult
+       000                             6                   0                   0                   0
+#    Ifric    Ifiltr               Xfreq     Iform   sens_ID   fct_IDF             AscaleF   fric_ID
+         0         0                   0         0         0         0                   0         0
+#---1----|----2----|----3----|----4----|----5----|----6----|----7----|----8----|----9----|---10----|
+/INTER/TYPE7/3
+SELF_CONTACT
+# grnod_id   surf_id      Istf      Ithe      Igap                Ibag      Idel     Icurv      Iadm
+        90         3         4         0         2                   0         0         0         0
 #          Fscalegap             Gap_max             Fpenmax
                  0.8                   0                   0
 #              Stmin               Stmax   Percent_mesh_size               dtmin  Irem_gap   Irem_i2
@@ -437,6 +473,13 @@ DEF       DX        DY        DZ
 #  node_ID   skew_ID node_name
         28         0FLOOR_MASTER
         29         0REF_TOOL_MASTER
+#---1----|----2----|----3----|----4----|----5----|----6----|----7----|----8----|----9----|---10----|
+/TH/INTER/4
+TOOL_CONTACT_FORCE
+#      var       var       var       var
+DEF       FX        FY        FZ
+#      Obj
+         1
 #---1----|----2----|----3----|----4----|----5----|----6----|----7----|----8----|----9----|---10----|
 /TH/PART/2
 PART_ENERGIES
