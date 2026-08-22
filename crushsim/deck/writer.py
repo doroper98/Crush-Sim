@@ -660,8 +660,10 @@ class RadiossDeckWriter:
             RULER,
             "/TH/INTER/4",
             title("TOOL_CONTACT_FORCE"),
-            "#      var       var       var       var",
-            "DEF       FX        FY        FZ",
+            # Valid interface variables are FN*/FT* (hm_read_thgrou.F VARIN);
+            # FX/FY/FZ are rigid-body variables and are rejected here.
+            "#      var       var       var       var       var       var",
+            "FNX       FNY       FNZ       FTX       FTY       FTZ",
             "#      Obj",
             i10(1),
         ]
