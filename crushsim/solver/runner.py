@@ -196,6 +196,10 @@ def _solver_env(paths: SolverPaths, threads: int) -> dict[str, str]:
             root / "extlib" / "hm_reader" / "linux64",
             root / "extlib" / "h3d" / "lib" / "win64",
             root / "extlib" / "h3d" / "lib" / "linux64",
+            # Intel oneAPI runtime (libiomp5md, libmmd, mkl_*, svml_dispmd)
+            # bundled with the official release - required at load time.
+            root / "extlib" / "intelOneAPI_runtime" / "win64",
+            root / "extlib" / "intelOneAPI_runtime" / "linux64",
             root / "exec",
             root / "bin",
         ]
