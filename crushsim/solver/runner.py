@@ -144,24 +144,26 @@ def resolve_executable(paths: SolverPaths, kind: str) -> Path:
     configured = paths.starter if kind == "starter" else paths.engine
     candidates = _STARTER_CANDIDATES if kind == "starter" else _ENGINE_CANDIDATES
 
+    # Always return an absolute path: the solver subprocess runs with
+    # cwd=run_dir, so a path relative to the repo root would not resolve there.
     if configured is not None:
         p = Path(configured)
         if p.is_file():
-            return p
+            return p.resolve()
         if p.name and (found := shutil.which(p.name)):
-            return Path(found)
+            return Path(found).resolve()
 
     if paths.install_root is not None:
         for name in candidates:
             for sub in ("", "exec", "bin"):
                 candidate = Path(paths.install_root) / sub / name
                 if candidate.is_file():
-                    return candidate
+                    return candidate.resolve()
 
     for name in candidates:
         found = shutil.which(name)
         if found:
-            return Path(found)
+            return Path(found).resolve()
 
     source = paths.source or "configs/solver.yaml"
     raise SolverError(
@@ -189,7 +191,10 @@ def _solver_env(paths: SolverPaths, threads: int) -> dict[str, str]:
     env["OMP_NUM_THREADS"] = str(max(1, threads))
     env.setdefault("KMP_STACKSIZE", "400m")
     if paths.install_root is not None:
-        root = Path(paths.install_root)
+        # install_root is often given relative to the repo root, but the solver
+        # subprocess runs with cwd=run_dir - every path handed to the loader
+        # must therefore be absolute or the DLLs are silently not found.
+        root = Path(paths.install_root).expanduser().resolve()
         env.setdefault("RAD_CFG_PATH", str(root / "hm_cfg_files"))
         arch_dirs = [
             root / "extlib" / "hm_reader" / "win64",
