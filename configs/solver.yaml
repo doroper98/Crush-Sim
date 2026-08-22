@@ -8,10 +8,9 @@
 # Paths below are placeholders. Fill them in on each machine; `csim doctor`
 # reports which ones are missing.
 
-# NOTE: this tag is a placeholder chosen at scaffold time. Before first use,
-# replace it with an actual tag from https://github.com/OpenRadioss/OpenRadioss/releases
-# (scripts/install_openradioss.* builds the download URL from this value).
-version_tag: "openradioss-2025.10"
+# Pinned from https://github.com/OpenRadioss/OpenRadioss/releases (2026-08-22).
+# scripts/install_openradioss.* builds the download URL from this value.
+version_tag: "latest-20260728"
 
 # Root of the extracted OpenRadioss release. When set, the conventional
 # executable names are searched under <install_root>, <install_root>/exec and
