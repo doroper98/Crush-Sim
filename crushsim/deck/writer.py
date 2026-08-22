@@ -505,15 +505,15 @@ class RadiossDeckWriter:
             i10(0) + i10(0) + i10(0),
         ]
 
-    def _block_floor_bcs(self, part: DeckPart, bcs_id: int) -> list[str]:
-        """FLOOR: all six DOF of the rigid master node fixed at Z = 0."""
+    def _block_fixed_bcs(self, part: DeckPart, bcs_id: int) -> list[str]:
+        """Fixed rigid part (FLOOR, SUPPORT): all six master DOF locked."""
         return [
             RULER,
             f"/GRNOD/NODE/{80 + bcs_id}",
             title(f"{part.name}_MASTER"),
             i10(part.rbody_master_node),
             f"/BCS/{bcs_id}",
-            title(f"{part.name}_FIXED_Z0"),
+            title(f"{part.name}_FIXED"),
             "#  Tra rot   skew_ID  grnod_ID",
             s10("111 111") + i10(0) + i10(80 + bcs_id),
         ]
@@ -661,9 +661,15 @@ class RadiossDeckWriter:
             if part.rigid:
                 rbody_id += 1
                 lines += self._block_rbody(part, rbody_id)
-        floor = self.floor
-        if floor is not None:
-            lines += self._block_floor_bcs(floor, 1)
+        # Fixed rigid parts (floor, support): BCS ids 1, 3, 4, ... - id 2 is
+        # reserved for the REF_TOOL guide in _block_tool_drive.
+        bcs_id = 0
+        for part in self.parts:
+            if part.role == "floor":
+                bcs_id = 1 if bcs_id == 0 else bcs_id + 1
+                if bcs_id == 2:
+                    bcs_id = 3
+                lines += self._block_fixed_bcs(part, bcs_id)
         lines += self._block_tool_drive()
         lines += self._block_contact()
         lines += self._block_time_history()
@@ -739,6 +745,7 @@ def build_deck(
     can_mesh: ShellMesh,
     tool_mesh: ShellMesh,
     floor_mesh: ShellMesh | None = None,
+    support_mesh: ShellMesh | None = None,
     outdir: str | Path,
     run_name: str | None = None,
     solver_version_tag: str = "unpinned",
@@ -772,6 +779,15 @@ def build_deck(
             DeckPart(
                 name="FLOOR",
                 mesh=floor_mesh,
+                thickness=RIGID_SHELL_THICKNESS,
+                role="floor",
+            )
+        )
+    if support_mesh is not None:
+        parts.append(
+            DeckPart(
+                name="SUPPORT",
+                mesh=support_mesh,
                 thickness=RIGID_SHELL_THICKNESS,
                 role="floor",
             )

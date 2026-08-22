@@ -286,6 +286,15 @@ class LoadingConfig:
     """Hemispherical indenter radius [mm] (LC-3)."""
     step_path: Path | None = None
     """Real-shape jig STEP file (LC-2 with ``tool: step``)."""
+    support: Literal["jig_plane", "v_block"] | None = None
+    """Fixed rigid support opposite the drive direction (LC-2/LC-3).
+
+    A radially driven jig with nothing behind the can simply bulldozes it
+    across the floor; a fixed support (typically a V-block) cradles the can
+    so the drive actually crushes it. ``None`` (LC-1) relies on the floor.
+    """
+    support_size: float | None = None
+    """Characteristic support size [mm]; defaults like ``tool_size``."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -422,7 +431,15 @@ def load_case(path: str | Path) -> CaseConfig:
         tool_size=None if load_raw.get("tool_size") is None else _as_float(load_raw["tool_size"], "loading.tool_size", p),
         indenter_radius=_as_float(load_raw.get("indenter_radius", 10.0), "loading.indenter_radius", p),
         step_path=_resolve(load_raw.get("step_path"), base),
+        support=load_raw.get("support"),  # type: ignore[arg-type]
+        support_size=None
+        if load_raw.get("support_size") is None
+        else _as_float(load_raw["support_size"], "loading.support_size", p),
     )
+    if loading.support is not None and loading.support not in ("jig_plane", "v_block"):
+        raise ConfigError(
+            f"loading.support in {p} must be 'jig_plane' or 'v_block', got {loading.support!r}"
+        )
     if loading.stroke <= 0:
         raise ConfigError(f"loading.stroke in {p} must be > 0")
     if not 0.0 <= loading.ramp_fraction < 1.0:

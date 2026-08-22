@@ -43,6 +43,8 @@ loading:
   ramp_fraction: 0.1
   tool_gap: 0.5
   tool_size: 160.0
+  support: v_block
+  support_size: 160.0
 
 contact:
   friction: 0.15
