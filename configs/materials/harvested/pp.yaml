@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Polypropylene (PP)
+E: 1500.0
+nu: 0.42
+rho: 9.05e-10
+sigma_y: 35.0
+uts: 40.0
+K: 6.36129818269696
+n: 0.2
+t_default: 1.5
+law2:
+  A: 35.0
+  B: 6.36129818269696
+  n: 0.2
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 905.0

@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Silver (Ag)
+E: 83000.0
+nu: 0.37
+rho: 1.049e-08
+sigma_y: 55.0
+uts: 170.0
+K: 195.32799325821114
+n: 0.44
+t_default: 0.3
+law2:
+  A: 55.0
+  B: 195.32799325821114
+  n: 0.44
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 10490.0

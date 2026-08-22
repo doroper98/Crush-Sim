@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Super Duplex 2507 (25Cr-7Ni)
+E: 200000.0
+nu: 0.3
+rho: 7.81e-09
+sigma_y: 550.0
+uts: 800.0
+K: 295.8986835620894
+n: 0.14
+t_default: 0.3
+law2:
+  A: 550.0
+  B: 295.8986835620894
+  n: 0.14
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 7810.0

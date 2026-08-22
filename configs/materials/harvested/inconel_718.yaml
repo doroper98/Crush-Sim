@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Inconel 718
+E: 205000.0
+nu: 0.29
+rho: 8.19e-09
+sigma_y: 1035.0
+uts: 1240.0
+K: 225.72733836305935
+n: 0.08
+t_default: 0.3
+law2:
+  A: 1035.0
+  B: 225.72733836305935
+  n: 0.08
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 8190.0

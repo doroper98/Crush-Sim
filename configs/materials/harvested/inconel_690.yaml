@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Inconel 690
+E: 211000.0
+nu: 0.31
+rho: 8.19e-09
+sigma_y: 310.0
+uts: 690.0
+K: 545.31471898325
+n: 0.3
+t_default: 0.3
+law2:
+  A: 310.0
+  B: 545.31471898325
+  n: 0.3
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 8190.0

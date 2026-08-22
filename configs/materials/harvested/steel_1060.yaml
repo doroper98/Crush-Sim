@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: AISI 1060 (High-Carbon Spring)
+E: 205000.0
+nu: 0.29
+rho: 7.849999999999999e-09
+sigma_y: 480.0
+uts: 810.0
+K: 381.29348902106716
+n: 0.12
+t_default: 0.3
+law2:
+  A: 480.0
+  B: 381.29348902106716
+  n: 0.12
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 7850.0

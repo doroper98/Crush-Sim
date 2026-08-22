@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Elgiloy (Co-40Ni-20Cr)
+E: 190000.0
+nu: 0.3
+rho: 8.3e-09
+sigma_y: 1500.0
+uts: 1790.0
+K: 311.7243461130544
+n: 0.06
+t_default: 0.3
+law2:
+  A: 1500.0
+  B: 311.7243461130544
+  n: 0.06
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 8300.0

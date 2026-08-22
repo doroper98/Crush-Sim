@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Cupronickel C71500 (Cu-30Ni)
+E: 150000.0
+nu: 0.34
+rho: 8.94e-09
+sigma_y: 170.0
+uts: 400.0
+K: 350.53823601433123
+n: 0.35
+t_default: 0.3
+law2:
+  A: 170.0
+  B: 350.53823601433123
+  n: 0.35
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 8940.0

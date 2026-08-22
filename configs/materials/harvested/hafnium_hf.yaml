@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Hafnium (Hf)
+E: 78000.0
+nu: 0.37
+rho: 1.331e-08
+sigma_y: 120.0
+uts: 240.0
+K: 162.14401857684413
+n: 0.25
+t_default: 0.3
+law2:
+  A: 120.0
+  B: 162.14401857684413
+  n: 0.25
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 13310.0

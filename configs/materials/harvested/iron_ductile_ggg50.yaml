@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Ductile Iron GGG-50
+E: 169000.0
+nu: 0.27
+rho: 7.1e-09
+sigma_y: 320.0
+uts: 500.0
+K: 223.55823863747446
+n: 0.18
+t_default: 2.0
+law2:
+  A: 320.0
+  B: 223.55823863747446
+  n: 0.18
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 7100.0

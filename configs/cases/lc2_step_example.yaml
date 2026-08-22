@@ -1,0 +1,64 @@
+# LC-2 against a CATIA-exported STEP part (Phase 2 entry point).
+#
+# This case meshes real CAD geometry instead of the parametric shell. The
+# example part is a CATIA export shipped in examples/step/, so the mesh gate has
+# something realistic to judge.
+#
+# EXPECT A MESH-GATE FAILURE with the default target size: the part carries
+# small fillets and thin faces that a 1.2 mm shell mesh cannot resolve, so
+# elements fall below units.MESH_MIN_EDGE_LENGTH_MM. That is the intended
+# behaviour (ADR-06): the gate stops the run, the report lists the worst
+# elements, and the geometry must be defeatured or the mesh sizing revised
+# before a solve. Use `csim mesh --config ... --no-gate` to inspect without
+# enforcing.
+
+name: lc2_step_example
+load_case: LC-2
+description: >-
+  Lateral crush driven against CAD geometry imported from STEP. Demonstrates the
+  FR-02 STEP path and the §7 mesh gate on real, undefeatured CATIA output.
+
+geometry:
+  kind: step
+  step_path: examples/step/Honda_Can.stp
+  thickness: 0.3        # mm; shell thickness assigned to the imported skin
+  radius: 33.0          # used only to size the reference tools
+  height: 115.0
+
+material:
+  key: aluminum_3003
+
+mesh:
+  target_size: 1.5
+  min_size: 0.4
+  max_size: 3.0
+  recombine: true
+  curvature_points: 10
+
+loading:
+  tool: jig_plane
+  direction: [1.0, 0.0, 0.0]
+  stroke: 15.0
+  velocity: 2.0
+  ramp_fraction: 0.1
+  tool_gap: 0.5
+  tool_size: 160.0
+
+contact:
+  friction: 0.15
+  gap_scale: 0.8
+  stiffness_scale: 1.0
+
+solver:
+  config: configs/solver.yaml
+  threads: 8
+  end_time: auto
+  animation_frames: 25
+  time_history_points: 500
+  stop_on_energy_error: true
+  stop_on_negative_volume: true
+
+output:
+  dir: runs/lc2_step_example
+  render: true
+  report: true

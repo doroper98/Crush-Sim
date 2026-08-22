@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Ti-3Al-2.5V (Grade 9)
+E: 105000.0
+nu: 0.33
+rho: 4.48e-09
+sigma_y: 760.0
+uts: 860.0
+K: 112.79448730054995
+n: 0.1
+t_default: 0.3
+law2:
+  A: 760.0
+  B: 112.79448730054995
+  n: 0.1
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 4480.0

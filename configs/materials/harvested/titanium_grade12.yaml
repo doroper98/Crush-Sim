@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Ti Grade 12 (Ti-0.3Mo-0.8Ni)
+E: 105000.0
+nu: 0.32
+rho: 4.5099999999999995e-09
+sigma_y: 345.0
+uts: 480.0
+K: 159.7852891235283
+n: 0.14
+t_default: 0.3
+law2:
+  A: 345.0
+  B: 159.7852891235283
+  n: 0.14
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 4510.0

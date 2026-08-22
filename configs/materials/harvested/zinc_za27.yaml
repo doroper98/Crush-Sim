@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Zinc ZA-27
+E: 78000.0
+nu: 0.32
+rho: 5.0e-09
+sigma_y: 370.0
+uts: 425.0
+K: 59.12013460764826
+n: 0.06
+t_default: 0.5
+law2:
+  A: 370.0
+  B: 59.12013460764826
+  n: 0.06
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 5000.0

@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Epoxy Resin (Thermoset)
+E: 3500.0
+nu: 0.35
+rho: 1.25e-09
+sigma_y: 60.0
+uts: 85.0
+K: 31.049755366315896
+n: 0.18
+t_default: 1.0
+law2:
+  A: 60.0
+  B: 31.049755366315896
+  n: 0.18
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 1250.0

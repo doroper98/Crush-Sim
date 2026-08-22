@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Aluminum 6061-T6
+E: 69000.0
+nu: 0.33
+rho: 2.6999999999999998e-09
+sigma_y: 276.0
+uts: 310.0
+K: 43.25682764233933
+n: 0.2
+t_default: 0.3
+law2:
+  A: 276.0
+  B: 43.25682764233933
+  n: 0.2
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 2700.0

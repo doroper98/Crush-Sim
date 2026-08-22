@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Magnesium AM60B
+E: 45000.0
+nu: 0.35
+rho: 1.8e-09
+sigma_y: 130.0
+uts: 240.0
+K: 139.94856001933312
+n: 0.2
+t_default: 0.5
+law2:
+  A: 130.0
+  B: 139.94856001933312
+  n: 0.2
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 1800.0

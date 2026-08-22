@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: AISI 1045 (Medium Carbon)
+E: 205000.0
+nu: 0.29
+rho: 7.87e-09
+sigma_y: 530.0
+uts: 625.0
+K: 112.44149975359397
+n: 0.14
+t_default: 0.3
+law2:
+  A: 530.0
+  B: 112.44149975359397
+  n: 0.14
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 7870.0

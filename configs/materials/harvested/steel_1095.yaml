@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Spring Steel (AISI 1095)
+E: 205000.0
+nu: 0.29
+rho: 7.849999999999999e-09
+sigma_y: 525.0
+uts: 965.0
+K: 520.7816830692774
+n: 0.14
+t_default: 0.5
+law2:
+  A: 525.0
+  B: 520.7816830692774
+  n: 0.14
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 7850.0

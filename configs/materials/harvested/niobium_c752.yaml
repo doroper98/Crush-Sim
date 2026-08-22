@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Nb C-752 (Nb-10W-2.5Zr)
+E: 115000.0
+nu: 0.38
+rho: 9.18e-09
+sigma_y: 530.0
+uts: 620.0
+K: 101.51503857049495
+n: 0.1
+t_default: 0.3
+law2:
+  A: 530.0
+  B: 101.51503857049495
+  n: 0.1
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 9180.0

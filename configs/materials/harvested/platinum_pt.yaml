@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Platinum (Pt)
+E: 168000.0
+nu: 0.38
+rho: 2.145e-08
+sigma_y: 50.0
+uts: 140.0
+K: 145.67801244906116
+n: 0.4
+t_default: 0.3
+law2:
+  A: 50.0
+  B: 145.67801244906116
+  n: 0.4
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 21450.0

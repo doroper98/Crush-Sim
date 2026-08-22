@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: NiAl Bronze C95500
+E: 118000.0
+nu: 0.32
+rho: 7.53e-09
+sigma_y: 275.0
+uts: 620.0
+K: 466.16405340842687
+n: 0.25
+t_default: 0.3
+law2:
+  A: 275.0
+  B: 466.16405340842687
+  n: 0.25
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 7530.0

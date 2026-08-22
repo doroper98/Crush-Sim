@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Magnesium AZ91D
+E: 45000.0
+nu: 0.35
+rho: 1.81e-09
+sigma_y: 160.0
+uts: 230.0
+K: 83.85517156034916
+n: 0.15
+t_default: 0.3
+law2:
+  A: 160.0
+  B: 83.85517156034916
+  n: 0.15
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 1810.0

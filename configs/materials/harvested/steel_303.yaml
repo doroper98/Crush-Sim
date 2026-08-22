@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: AISI 303 (Free-Machining SS)
+E: 193000.0
+nu: 0.29
+rho: 8.03e-09
+sigma_y: 240.0
+uts: 590.0
+K: 502.2635569582566
+n: 0.3
+t_default: 0.3
+law2:
+  A: 240.0
+  B: 502.2635569582566
+  n: 0.3
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 8030.0

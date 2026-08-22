@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Aluminum 6082-T6
+E: 70000.0
+nu: 0.33
+rho: 2.71e-09
+sigma_y: 260.0
+uts: 310.0
+K: 60.6220479291744
+n: 0.16
+t_default: 0.3
+law2:
+  A: 260.0
+  B: 60.6220479291744
+  n: 0.16
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 2710.0

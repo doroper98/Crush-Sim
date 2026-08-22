@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Magnesium WE43
+E: 44000.0
+nu: 0.27
+rho: 1.84e-09
+sigma_y: 195.0
+uts: 280.0
+K: 108.14206910584832
+n: 0.2
+t_default: 0.3
+law2:
+  A: 195.0
+  B: 108.14206910584832
+  n: 0.2
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 1840.0

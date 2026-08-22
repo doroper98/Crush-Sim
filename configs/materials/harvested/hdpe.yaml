@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: HDPE
+E: 1100.0
+nu: 0.46
+rho: 9.6e-10
+sigma_y: 26.0
+uts: 37.0
+K: 14.863201702877378
+n: 0.25
+t_default: 1.5
+law2:
+  A: 26.0
+  B: 14.863201702877378
+  n: 0.25
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 960.0

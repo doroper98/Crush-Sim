@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: W-Ni-Fe 93% Heavy Alloy
+E: 350000.0
+nu: 0.29
+rho: 1.76e-08
+sigma_y: 600.0
+uts: 920.0
+K: 397.4368686888435
+n: 0.18
+t_default: 0.3
+law2:
+  A: 600.0
+  B: 397.4368686888435
+  n: 0.18
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 17600.0

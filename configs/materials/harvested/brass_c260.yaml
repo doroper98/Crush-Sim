@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Brass C260 (Cartridge)
+E: 110000.0
+nu: 0.35
+rho: 8.53e-09
+sigma_y: 200.0
+uts: 365.0
+K: 273.5854629153502
+n: 0.42
+t_default: 0.3
+law2:
+  A: 200.0
+  B: 273.5854629153502
+  n: 0.42
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 8530.0

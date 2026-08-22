@@ -1,0 +1,20 @@
+# Harvested from legacy-can_crush_sim (FR-10). Data only - no legacy code was reused.
+# Units: mm-s-tonne-N-MPa. UNVERIFIED: literature cross-check required before production use.
+name: Nylon 6/10 (PA610)
+E: 2100.0
+nu: 0.4
+rho: 1.09e-09
+sigma_y: 60.0
+uts: 70.0
+K: 11.011089676246797
+n: 0.08
+t_default: 0.5
+law2:
+  A: 60.0
+  B: 11.011089676246797
+  n: 0.08
+verified: false
+verification: unverified
+source: legacy-can_crush_sim
+unit_system: mm-s-tonne-N-MPa
+rho_source_kg_m3: 1090.0
