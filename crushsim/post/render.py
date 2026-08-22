@@ -13,6 +13,8 @@ rendering with a precise reason instead of crashing.
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
@@ -74,8 +76,30 @@ def _force_offscreen() -> None:
     os.environ.setdefault("PYVISTA_USE_IPYVTK", "false")
 
 
+_RENDER_PROBE_SCRIPT = """
+import os
+os.environ.setdefault("PYVISTA_OFF_SCREEN", "true")
+os.environ.setdefault("PYVISTA_USE_IPYVTK", "false")
+import pyvista as pv
+pv.OFF_SCREEN = True
+plotter = pv.Plotter(off_screen=True, window_size=(64, 64))
+plotter.add_mesh(pv.Sphere())
+image = plotter.screenshot(return_img=True)
+plotter.close()
+assert image is not None and getattr(image, "size", 0) > 0, "empty image"
+print("CRUSHSIM_RENDER_OK")
+"""
+"""Probe executed in a child interpreter by :func:`rendering_available`."""
+
+
 def rendering_available() -> tuple[bool, str]:
     """Probe whether an offscreen render actually works here.
+
+    The probe runs in a subprocess: on machines without a usable OpenGL stack
+    VTK can die with a native crash (e.g. an access violation on Windows),
+    which no in-process ``except`` can contain. Isolating it keeps ``csim
+    doctor`` and the test suite alive and turns the crash into a plain
+    ``(False, reason)``.
 
     Returns:
         ``(True, "...")`` when a test render succeeded, otherwise
@@ -83,24 +107,25 @@ def rendering_available() -> tuple[bool, str]:
     """
     _force_offscreen()
     try:
-        import pyvista as pv  # noqa: PLC0415
-    except ImportError as exc:
-        return False, f"pyvista is not importable: {exc}"
-    try:
-        pv.OFF_SCREEN = True
-        plotter = pv.Plotter(off_screen=True, window_size=(64, 64))
-        plotter.add_mesh(pv.Sphere())
-        plotter.show(auto_close=False)
-        image = plotter.screenshot(return_img=True)
-        plotter.close()
-    except Exception as exc:  # noqa: BLE001 - any VTK/OpenGL failure means "no"
-        return False, (
-            f"offscreen render failed: {exc}. Install a software OpenGL stack "
-            "(libosmesa6) or run under xvfb-run."
+        proc = subprocess.run(  # noqa: S603 - fixed argv, our own interpreter
+            [sys.executable, "-c", _RENDER_PROBE_SCRIPT],
+            capture_output=True,
+            text=True,
+            timeout=180,
         )
-    if image is None or getattr(image, "size", 0) == 0:
-        return False, "offscreen render produced an empty image"
-    return True, "offscreen rendering works"
+    except subprocess.TimeoutExpired:
+        return False, "offscreen render probe timed out after 180 s"
+    except OSError as exc:
+        return False, f"could not start the render probe: {exc}"
+    if proc.returncode == 0 and "CRUSHSIM_RENDER_OK" in proc.stdout:
+        return True, "offscreen rendering works"
+    detail_lines = (proc.stderr or proc.stdout).strip().splitlines()
+    detail = detail_lines[-1] if detail_lines else f"exit code {proc.returncode}"
+    return False, (
+        f"offscreen render failed: {detail}. Install a software OpenGL stack "
+        "(Linux: libosmesa6, or run under xvfb-run; Windows: OSMesa from "
+        "mesa-dist-win on PATH)."
+    )
 
 
 def ffmpeg_available() -> tuple[bool, str]:

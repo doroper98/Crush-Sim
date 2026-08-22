@@ -1,8 +1,9 @@
 name: CI
 
+# push is limited to main so branches with an open PR run once, not twice.
 on:
   push:
-    branches: ["**"]
+    branches: ["main"]
   pull_request:
   workflow_dispatch:
 
