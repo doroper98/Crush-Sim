@@ -73,11 +73,15 @@ class ReportContext:
 
 
 def _relative(path: Path, base: Path) -> str:
-    """Best-effort relative link from the report to an artefact."""
+    """Best-effort relative link from the report to an artefact.
+
+    Always POSIX-style: these strings become href/src values in the HTML
+    report, and URLs use forward slashes on every platform.
+    """
     try:
-        return str(path.resolve().relative_to(base.resolve()))
+        return path.resolve().relative_to(base.resolve()).as_posix()
     except ValueError:
-        return str(path)
+        return path.as_posix()
 
 
 def build_context(
