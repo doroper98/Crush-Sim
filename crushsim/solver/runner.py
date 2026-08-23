@@ -188,7 +188,11 @@ def _solver_env(paths: SolverPaths, threads: int) -> dict[str, str]:
     """
     env = dict(os.environ)
     env.update(paths.env)
-    env["OMP_NUM_THREADS"] = str(max(1, threads))
+    # Cap at the machine's core count: oversubscribing the GNU OpenMP build
+    # has no upside and has been observed to trigger sporadic engine
+    # segfaults mid-run under contention.
+    cpu_cap = os.cpu_count() or 1
+    env["OMP_NUM_THREADS"] = str(max(1, min(threads, cpu_cap)))
     # Thread-stack size for both OpenMP runtimes (Intel and GNU builds).
     env.setdefault("KMP_STACKSIZE", "400m")
     env.setdefault("OMP_STACKSIZE", "400m")
@@ -338,6 +342,9 @@ def run_solver(
             raise SolverError(f"{label} deck not found: {deck}")
     run_dir = starter_path.parent
     paths = load_solver_config(solver_config)
+
+    # See _solver_env: oversubscription destabilises the engine.
+    threads = max(1, min(threads, os.cpu_count() or 1))
 
     starter_exe = resolve_executable(paths, "starter")
     engine_exe = resolve_executable(paths, "engine")

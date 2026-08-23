@@ -1,0 +1,62 @@
+# B-2 - elastic ring lateral stiffness benchmark (spec §8).
+#
+# The can shell is compressed between two flat rigid platens (moving jig plane
+# in front, fixed plane behind) by a SMALL stroke so the initial response stays
+# elastic. The measured stiffness (slope of the first 2% of the curve) is
+# compared against thin-ring curved-beam theory (Roark):
+#     k = E' * I / ((pi/4 - 2/pi) * R^3),  E' = E / (1 - nu^2)
+# bench/test_benchmarks.py::test_b2_lateral_stiffness_matches_curved_beam_theory
+# reads runs/bench_b2/force_displacement.csv (CRUSHSIM_BENCH_B2 overrides).
+
+name: bench_b2
+load_case: LC-2
+description: >-
+  B-2 benchmark: elastic lateral compression of the reference can shell
+  (R33 x H115 x t0.1) between flat platens; small stroke, slow drive.
+
+geometry:
+  kind: parametric_can
+  radius: 33.0
+  height: 115.0
+  thickness: 0.1
+  closed_bottom: false
+  closed_top: false
+
+material:
+  key: aluminum_3003
+
+mesh:
+  target_size: 1.2
+  recombine: true
+  curvature_points: 12
+
+loading:
+  tool: jig_plane
+  direction: [1.0, 0.0, 0.0]
+  stroke: 2.0                   # mm - small; the fit uses the first 2% (0.04 mm)
+  velocity: 0.2                 # m/s - slow so the elastic fit is clean
+  ramp_fraction: 0.1
+  tool_gap: 0.5
+  tool_size: 130.0
+  support: jig_plane            # flat platen opposite the drive (ring theory
+                                # assumes diametrically opposed loads, not a V)
+  support_size: 130.0
+
+contact:
+  friction: 0.15
+  gap_scale: 0.8
+  stiffness_scale: 1.0
+
+solver:
+  config: configs/solver.yaml
+  threads: 8
+  end_time: auto
+  animation_frames: 10
+  time_history_points: 500
+  stop_on_energy_error: true
+  stop_on_negative_volume: true
+
+output:
+  dir: runs/bench_b2
+  render: false
+  report: true

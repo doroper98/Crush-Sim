@@ -13,6 +13,7 @@ Reported quantities (spec §4 FR-06):
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -74,6 +75,40 @@ def _match_column(columns: Iterable[str], keys: tuple[str, ...]) -> str | None:
             if key in norm:
                 return col
     return None
+
+
+_VAR_SUFFIX = re.compile(r"^(?P<base>.*\bvar\s+)(?P<num>\d+)\s*$")
+
+
+def _dominant_component(frame: pd.DataFrame, column: str) -> str:
+    """Pick the drive-axis component of an anonymised ``var NN`` TH group.
+
+    ``th_to_csv`` names a group's channels identically except for a trailing
+    variable number, and the first three are the X/Y/Z components (DX/DY/DZ
+    for a node group, FX/FY/FZ for a kinematic one). Name matching alone
+    always lands on X, which is wrong for a Z-driven case, so among those
+    three siblings the one with the largest data range - the loading axis -
+    wins. Columns without the ``var NN`` suffix are returned unchanged.
+    """
+    match = _VAR_SUFFIX.match(column)
+    if match is None:
+        return column
+    base = match.group("base")
+    siblings: list[tuple[int, str]] = []
+    for col in frame.columns:
+        m = _VAR_SUFFIX.match(str(col))
+        if m is not None and m.group("base") == base:
+            siblings.append((int(m.group("num")), str(col)))
+    siblings.sort()
+    components = siblings[:3]
+    if len(components) < 2:
+        return column
+
+    def span(col: str) -> float:
+        series = pd.to_numeric(frame[col], errors="coerce").dropna()
+        return float(series.max() - series.min()) if not series.empty else 0.0
+
+    return max(components, key=lambda item: span(item[1]))[1]
 
 
 @dataclass(slots=True)
@@ -188,6 +223,10 @@ def extract_force_displacement(
     time_col = time_column or _match_column(columns, _TIME_KEYS)
     disp_col = displacement_column or _match_column(columns, _DISPLACEMENT_KEYS)
     force_col = force_column or _match_column(columns, _FORCE_KEYS)
+    if displacement_column is None and disp_col is not None:
+        disp_col = _dominant_component(frame, disp_col)
+    if force_column is None and force_col is not None:
+        force_col = _dominant_component(frame, force_col)
 
     missing = [
         label
@@ -205,12 +244,40 @@ def extract_force_displacement(
         {
             "time": pd.to_numeric(frame[time_col], errors="coerce"),
             "displacement": pd.to_numeric(frame[disp_col], errors="coerce").abs(),
-            "force": pd.to_numeric(frame[force_col], errors="coerce").abs(),
+            "force": pd.to_numeric(frame[force_col], errors="coerce"),
         }
     ).dropna()
     if out.empty:
         raise PostProcessError("No numeric rows remained after cleaning the time-history CSV")
-    return out.sort_values("time").reset_index(drop=True)
+    out = out.sort_values("time").reset_index(drop=True)
+
+    # OpenRadioss /TH kinematic-entity "force" channels (RBODY, INTER, RWALL)
+    # accumulate force x dt every cycle and are written UN-normalised, so the
+    # stored series is the cumulative impulse integral(F dt) - confirmed in the
+    # engine source (rgbodfp.F: FSAV += F*DT1; thkin.F writes FSAV raw) and
+    # against ring theory (B-2). The physical force is its time derivative.
+    force_norm = _normalise(force_col)
+    is_kinematic_th = "var" in force_norm and any(
+        key in force_norm for key in ("toolcontact", "rbody", "inter", "rwall")
+    )
+    if is_kinematic_th:
+        t = out["time"].to_numpy()
+        impulse = out["force"].to_numpy()
+        force = np.gradient(impulse, t)
+        # Smooth: the derivative amplifies elastic ringing and sampling noise.
+        out["force"] = pd.Series(force).rolling(window=11, center=True, min_periods=1).mean()
+
+    out["force"] = out["force"].abs()
+
+    # Re-zero displacement at contact onset: the tool starts with a stand-off
+    # gap, and dent depth / stiffness are measured from first contact.
+    peak = float(out["force"].max())
+    if peak > 0.0:
+        engaged = out.index[out["force"] > 0.02 * peak]
+        if len(engaged) > 0 and engaged[0] > 0:
+            d0 = float(out.loc[engaged[0], "displacement"])
+            out["displacement"] = (out["displacement"] - d0).clip(lower=0.0)
+    return out
 
 
 def compute_metrics(

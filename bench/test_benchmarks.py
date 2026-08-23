@@ -213,15 +213,29 @@ def test_b1_mean_crush_load_matches_alexander(b1_result: Path) -> None:
 
 @pytest.mark.bench
 def test_b2_lateral_stiffness_matches_curved_beam_theory(b2_result: Path) -> None:
-    """B-2: simulated elastic lateral stiffness within +/-10% of ring theory."""
+    """B-2: simulated elastic lateral stiffness within +/-10% of ring theory.
+
+    The stiffness is measured from the strain energy, ``k = 2 IE / delta^2``:
+    exact for elastic quasi-statics and immune to the undamped contact ringing
+    that swamps a small-deflection force-curve fit (the explicit run stores an
+    elastic oscillation of the same order as the static trend). ``delta`` is
+    the contact-re-zeroed final deflection from the extracted curve; ``IE``
+    comes from the run's converted time-history next to the curve file.
+    """
     curve = extract_force_displacement(read_th_csv(b2_result))
-    # Take the initial, still-elastic part of the curve: the first 2% of stroke.
-    elastic = curve[curve["displacement"] <= 0.02 * curve["displacement"].max()]
-    assert len(elastic) >= 3, "Not enough points in the elastic range to fit a stiffness"
-    slope = float(
-        (elastic["force"].iloc[-1] - elastic["force"].iloc[0])
-        / (elastic["displacement"].iloc[-1] - elastic["displacement"].iloc[0])
+    delta = float(curve["displacement"].max())
+    assert delta > 0.5, f"B-2 run barely engaged: max deflection {delta:.3f} mm"
+
+    th_candidates = sorted(b2_result.parent.glob("deck/*T01.csv"))
+    assert th_candidates, (
+        f"No converted time-history (deck/*T01.csv) found next to {b2_result}; "
+        "the internal-energy stiffness measure needs it."
     )
+    th = read_th_csv(th_candidates[-1])
+    internal = float(th["INTERNAL ENERGY"].iloc[-1])
+    assert internal > 0.0, "No internal energy recorded - the ring did not deform"
+
+    slope = 2.0 * internal / delta**2
     reference = ring_lateral_stiffness(
         AL3003_E_MPA,
         CAN_THICKNESS_MM,
