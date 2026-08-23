@@ -205,12 +205,40 @@ def extract_force_displacement(
         {
             "time": pd.to_numeric(frame[time_col], errors="coerce"),
             "displacement": pd.to_numeric(frame[disp_col], errors="coerce").abs(),
-            "force": pd.to_numeric(frame[force_col], errors="coerce").abs(),
+            "force": pd.to_numeric(frame[force_col], errors="coerce"),
         }
     ).dropna()
     if out.empty:
         raise PostProcessError("No numeric rows remained after cleaning the time-history CSV")
-    return out.sort_values("time").reset_index(drop=True)
+    out = out.sort_values("time").reset_index(drop=True)
+
+    # OpenRadioss /TH kinematic-entity "force" channels (RBODY, INTER, RWALL)
+    # accumulate force x dt every cycle and are written UN-normalised, so the
+    # stored series is the cumulative impulse integral(F dt) - confirmed in the
+    # engine source (rgbodfp.F: FSAV += F*DT1; thkin.F writes FSAV raw) and
+    # against ring theory (B-2). The physical force is its time derivative.
+    force_norm = _normalise(force_col)
+    is_kinematic_th = "var" in force_norm and any(
+        key in force_norm for key in ("toolcontact", "rbody", "inter", "rwall")
+    )
+    if is_kinematic_th:
+        t = out["time"].to_numpy()
+        impulse = out["force"].to_numpy()
+        force = np.gradient(impulse, t)
+        # Smooth: the derivative amplifies elastic ringing and sampling noise.
+        out["force"] = pd.Series(force).rolling(window=11, center=True, min_periods=1).mean()
+
+    out["force"] = out["force"].abs()
+
+    # Re-zero displacement at contact onset: the tool starts with a stand-off
+    # gap, and dent depth / stiffness are measured from first contact.
+    peak = float(out["force"].max())
+    if peak > 0.0:
+        engaged = out.index[out["force"] > 0.02 * peak]
+        if len(engaged) > 0 and engaged[0] > 0:
+            d0 = float(out.loc[engaged[0], "displacement"])
+            out["displacement"] = (out["displacement"] - d0).clip(lower=0.0)
+    return out
 
 
 def compute_metrics(
