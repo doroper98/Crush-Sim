@@ -44,6 +44,14 @@ _GMSH_TRIANGLE: int = 2
 _GMSH_QUAD: int = 3
 """Gmsh element type id of the 4-node quadrangle."""
 
+STEP_HEAL_TOLERANCE_MM: float = 0.5
+"""OCC shape-healing tolerance for imported CAD: sliver faces and edges below
+this size are sewn/merged before meshing. Real CATIA exports carry sub-0.1 mm
+fillet bands that otherwise force sliver elements (min SICN ~0.02)."""
+
+STEP_MESH_SMOOTHING_STEPS: int = 25
+"""Laplacian smoothing passes for meshes on imported (healed) CAD faces."""
+
 
 @dataclass(frozen=True, slots=True)
 class MeshQuality:
@@ -411,6 +419,8 @@ def _mesh_once(
     recombine: bool,
     curvature_points: int,
     out_path: Path | None,
+    finish: Any | None = None,
+    option_overrides: dict[str, float] | None = None,
 ) -> tuple[ShellMesh, MeshQuality]:
     """Run one build-and-mesh pass and return the mesh with its quality stats."""
     with gmsh_session() as gmsh:
@@ -424,12 +434,16 @@ def _mesh_once(
             recombine=recombine,
             curvature_points=curvature_points,
         )
+        for option, value in (option_overrides or {}).items():
+            gmsh.option.setNumber(option, float(value))
         gmsh.option.setNumber("Mesh.MeshSizeFactor", 1.0)
         gmsh.model.mesh.setSize(gmsh.model.getEntities(0), float(target_size))
         try:
             gmsh.model.mesh.generate(2)
         except Exception as exc:  # pragma: no cover - gmsh internal failure
             raise MeshingError(f"Gmsh failed to mesh {name!r}: {exc}") from exc
+        if finish is not None:
+            finish(gmsh)
         mesh = _extract_shell_mesh(gmsh, name=name, source=source)
         quality = _compute_quality(gmsh, mesh)
         if out_path is not None:
@@ -451,6 +465,8 @@ def _mesh_with_gate(
     out_path: str | Path | None = None,
     max_attempts: int = MESH_REMESH_MAX_ATTEMPTS,
     enforce: bool = True,
+    finish: Any | None = None,
+    option_overrides: dict[str, float] | None = None,
 ) -> MeshResult:
     """Mesh, gate, and automatically remesh with a smaller target on failure.
 
@@ -473,6 +489,8 @@ def _mesh_with_gate(
             recombine=recombine,
             curvature_points=curvature_points,
             out_path=path,
+            finish=finish,
+            option_overrides=option_overrides,
         )
         gate = evaluate_mesh_gate(
             min_sicn=quality.min_sicn,
@@ -596,11 +614,35 @@ def mesh_step_surfaces(
             occ.importShapes(str(p))
         except Exception as exc:
             raise MeshingError(f"Gmsh/OCC could not import STEP file {p}: {exc}") from exc
+        # Real CAD exports carry sliver faces and micro-fillets that force
+        # near-degenerate elements (measured: min SICN 0.02 -> 0.25 on a CATIA
+        # can export). Healing is best-effort: an un-healable shape still
+        # meshes and the §7 gate judges the result.
+        try:
+            occ.healShapes(
+                tolerance=STEP_HEAL_TOLERANCE_MM,
+                fixDegenerated=True,
+                fixSmallEdges=True,
+                fixSmallFaces=True,
+                sewFaces=True,
+                makeSolids=False,
+            )
+        except Exception:  # noqa: BLE001 - healing must never block the import
+            pass
         occ.synchronize()
         # Solids are never volume-meshed: generate(2) touches surfaces only, so
         # the result is the outer skin as shells (FR-02).
         if not gmsh.model.getEntities(2):
             raise MeshingError(f"STEP file {p} contains no meshable surfaces")
+
+    def finish(gmsh: Any) -> None:
+        # Node-relocation passes lift the healed fillet bands' element quality
+        # without touching connectivity; failures degrade to the raw mesh.
+        for method in ("Laplace2D", "Relocate2D"):
+            try:
+                gmsh.model.mesh.optimize(method)
+            except Exception:  # noqa: BLE001 - optimisation is best-effort
+                return
 
     return _mesh_with_gate(
         build,
@@ -614,6 +656,15 @@ def mesh_step_surfaces(
         out_path=out_path,
         max_attempts=max_attempts,
         enforce=enforce,
+        finish=finish,
+        # Healed CAD keeps narrow fillet bands: sizes must spread from their
+        # boundaries into the faces (extend=1) or the bands mesh as slivers,
+        # and smoothing lifts the transition elements (measured on a CATIA
+        # can export: min SICN 0.02 -> 0.26 with these two).
+        option_overrides={
+            "Mesh.MeshSizeExtendFromBoundary": 1,
+            "Mesh.Smoothing": STEP_MESH_SMOOTHING_STEPS,
+        },
     )
 
 
