@@ -93,13 +93,20 @@ class PipelineResult:
         }
 
 
-def build_geometry(case: CaseConfig) -> GeometryStage:
+def build_geometry(case: CaseConfig, *, can_override: CanShell | None = None) -> GeometryStage:
     """Build the can and the reference tools for a case (FR-02).
+
+    Args:
+        case: The loaded case configuration.
+        can_override: Reference can used to size and place the tools instead
+            of the case's parametric dimensions. The STEP path passes the
+            proxy derived from the imported part's seated bounding box here,
+            so tools wrap the real shape even when it is modelled lying down.
 
     Raises:
         GeometryError: If the case geometry is invalid.
     """
-    can = make_can(
+    can = can_override or make_can(
         case.geometry.radius,
         case.geometry.height,
         case.geometry.thickness,
@@ -145,6 +152,21 @@ def build_geometry(case: CaseConfig) -> GeometryStage:
     )
 
 
+def _seated_can_proxy(mesh: Any, case: CaseConfig) -> CanShell:
+    """Derive the tool-placement reference can from a seated STEP mesh.
+
+    The tools (drive tool, floor, support) are sized and placed from a
+    :class:`CanShell`; for imported geometry that reference must describe the
+    part *as seated*, not the case's nominal radius/height - a can modelled
+    lying down is wider than it is tall. The proxy takes the seated bounding
+    box: radius from the larger in-plane extent, height from the Z extent.
+    """
+    lo, hi = mesh.bounding_box()
+    radius = max(hi[0] - lo[0], hi[1] - lo[1]) / 2.0
+    height = hi[2] - lo[2]
+    return make_can(radius, height, case.geometry.thickness)
+
+
 def build_meshes(
     case: CaseConfig,
     geometry: GeometryStage,
@@ -153,6 +175,12 @@ def build_meshes(
     enforce_gate: bool = True,
 ) -> dict[str, MeshResult]:
     """Mesh the can, the floor and the reference tool (FR-03).
+
+    For an imported STEP can the mesh is seated on the floor plane first
+    (:meth:`ShellMesh.seat_on_floor`) and the tools in ``geometry`` are
+    rebuilt around the seated bounding box, mutating the passed stage so the
+    report reflects what was actually simulated. The ``can.msh`` file keeps
+    the source file's coordinates; the deck carries the seated ones.
 
     Raises:
         GateFailure: If the can mesh fails the §7 gate and ``enforce_gate``.
@@ -174,6 +202,12 @@ def build_meshes(
             enforce=enforce_gate,
             name="CAN",
         )
+        can_mesh.mesh.seat_on_floor()
+        seated = build_geometry(case, can_override=_seated_can_proxy(can_mesh.mesh, case))
+        geometry.can = seated.can
+        geometry.tool = seated.tool
+        geometry.floor = seated.floor
+        geometry.support = seated.support
     else:
         can_mesh = mesh_parametric_can(
             geometry.can,
@@ -281,6 +315,17 @@ def run_pipeline(
             f"min SICN {mesh_result.quality.min_sicn:.3f}, "
             f"gate {'PASS' if mesh_result.gate.passed else 'FAIL'}"
         )
+    seated_offset = result.meshes["can"].mesh.metadata.get("seated_offset_mm")
+    if seated_offset is not None:
+        lo, hi = result.meshes["can"].mesh.bounding_box()
+        note = (
+            "STEP geometry auto-seated on the floor: translated by "
+            f"({seated_offset[0]:.2f}, {seated_offset[1]:.2f}, {seated_offset[2]:.2f}) mm; "
+            f"seated extents {hi[0] - lo[0]:.1f} x {hi[1] - lo[1]:.1f} x "
+            f"{hi[2] - lo[2]:.1f} mm, tools placed around them."
+        )
+        result.notices.append(note)
+        emit(f"  {note}")
 
     emit(f"[3/{total}] deck")
     solver_cfg = Path(solver_config) if solver_config else case.solver.config

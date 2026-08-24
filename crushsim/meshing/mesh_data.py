@@ -106,6 +106,26 @@ class ShellMesh:
         """Translate all nodes in place by ``offset`` [mm]."""
         self.nodes = self.nodes + np.asarray(offset, dtype=float).reshape(1, 3)
 
+    def seat_on_floor(self) -> tuple[float, float, float]:
+        """Move the mesh so it rests centred on the floor plane (in place).
+
+        Imported CAD geometry arrives in the coordinates of its source file -
+        anywhere in space, in any orientation. The pipeline's convention
+        (shared with the parametric can) is: bounding box centred on the Z
+        axis, lowest point at Z = 0, with the floor plate just below. This
+        translates the mesh into that convention without rotating it - the
+        modelled orientation (standing, lying, tilted) is respected.
+
+        Returns:
+            The applied ``(dx, dy, dz)`` offset [mm]; also recorded in
+            ``metadata["seated_offset_mm"]``.
+        """
+        lo, hi = self.bounding_box()
+        offset = (-(lo[0] + hi[0]) / 2.0, -(lo[1] + hi[1]) / 2.0, -lo[2])
+        self.translate(offset)
+        self.metadata["seated_offset_mm"] = [round(c, 6) for c in offset]
+        return offset
+
     def renumber(self, node_offset: int) -> "ShellMesh":
         """Return a copy whose node ids start at ``node_offset + 1``.
 
