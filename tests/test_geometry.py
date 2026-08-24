@@ -69,11 +69,15 @@ def test_radial_tool_is_placed_beside_the_can() -> None:
     assert tool.origin[2] == pytest.approx(57.5)
 
 
-def test_indenter_offset_includes_its_radius() -> None:
+def test_round_tool_origin_sits_gap_off_the_surface() -> None:
+    """The builders place the tool's nearest feature (the sphere's and the
+    cylinder's front) at the origin, so the origin itself sits surface+gap off
+    the can - adding the tool radius would leave that much dead air."""
     can = make_can(33.0, 115.0, 0.1)
-    tool = make_tool(can, "indenter", (1.0, 0.0, 0.0), gap=0.5, indenter_radius=10.0)
-    assert tool.origin[0] == pytest.approx(-(33.0 + 10.0 + 0.5))
-    assert tool.radius == pytest.approx(10.0)
+    for kind in ("indenter", "cylinder"):
+        tool = make_tool(can, kind, (1.0, 0.0, 0.0), gap=0.5, indenter_radius=10.0)
+        assert tool.origin[0] == pytest.approx(-(33.0 + 0.5))
+        assert tool.radius == pytest.approx(10.0)
 
 
 def test_tool_direction_is_normalised() -> None:

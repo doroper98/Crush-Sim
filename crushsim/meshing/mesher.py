@@ -480,6 +480,30 @@ def _build_tool_surfaces(
         surfaces = [
             tag for dim, tag in gmsh.model.getBoundary([(3, sphere)], oriented=False) if dim == 2
         ]
+    elif tool.kind == "cylinder":
+        # Horizontal pipe roller: axis perpendicular to the drive direction and
+        # level with the ground, length = tool.size, radius = tool.radius.
+        radius = tool.radius if tool.radius > 0.0 else tool.size * 0.25
+        z = np.array([0.0, 0.0, 1.0])
+        axis = np.cross(z, d)
+        axis_norm = float(np.linalg.norm(axis))
+        if axis_norm < 1e-9:  # axial drive: any horizontal axis works
+            axis = np.array([1.0, 0.0, 0.0])
+        else:
+            axis /= axis_norm
+        centre = origin - d * radius
+        start = centre - axis * (tool.size * 0.5)
+        span = axis * tool.size
+        pipe = occ.addCylinder(
+            float(start[0]), float(start[1]), float(start[2]),
+            float(span[0]), float(span[1]), float(span[2]),
+            radius,
+        )
+        occ.synchronize()
+        # Same rule as the indenter: the solid stays, only its skin is meshed.
+        surfaces = [
+            tag for dim, tag in gmsh.model.getBoundary([(3, pipe)], oriented=False) if dim == 2
+        ]
     else:
         raise MeshingError(
             f"Tool kind {tool.kind!r} has no parametric builder; "
