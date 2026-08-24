@@ -414,7 +414,33 @@ def _add_plate(
     return occ.addPlaneSurface([loop])
 
 
-def _build_tool_surfaces(gmsh: Any, tool: ToolShape, *, can_height: float) -> list[int]:
+def _structure_plate_faces(gmsh: Any, surfaces: list[int], target_size: float) -> None:
+    """Mesh rectangular plane faces as structured quad grids.
+
+    A rigid plate needs no particular mesh for the physics (/RBODY), but the
+    unstructured mesher's fronts meet mid-plate and draw seam lines across
+    every render; a transfinite grid keeps the wireframe (and the contact
+    segments) uniform. Non-planar or non-four-sided faces are left alone.
+    """
+    occ = gmsh.model.occ
+    for face in surfaces:
+        if gmsh.model.getType(2, face) != "Plane":
+            continue
+        curves = gmsh.model.getBoundary([(2, face)], oriented=False)
+        if len(curves) != 4:
+            continue
+        for _cdim, ctag in curves:
+            length = float(occ.getMass(1, abs(ctag)))
+            gmsh.model.mesh.setTransfiniteCurve(
+                abs(ctag), max(2, int(round(length / target_size)) + 1)
+            )
+        gmsh.model.mesh.setTransfiniteSurface(face)
+        gmsh.model.mesh.setRecombine(2, face)
+
+
+def _build_tool_surfaces(
+    gmsh: Any, tool: ToolShape, *, can_height: float, target_size: float
+) -> list[int]:
     """Build the reference-tool surface(s) in the current model.
 
     Raises:
@@ -462,6 +488,7 @@ def _build_tool_surfaces(gmsh: Any, tool: ToolShape, *, can_height: float) -> li
     occ.synchronize()
     if not surfaces:
         raise MeshingError(f"Failed to build tool surfaces for kind {tool.kind!r}")
+    _structure_plate_faces(gmsh, surfaces, target_size)
     return surfaces
 
 
@@ -903,8 +930,8 @@ def mesh_tool(
             name=name,
         )
 
-    def build(gmsh: Any, _target_size: float) -> None:
-        _build_tool_surfaces(gmsh, tool, can_height=can_height)
+    def build(gmsh: Any, target_size: float) -> None:
+        _build_tool_surfaces(gmsh, tool, can_height=can_height, target_size=target_size)
 
     return _mesh_with_gate(
         build,
