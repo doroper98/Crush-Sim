@@ -238,11 +238,13 @@ def make_tool(
         contact_z = can.height if unit[2] < 0.0 else 0.0
         origin = (0.0, 0.0, contact_z - unit[2] * gap)
     else:
-        # Radial tool (LC-2/LC-3): sits off the side wall at mid height.
-        # For the V-block the apex is the nearest feature (the 45-degree arms
-        # trail away from the can), so the same surface+gap offset applies.
-        surface = can.radius + (indenter_radius if kind in ("indenter", "cylinder") else 0.0)
-        offset = surface + gap
+        # Radial tool (LC-2/LC-3): sits off the side wall at mid height. Every
+        # builder places the tool's nearest feature at the origin (the V-block
+        # apex, the plate plane, the sphere's and the cylinder's front), so the
+        # offset is the can surface plus the gap - adding the tool radius here
+        # would double-count the builder's own setback and leave the tool
+        # radius' worth of dead air in front of the can.
+        offset = can.radius + gap
         origin = (-unit[0] * offset, -unit[1] * offset, 0.5 * can.height)
 
     return ToolShape(
