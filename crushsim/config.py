@@ -270,7 +270,7 @@ class MeshConfig:
 class LoadingConfig:
     """Reference-tool drive definition (spec §5.3)."""
 
-    tool: Literal["platen", "jig_plane", "v_block", "indenter", "step"] = "platen"
+    tool: Literal["platen", "jig_plane", "v_block", "indenter", "cylinder", "step"] = "platen"
     direction: tuple[float, float, float] = (0.0, 0.0, -1.0)
     stroke: float = 40.0
     """Total imposed displacement magnitude [mm]."""

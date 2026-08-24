@@ -17,7 +17,7 @@ from typing import Literal
 from ..errors import GeometryError
 from ..units import UNIT_SYSTEM
 
-ToolKind = Literal["platen", "jig_plane", "v_block", "indenter", "step"]
+ToolKind = Literal["platen", "jig_plane", "v_block", "indenter", "cylinder", "step"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,7 +217,8 @@ def make_tool(
         direction: Drive direction (need not be normalised).
         gap: Initial clearance between tool and can surface [mm].
         size: Characteristic tool size [mm]; defaults to 1.5x the can diameter.
-        indenter_radius: Hemispherical indenter radius [mm] for LC-3.
+        indenter_radius: Hemispherical indenter radius [mm] for LC-3; also the
+            pipe radius for the horizontal ``cylinder`` roller.
         step_path: Real-shape jig STEP file for ``kind == 'step'``.
 
     Raises:
@@ -240,7 +241,7 @@ def make_tool(
         # Radial tool (LC-2/LC-3): sits off the side wall at mid height.
         # For the V-block the apex is the nearest feature (the 45-degree arms
         # trail away from the can), so the same surface+gap offset applies.
-        surface = can.radius + (indenter_radius if kind == "indenter" else 0.0)
+        surface = can.radius + (indenter_radius if kind in ("indenter", "cylinder") else 0.0)
         offset = surface + gap
         origin = (-unit[0] * offset, -unit[1] * offset, 0.5 * can.height)
 
@@ -249,6 +250,6 @@ def make_tool(
         origin=origin,
         direction=unit,
         size=tool_size,
-        radius=indenter_radius if kind == "indenter" else 0.0,
+        radius=indenter_radius if kind in ("indenter", "cylinder") else 0.0,
         step_path=step_path,
     )
