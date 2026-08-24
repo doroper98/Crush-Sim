@@ -33,7 +33,7 @@ from analytic import (
     ring_second_moment,
 )
 from crushsim.post.curves import compute_metrics, extract_force_displacement, read_th_csv
-from crushsim.units import BENCH_B1_TOLERANCE, BENCH_B2_TOLERANCE
+from crushsim.units import BENCH_B1_TOLERANCE, BENCH_B2_TOLERANCE, BENCH_B3_TOLERANCE
 
 # Reference specimen: the beverage-can-like shell used by configs/cases.
 CAN_RADIUS_MM = 33.0
@@ -252,3 +252,32 @@ def test_b2_lateral_stiffness_matches_curved_beam_theory(b2_result: Path) -> Non
         unit=" N/mm",
     )
     assert verdict.passed, verdict.describe()
+
+
+@pytest.mark.bench
+def test_b3_peak_load_converges_with_mesh(b3_results: dict[str, Path]) -> None:
+    """B-3: peak load differs by <= 5% between the 1.0 and 0.5 mm meshes.
+
+    Spec §8 sweeps the same axial crush case at 2.0 / 1.0 / 0.5 mm; the fine
+    mesh is the reference, and the medium mesh must land within 5% of it for
+    the production 1.2 mm default to count as mesh-converged. The coarse point
+    is reported for the trend but carries no tolerance.
+    """
+    peaks = {
+        label: compute_metrics(extract_force_displacement(read_th_csv(path))).peak_load
+        for label, path in b3_results.items()
+    }
+    for label, peak in peaks.items():
+        assert peak > 0.0, f"B-3 {label} run recorded no load"
+
+    verdict = BenchmarkVerdict(
+        benchmark="B-3",
+        measured=peaks["medium"],
+        reference=peaks["fine"],
+        tolerance=BENCH_B3_TOLERANCE,
+        unit=" N",
+    )
+    coarse_drift = relative_error(peaks["coarse"], peaks["fine"])
+    assert verdict.passed, (
+        f"{verdict.describe()} (coarse 2.0 mm point drifts {coarse_drift:+.1%})"
+    )

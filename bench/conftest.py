@@ -21,6 +21,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_RESULT_PATHS: dict[str, Path] = {
     "B1": REPO_ROOT / "runs" / "bench_b1" / "force_displacement.csv",
     "B2": REPO_ROOT / "runs" / "bench_b2" / "force_displacement.csv",
+    "B3_COARSE": REPO_ROOT / "runs" / "bench_b3_coarse" / "force_displacement.csv",
+    "B3_MEDIUM": REPO_ROOT / "runs" / "bench_b3_medium" / "force_displacement.csv",
+    "B3_FINE": REPO_ROOT / "runs" / "bench_b3_fine" / "force_displacement.csv",
 }
 """Conventional locations of each benchmark's converted force-displacement CSV."""
 
@@ -53,3 +56,16 @@ def b1_result() -> Path:
 def b2_result() -> Path:
     """Converted force-displacement CSV of the B-2 ring compression run."""
     return _require("B2")
+
+
+@pytest.fixture
+def b3_results() -> dict[str, Path]:
+    """The B-3 mesh-sweep curves keyed ``coarse`` / ``medium`` / ``fine``.
+
+    The convergence verdict needs the whole sweep, so the test skips unless
+    all three runs exist.
+    """
+    return {
+        label: _require(f"B3_{label.upper()}")
+        for label in ("coarse", "medium", "fine")
+    }
