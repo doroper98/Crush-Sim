@@ -17,6 +17,7 @@ import yaml
 from crushsim.errors import PostProcessError
 from crushsim.post.convert import convert_animation, convert_time_history, find_result_files
 from crushsim.post.curves import (
+    balance_energy_error,
     compute_metrics,
     extract_energy_balance,
     extract_force_displacement,
@@ -192,6 +193,46 @@ def test_energy_balance_gate_fails_on_bad_data(tmp_path: Path) -> None:
 def test_energy_balance_requires_internal_energy() -> None:
     with pytest.raises(PostProcessError, match="internal-energy"):
         extract_energy_balance(pd.DataFrame({"TIME": [0.0, 1.0]}))
+
+
+def _frictional_crush_frame() -> pd.DataFrame:
+    """A healthy frictional crush: every tracked energy sums to the external work."""
+    n = 21
+    internal = np.linspace(0.0, 8000.0, n)
+    kinetic = np.concatenate([[0.0], np.full(n - 1, 50.0)])
+    contact = np.linspace(0.0, 700.0, n)  # friction-dominated, ~8% of the work
+    return pd.DataFrame(
+        {
+            "TIME": np.linspace(0.0, 0.02, n),
+            "INTERNAL ENERGY": internal,
+            "KINETIC ENERGY": kinetic,
+            "CONTACT ENERGY": contact,
+            "HOURGLASS ENERGY": np.zeros(n),
+            "EXTERNAL WORK": internal + kinetic + contact,
+        }
+    )
+
+
+def test_balance_energy_error_credits_friction_dissipation() -> None:
+    """Friction energy is part of the balance, not an error (§7)."""
+    frame = _frictional_crush_frame()
+    err = balance_energy_error(frame)
+    assert err == pytest.approx(0.0, abs=1e-9)
+    # Sanity: an accounting that drops contact energy (the engine console's
+    # ERROR column) would report well over the 5% limit on this run.
+    contact_share = 700.0 / float(frame["EXTERNAL WORK"].iloc[-1])
+    assert contact_share > ENERGY_ERROR_MAX
+
+
+def test_balance_energy_error_needs_internal_and_external() -> None:
+    assert balance_energy_error(pd.DataFrame({"INTERNAL ENERGY": [1.0, 2.0]})) is None
+    assert balance_energy_error(pd.DataFrame({"EXTERNAL WORK": [1.0, 2.0]})) is None
+
+
+def test_extract_energy_balance_gates_on_the_full_balance() -> None:
+    energy = extract_energy_balance(_frictional_crush_frame(), added_mass_ratio=0.0)
+    assert energy.energy_error == pytest.approx(0.0, abs=1e-9)
+    assert energy.gate.passed, energy.gate.describe()
 
 
 # ---------------------------------------------------------------------------

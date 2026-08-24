@@ -512,13 +512,52 @@ def run_solver(
     if stop_on_energy_error:
         from ..units import ENERGY_ERROR_MAX  # local import keeps the limit in one place
 
-        worst = engine_stage.log.max_energy_error
+        worst = _time_history_energy_error(run_dir, name, solver_config)
+        source = "energy balance"
+        if worst is None:
+            worst = engine_stage.log.max_energy_error
+            source = "engine console error"
+        elif progress is not None:
+            console = engine_stage.log.max_energy_error
+            if console is not None and console > worst:
+                progress(
+                    f"  energy balance {worst:.1%} incl. contact energy "
+                    f"(console error {console:.1%} counts friction as loss)"
+                )
         if worst is not None and worst > ENERGY_ERROR_MAX:
             raise SolverError(
-                f"Energy error {worst:.1%} exceeds the limit {ENERGY_ERROR_MAX:.0%} "
-                f"(units.ENERGY_ERROR_MAX). Log: {engine_stage.log_path}"
+                f"Energy error {worst:.1%} ({source}) exceeds the limit "
+                f"{ENERGY_ERROR_MAX:.0%} (units.ENERGY_ERROR_MAX). "
+                f"Log: {engine_stage.log_path}"
             )
     return result
+
+
+def _time_history_energy_error(
+    run_dir: Path, run_name: str, solver_config: str | Path
+) -> float | None:
+    """The §7 energy error from the run's time history, or None.
+
+    The engine console's ERROR column omits interface (contact) energy, so a
+    healthy frictional run prints -8% while the true balance residual is below
+    0.2%; the time history is authoritative. Best-effort: any failure returns
+    None and the caller falls back to the console value.
+    """
+    try:
+        # Local imports: post-processing is not otherwise a runner dependency.
+        from ..post.convert import convert_time_history  # noqa: PLC0415
+        from ..post.curves import balance_energy_error, read_th_csv  # noqa: PLC0415
+
+        th = run_dir / f"{run_name}T01"
+        if not th.is_file():
+            candidates = sorted(run_dir.glob("*T01"))
+            if not candidates:
+                return None
+            th = candidates[0]
+        conversion = convert_time_history(th, solver_config=solver_config)
+        return balance_energy_error(read_th_csv(conversion.outputs[0]))
+    except Exception:  # noqa: BLE001 - best-effort; console error is the fallback
+        return None
 
 
 def write_run_summary(result: RunResult, path: str | Path | None = None) -> Path:
