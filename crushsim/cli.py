@@ -96,6 +96,60 @@ def harvest(
 
 
 # ---------------------------------------------------------------------------
+# convert (FR-01, Windows + CATIA V5 only)
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def convert(
+    indir: Annotated[
+        Path, typer.Option("--indir", "-i", help="Folder with CATPart/CATProduct files")
+    ],
+    outdir: Annotated[
+        Path, typer.Option("--outdir", "-o", help="Folder receiving the STEP files")
+    ],
+    pattern: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--pattern",
+            "-p",
+            help="Glob pattern(s) to convert; repeatable. Default: *.CATPart and *.CATProduct",
+        ),
+    ] = None,
+) -> None:
+    """Batch-convert CATPart/CATProduct files to STEP AP214 via CATIA V5 COM.
+
+    Windows only, and CATIA V5 must be installed. One failing file does not
+    stop the batch; every outcome lands in conversion_log.csv (spec FR-01).
+    """
+    from .converter.catia import DEFAULT_PATTERNS, batch_convert
+
+    try:
+        records = batch_convert(
+            indir, outdir, patterns=tuple(pattern) if pattern else DEFAULT_PATTERNS
+        )
+    except CrushSimError as exc:
+        _fail(exc)
+        return
+    counts = {status: sum(1 for r in records if r.status == status) for status in ("ok", "failed")}
+    for record in records:
+        color = typer.colors.GREEN if record.status == "ok" else typer.colors.RED
+        typer.secho(f"  [{record.status}] {record.source} -> {record.target}", fg=color)
+        if record.error:
+            typer.secho(f"        {record.error}", fg=typer.colors.RED)
+    if not records:
+        typer.secho(f"No CATIA files matched in {indir}", fg=typer.colors.YELLOW)
+        return
+    typer.secho(
+        f"Converted {counts['ok']}/{len(records)} files "
+        f"({counts['failed']} failed). Log: {Path(outdir) / 'conversion_log.csv'}",
+        fg=typer.colors.RED if counts["failed"] else typer.colors.GREEN,
+    )
+    if counts["failed"]:
+        raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------
 # mesh (FR-03)
 # ---------------------------------------------------------------------------
 
