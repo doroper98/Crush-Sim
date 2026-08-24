@@ -1,0 +1,56 @@
+# B-3 - mesh convergence benchmark (spec §8), medium point (1.0 mm).
+#
+# The B-1 axial crush case re-run on the spec's 0.5 / 1.0 / 2.0 mm mesh sweep;
+# the peak load must differ by <= 5% between the 1.0 and 0.5 mm meshes.
+# bench/test_benchmarks.py::test_b3_peak_load_converges_with_mesh reads the
+# three runs/bench_b3_*/force_displacement.csv files (CRUSHSIM_BENCH_B3_*
+# overrides).
+
+name: bench_b3_medium
+load_case: LC-1
+description: >-
+  B-3 benchmark, medium mesh (1.0 mm): axial crush of the reference can
+  shell (R33 x H115 x t0.1) by a rigid platen, displacement controlled.
+
+geometry:
+  kind: parametric_can
+  radius: 33.0
+  height: 115.0
+  thickness: 0.1
+  closed_bottom: false
+  closed_top: false
+
+material:
+  key: aluminum_3003
+
+mesh:
+  target_size: 1.0
+  recombine: true
+  curvature_points: 20
+
+loading:
+  tool: platen
+  direction: [0.0, 0.0, -1.0]
+  stroke: 30.0                  # mm - enough for several concertina folds
+  velocity: 2.0                 # m/s - the ~230 N fold load dwarfs inertia
+  ramp_fraction: 0.1
+  tool_gap: 0.5
+
+contact:
+  friction: 0.15
+  gap_scale: 0.8
+  stiffness_scale: 1.0
+
+solver:
+  config: configs/solver.yaml
+  threads: 8
+  end_time: auto
+  animation_frames: 15
+  time_history_points: 500
+  stop_on_energy_error: true
+  stop_on_negative_volume: true
+
+output:
+  dir: runs/bench_b3_medium
+  render: false
+  report: true
