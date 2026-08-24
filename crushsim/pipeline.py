@@ -11,9 +11,10 @@ written, so no ungated artefact ever reaches the solver.
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .config import CaseConfig, MaterialCard, load_case
 from .deck.writer import INITIAL_CONTACT_CLEARANCE, DeckResult, build_deck
@@ -221,6 +222,7 @@ def run_pipeline(
     material_roots: list[Path] | None = None,
     solver_config: str | Path | None = None,
     enforce_gate: bool = True,
+    progress: Callable[[str], None] | None = None,
 ) -> PipelineResult:
     """Run the whole pipeline for one case.
 
@@ -234,6 +236,9 @@ def run_pipeline(
         material_roots: Extra roots to search for the material card.
         solver_config: Override for ``configs/solver.yaml``.
         enforce_gate: Enforce the §7 mesh gate (ADR-06). Leave this on.
+        progress: Optional sink for human-readable progress lines (one per
+            stage transition, plus live engine cycle progress). ``csim all``
+            passes a console printer; leave ``None`` for silent library use.
 
     Returns:
         A :class:`PipelineResult` describing every stage.
@@ -246,6 +251,12 @@ def run_pipeline(
     run_dir = Path(outdir) if outdir is not None else case.run_dir
     run_dir.mkdir(parents=True, exist_ok=True)
 
+    started = time.monotonic()
+
+    def emit(message: str) -> None:
+        if progress is not None:
+            progress(f"[{time.monotonic() - started:6.0f}s] {message}")
+
     result = PipelineResult(case=case, material=material, run_dir=run_dir)
     if not material.is_verified:
         result.notices.append(
@@ -253,13 +264,25 @@ def run_pipeline(
             f"(source: {material.source}). Results are trend-only."
         )
 
+    total = 4 if skip_solver else 6
+    emit(f"case {case.name} ({case.load_case}) -> {run_dir}")
+
+    emit(f"[1/{total}] geometry")
     result.geometry = build_geometry(case)
     result.stages_completed.append("geometry")
 
+    emit(f"[2/{total}] meshing (target {case.mesh.target_size or MESH_TARGET_SIZE_DEFAULT_MM:g} mm)")
     mesh_dir = run_dir / "mesh"
     result.meshes = build_meshes(case, result.geometry, outdir=mesh_dir, enforce_gate=enforce_gate)
     result.stages_completed.append("meshing")
+    for label, mesh_result in result.meshes.items():
+        emit(
+            f"  {label}: {mesh_result.mesh.n_elements} elements, "
+            f"min SICN {mesh_result.quality.min_sicn:.3f}, "
+            f"gate {'PASS' if mesh_result.gate.passed else 'FAIL'}"
+        )
 
+    emit(f"[3/{total}] deck")
     solver_cfg = Path(solver_config) if solver_config else case.solver.config
     result.deck = build_deck(
         case,
@@ -279,6 +302,7 @@ def run_pipeline(
             "solution gate was evaluated. This report covers inputs and meshing only."
         )
     else:
+        emit(f"[4/{total}] solver (longest stage - live cycle progress below)")
         result.run = run_solver(
             result.deck.starter_path,
             result.deck.engine_path,
@@ -287,11 +311,14 @@ def run_pipeline(
             stop_on_energy_error=case.solver.stop_on_energy_error,
             stop_on_negative_volume=case.solver.stop_on_negative_volume,
             run_name=result.deck.run_name,
+            progress=(lambda message: emit(message)) if progress is not None else None,
         )
         result.stages_completed.append("solver")
+        emit(f"[5/{total}] post-processing (convert, curves{', render' if not skip_render else ''})")
         result.post = _post_process(result, skip_render=skip_render, solver_config=solver_cfg)
         result.stages_completed.append("post")
 
+    emit(f"[{total}/{total}] report")
     result.report_path = _write_report(result)
     result.stages_completed.append("report")
 

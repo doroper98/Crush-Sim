@@ -39,6 +39,16 @@ def _echo_json(payload: Any) -> None:
     typer.echo(json.dumps(payload, indent=2, default=str))
 
 
+def _progress_printer(message: str) -> None:
+    """Console sink for pipeline/solver progress lines.
+
+    Explicitly flushed: the solver stage takes tens of minutes and users on
+    Windows consoles must see progress as it happens, not on exit.
+    """
+    typer.secho(message, fg=typer.colors.CYAN)
+    sys.stdout.flush()
+
+
 @app.callback(invoke_without_command=True)
 def _root(
     ctx: typer.Context,
@@ -222,7 +232,13 @@ def run(
             engine = engine or deck_dir / f"{case.name}_0001.rad"
             threads = case.solver.threads
             solver_config = case.solver.config
-        result = run_solver(starter, engine, solver_config=solver_config, threads=threads)
+        result = run_solver(
+            starter,
+            engine,
+            solver_config=solver_config,
+            threads=threads,
+            progress=_progress_printer,
+        )
     except CrushSimError as exc:
         _fail(exc)
         return
@@ -348,7 +364,11 @@ def run_all(
 
     try:
         result = run_pipeline(
-            config, outdir=outdir, skip_solver=skip_solver, skip_render=skip_render
+            config,
+            outdir=outdir,
+            skip_solver=skip_solver,
+            skip_render=skip_render,
+            progress=_progress_printer,
         )
     except CrushSimError as exc:
         _fail(exc)
