@@ -25,6 +25,7 @@ def test_help_lists_every_subcommand() -> None:
     for command in (
         "convert",
         "harvest",
+        "status",
         "mesh",
         "deck",
         "run",
@@ -44,7 +45,7 @@ def test_version_flag() -> None:
 
 @pytest.mark.parametrize(
     "command",
-    ["convert", "harvest", "mesh", "deck", "run", "post", "report", "all", "doctor"],
+    ["convert", "harvest", "mesh", "deck", "run", "post", "report", "status", "all", "doctor"],
 )
 def test_each_subcommand_has_help(command: str) -> None:
     result = runner.invoke(app, [command, "--help"])
