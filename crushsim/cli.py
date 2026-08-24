@@ -453,6 +453,70 @@ def post(
 
 
 # ---------------------------------------------------------------------------
+# render - re-render an existing run's animation (FR-07)
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def render(
+    config: Annotated[Optional[Path], typer.Option("--config", "-c", help="Case YAML")] = None,
+    rundir: Annotated[
+        Optional[Path], typer.Option("--rundir", help="Run output directory (instead of --config)")
+    ] = None,
+) -> None:
+    """Re-render an existing run's animation without re-solving.
+
+    Uses the run's converted VTK sequence; the videos get the synced
+    force-displacement panel and semi-transparent rigid tools when the run's
+    curve and summary are present.
+    """
+    from .post.curves import read_th_csv
+    from .post.render import render_sequence
+
+    try:
+        if rundir is None:
+            if config is None:
+                raise CrushSimError("Provide --config or --rundir")
+            from .config import load_case
+
+            rundir = load_case(config).run_dir
+        run_dir = Path(rundir)
+        vtk_files = sorted((run_dir / "vtk").glob("*.vt*"))
+        if not vtk_files:
+            raise CrushSimError(
+                f"No converted VTK files in {run_dir / 'vtk'}. Run `csim all` first "
+                "so the solver's animation output exists and is converted."
+            )
+        curve = None
+        curve_csv = run_dir / "force_displacement.csv"
+        if curve_csv.is_file():
+            curve = read_th_csv(curve_csv)
+        rigid_ids: list[int] = []
+        summary_path = run_dir / "pipeline_summary.json"
+        if summary_path.is_file():
+            payload = json.loads(summary_path.read_text(encoding="utf-8"))
+            for part in (payload.get("deck") or {}).get("parts") or []:
+                if part.get("role") in ("floor", "tool"):
+                    rigid_ids.append(int(part["part_id"]))
+        result = render_sequence(
+            vtk_files,
+            run_dir / "anim",
+            strict=True,
+            curve=curve,
+            rigid_part_ids=rigid_ids or None,
+        )
+    except CrushSimError as exc:
+        _fail(exc)
+        return
+    for name, path in result.videos.items():
+        typer.secho(f"Video: {path}", fg=typer.colors.GREEN)
+    for name, path in result.gifs.items():
+        typer.secho(f"GIF:   {path}", fg=typer.colors.GREEN)
+    if result.skipped_reason:
+        typer.secho(f"NOTE: {result.skipped_reason}", fg=typer.colors.YELLOW)
+
+
+# ---------------------------------------------------------------------------
 # report (FR-08)
 # ---------------------------------------------------------------------------
 

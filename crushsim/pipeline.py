@@ -449,6 +449,8 @@ def _post_process(
             anim.outputs,
             result.run_dir / "anim",
             strict=False,
+            curve=curve,
+            rigid_part_ids=[p.part_id for p in result.deck.parts if p.rigid],
         )
         out["render"] = render.to_dict()
     return out
