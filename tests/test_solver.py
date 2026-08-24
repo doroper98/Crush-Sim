@@ -19,6 +19,8 @@ from crushsim.solver.logparse import parse_log, tail
 from crushsim.solver.runner import (
     RunResult,
     StageResult,
+    _last_cycle_line,
+    read_engine_end_time,
     resolve_executable,
     run_solver,
     solver_status,
@@ -227,6 +229,26 @@ def test_run_summary_is_written(tmp_path: Path) -> None:
     assert payload["ok"] is True
     assert payload["stages"][0]["log"]["cycles_parsed"] == 4
     assert payload["unit_system"] == "mm-s-tonne-N-MPa"
+
+
+def test_read_engine_end_time(tmp_path: Path) -> None:
+    deck = tmp_path / "case_0001.rad"
+    deck.write_text("#RADIOSS ENGINE\n/VERS/2022\n/RUN/case/1\n        0.0157894737\n/END\n")
+    assert read_engine_end_time(deck) == pytest.approx(0.0157894737)
+    assert read_engine_end_time(tmp_path / "missing.rad") is None
+
+
+def test_last_cycle_line_parses_the_engine_listing() -> None:
+    text = (
+        "   CYCLE    TIME      TIME-STEP  ELEMENT          ERROR  I-ENERGY\n"
+        "  110900  0.1448E-01  0.1405E-06 NODE        2276  -5.1%   6435.\n"
+        "  111000  0.1450E-01  0.1405E-06 NODE        2276  -5.1%   6440.\n"
+    )
+    assert _last_cycle_line(text) == (111000, pytest.approx(0.0145), "-5.1%")
+
+
+def test_last_cycle_line_ignores_non_cycle_text() -> None:
+    assert _last_cycle_line("RESTART FILES WRITTEN\n** COMPUTE COMPLETE **\n") is None
 
 
 def test_run_result_is_not_ok_when_a_stage_errored() -> None:

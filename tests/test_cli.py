@@ -22,7 +22,18 @@ runner = CliRunner()
 def test_help_lists_every_subcommand() -> None:
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    for command in ("harvest", "mesh", "deck", "run", "post", "report", "all", "doctor"):
+    for command in (
+        "convert",
+        "harvest",
+        "status",
+        "mesh",
+        "deck",
+        "run",
+        "post",
+        "report",
+        "all",
+        "doctor",
+    ):
         assert command in result.output
 
 
@@ -33,7 +44,8 @@ def test_version_flag() -> None:
 
 
 @pytest.mark.parametrize(
-    "command", ["harvest", "mesh", "deck", "run", "post", "report", "all", "doctor"]
+    "command",
+    ["convert", "harvest", "mesh", "deck", "run", "post", "report", "status", "all", "doctor"],
 )
 def test_each_subcommand_has_help(command: str) -> None:
     result = runner.invoke(app, [command, "--help"])

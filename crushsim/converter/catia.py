@@ -22,6 +22,9 @@ from ..errors import CrushSimError, OptionalDependencyError
 STEP_FORMAT: str = "stp"
 """CATIA export format token for STEP."""
 
+DEFAULT_PATTERNS: tuple[str, ...] = ("*.CATPart", "*.CATProduct")
+"""File patterns converted by default: parts and assemblies alike."""
+
 
 @dataclass(slots=True)
 class ConversionRecord:
@@ -92,12 +95,14 @@ def batch_convert(
     indir: str | Path,
     outdir: str | Path,
     *,
-    pattern: str = "*.CATPart",
+    patterns: tuple[str, ...] = DEFAULT_PATTERNS,
     log_path: str | Path | None = None,
 ) -> list[ConversionRecord]:
-    """Convert every CATPart in ``indir`` to STEP AP214 in ``outdir``.
+    """Convert every CATPart/CATProduct in ``indir`` to STEP AP214 in ``outdir``.
 
-    A failure on one file is recorded and the batch continues.
+    CATIA's ``ExportData`` exports a Product document as one STEP assembly,
+    so both parts and products go through the same call. A failure on one
+    file is recorded and the batch continues.
 
     Raises:
         OptionalDependencyError: If pywin32 is missing.
@@ -106,6 +111,7 @@ def batch_convert(
     source_dir = Path(indir)
     if not source_dir.is_dir():
         raise CrushSimError(f"Input folder not found: {source_dir}")
+    sources = sorted({path for pattern in patterns for path in source_dir.glob(pattern)})
     client = _require_catia()  # pragma: no cover - Windows only
 
     target_dir = Path(outdir)  # pragma: no cover - Windows only
@@ -114,8 +120,15 @@ def batch_convert(
     catia.Visible = False
 
     records: list[ConversionRecord] = []
-    for source in sorted(source_dir.glob(pattern)):
-        target = target_dir / f"{source.stem}.stp"
+    claimed: set[str] = set()
+    for source in sources:
+        # A same-stem part and product would both target <stem>.stp; the
+        # later one gets its source extension appended instead of clobbering.
+        stem = source.stem
+        if stem.lower() in claimed:
+            stem = f"{source.stem}_{source.suffix.lstrip('.').lower()}"
+        claimed.add(stem.lower())
+        target = target_dir / f"{stem}.stp"
         document = None
         try:
             document = catia.Documents.Open(str(source))

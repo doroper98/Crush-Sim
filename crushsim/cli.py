@@ -39,6 +39,16 @@ def _echo_json(payload: Any) -> None:
     typer.echo(json.dumps(payload, indent=2, default=str))
 
 
+def _progress_printer(message: str) -> None:
+    """Console sink for pipeline/solver progress lines.
+
+    Explicitly flushed: the solver stage takes tens of minutes and users on
+    Windows consoles must see progress as it happens, not on exit.
+    """
+    typer.secho(message, fg=typer.colors.CYAN)
+    sys.stdout.flush()
+
+
 @app.callback(invoke_without_command=True)
 def _root(
     ctx: typer.Context,
@@ -83,6 +93,60 @@ def harvest(
         fg=typer.colors.GREEN,
     )
     typer.echo("All cards are tagged verified: false (spec §4 FR-10).")
+
+
+# ---------------------------------------------------------------------------
+# convert (FR-01, Windows + CATIA V5 only)
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def convert(
+    indir: Annotated[
+        Path, typer.Option("--indir", "-i", help="Folder with CATPart/CATProduct files")
+    ],
+    outdir: Annotated[
+        Path, typer.Option("--outdir", "-o", help="Folder receiving the STEP files")
+    ],
+    pattern: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--pattern",
+            "-p",
+            help="Glob pattern(s) to convert; repeatable. Default: *.CATPart and *.CATProduct",
+        ),
+    ] = None,
+) -> None:
+    """Batch-convert CATPart/CATProduct files to STEP AP214 via CATIA V5 COM.
+
+    Windows only, and CATIA V5 must be installed. One failing file does not
+    stop the batch; every outcome lands in conversion_log.csv (spec FR-01).
+    """
+    from .converter.catia import DEFAULT_PATTERNS, batch_convert
+
+    try:
+        records = batch_convert(
+            indir, outdir, patterns=tuple(pattern) if pattern else DEFAULT_PATTERNS
+        )
+    except CrushSimError as exc:
+        _fail(exc)
+        return
+    counts = {status: sum(1 for r in records if r.status == status) for status in ("ok", "failed")}
+    for record in records:
+        color = typer.colors.GREEN if record.status == "ok" else typer.colors.RED
+        typer.secho(f"  [{record.status}] {record.source} -> {record.target}", fg=color)
+        if record.error:
+            typer.secho(f"        {record.error}", fg=typer.colors.RED)
+    if not records:
+        typer.secho(f"No CATIA files matched in {indir}", fg=typer.colors.YELLOW)
+        return
+    typer.secho(
+        f"Converted {counts['ok']}/{len(records)} files "
+        f"({counts['failed']} failed). Log: {Path(outdir) / 'conversion_log.csv'}",
+        fg=typer.colors.RED if counts["failed"] else typer.colors.GREEN,
+    )
+    if counts["failed"]:
+        raise typer.Exit(code=1)
 
 
 # ---------------------------------------------------------------------------
@@ -222,11 +286,120 @@ def run(
             engine = engine or deck_dir / f"{case.name}_0001.rad"
             threads = case.solver.threads
             solver_config = case.solver.config
-        result = run_solver(starter, engine, solver_config=solver_config, threads=threads)
+        result = run_solver(
+            starter,
+            engine,
+            solver_config=solver_config,
+            threads=threads,
+            progress=_progress_printer,
+        )
     except CrushSimError as exc:
         _fail(exc)
         return
     typer.secho(f"Run complete: {result.summary_path}", fg=typer.colors.GREEN)
+
+
+# ---------------------------------------------------------------------------
+# status - human-readable view of a (running) solver job
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def status(
+    config: Annotated[Optional[Path], typer.Option("--config", "-c", help="Case YAML")] = None,
+    rundir: Annotated[
+        Optional[Path], typer.Option("--rundir", help="Run output directory (instead of --config)")
+    ] = None,
+    watch: Annotated[
+        bool, typer.Option("--watch", "-w", help="Refresh every 10 s until the run completes")
+    ] = False,
+) -> None:
+    """Show solver progress in plain terms: percent done, energy error, ETA.
+
+    Reads the engine's listing file the same way the live ``csim all``
+    progress does, so it works from a second console while a run is going.
+    """
+    import time as _time
+
+    from .config import load_case
+    from .solver.runner import _last_cycle_line, read_engine_end_time
+
+    try:
+        if rundir is None:
+            if config is None:
+                raise CrushSimError("Provide --config or --rundir")
+            case = load_case(config)
+            rundir = case.run_dir
+        deck_dir = Path(rundir) / "deck"
+        if not deck_dir.is_dir():
+            raise CrushSimError(f"No deck directory in {rundir} - has the run started?")
+        engine_decks = sorted(deck_dir.glob("*_0001.rad"))
+        if not engine_decks:
+            raise CrushSimError(f"No engine deck (*_0001.rad) in {deck_dir}")
+        run_name = engine_decks[-1].stem.removesuffix("_0001")
+        end_time = read_engine_end_time(engine_decks[-1])
+    except CrushSimError as exc:
+        _fail(exc)
+        return
+
+    def sample() -> tuple[int, float, str | None] | None:
+        parsed = None
+        for out_file in sorted(deck_dir.glob(f"{run_name}_*.out")):
+            try:
+                text = out_file.read_text(errors="replace")[-6000:]
+            except OSError:
+                continue
+            parsed = _last_cycle_line(text) or parsed
+        return parsed
+
+    def describe(
+        current: tuple[int, float, str | None] | None,
+        previous: tuple[int, float, str | None] | None,
+        wall_elapsed: float,
+    ) -> str:
+        if current is None:
+            return f"{run_name}: no engine cycles yet (meshing / starter stage, or not started)"
+        cycle, sim_time, error = current
+        parts = [run_name + ":"]
+        if end_time:
+            parts.append(f"{min(100.0, 100.0 * sim_time / end_time):5.1f}% done")
+            parts.append(f"(simulated {sim_time:.4e} of {end_time:.4e} s)")
+        else:
+            parts.append(f"simulated {sim_time:.4e} s")
+        parts.append(f"cycle {cycle:,}")
+        if error is not None:
+            parts.append(f"energy error {error} (limit 5%)")
+        animations = len(list(deck_dir.glob(f"{run_name}A[0-9]*")))
+        if animations:
+            parts.append(f"{animations} animation frames")
+        if previous is not None and end_time and wall_elapsed > 0.0:
+            rate = (current[1] - previous[1]) / wall_elapsed
+            if rate > 0.0:
+                eta_s = (end_time - current[1]) / rate
+                parts.append(f"ETA ~{eta_s / 60.0:.0f} min" if eta_s > 90.0 else f"ETA ~{eta_s:.0f} s")
+        return "  ".join(parts)
+
+    summary_file = deck_dir / "run_summary.json"
+    previous = sample()
+    previous_wall = _time.monotonic()
+    if summary_file.is_file() and not watch:
+        typer.secho(describe(previous, None, 0.0), fg=typer.colors.CYAN)
+        typer.secho(f"Run complete: {summary_file}", fg=typer.colors.GREEN)
+        return
+
+    interval = 10.0 if watch else 4.0
+    while True:
+        _time.sleep(interval)
+        current = sample()
+        now = _time.monotonic()
+        typer.secho(describe(current, previous, now - previous_wall), fg=typer.colors.CYAN)
+        sys.stdout.flush()
+        previous, previous_wall = current or previous, now
+        if summary_file.is_file():
+            typer.secho(f"Run complete: {summary_file}", fg=typer.colors.GREEN)
+            return
+        if not watch:
+            return
 
 
 # ---------------------------------------------------------------------------
@@ -348,7 +521,11 @@ def run_all(
 
     try:
         result = run_pipeline(
-            config, outdir=outdir, skip_solver=skip_solver, skip_render=skip_render
+            config,
+            outdir=outdir,
+            skip_solver=skip_solver,
+            skip_render=skip_render,
+            progress=_progress_printer,
         )
     except CrushSimError as exc:
         _fail(exc)

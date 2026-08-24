@@ -11,9 +11,10 @@ written, so no ungated artefact ever reaches the solver.
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .config import CaseConfig, MaterialCard, load_case
 from .deck.writer import INITIAL_CONTACT_CLEARANCE, DeckResult, build_deck
@@ -92,13 +93,20 @@ class PipelineResult:
         }
 
 
-def build_geometry(case: CaseConfig) -> GeometryStage:
+def build_geometry(case: CaseConfig, *, can_override: CanShell | None = None) -> GeometryStage:
     """Build the can and the reference tools for a case (FR-02).
+
+    Args:
+        case: The loaded case configuration.
+        can_override: Reference can used to size and place the tools instead
+            of the case's parametric dimensions. The STEP path passes the
+            proxy derived from the imported part's seated bounding box here,
+            so tools wrap the real shape even when it is modelled lying down.
 
     Raises:
         GeometryError: If the case geometry is invalid.
     """
-    can = make_can(
+    can = can_override or make_can(
         case.geometry.radius,
         case.geometry.height,
         case.geometry.thickness,
@@ -144,6 +152,21 @@ def build_geometry(case: CaseConfig) -> GeometryStage:
     )
 
 
+def _seated_can_proxy(mesh: Any, case: CaseConfig) -> CanShell:
+    """Derive the tool-placement reference can from a seated STEP mesh.
+
+    The tools (drive tool, floor, support) are sized and placed from a
+    :class:`CanShell`; for imported geometry that reference must describe the
+    part *as seated*, not the case's nominal radius/height - a can modelled
+    lying down is wider than it is tall. The proxy takes the seated bounding
+    box: radius from the larger in-plane extent, height from the Z extent.
+    """
+    lo, hi = mesh.bounding_box()
+    radius = max(hi[0] - lo[0], hi[1] - lo[1]) / 2.0
+    height = hi[2] - lo[2]
+    return make_can(radius, height, case.geometry.thickness)
+
+
 def build_meshes(
     case: CaseConfig,
     geometry: GeometryStage,
@@ -152,6 +175,12 @@ def build_meshes(
     enforce_gate: bool = True,
 ) -> dict[str, MeshResult]:
     """Mesh the can, the floor and the reference tool (FR-03).
+
+    For an imported STEP can the mesh is seated on the floor plane first
+    (:meth:`ShellMesh.seat_on_floor`) and the tools in ``geometry`` are
+    rebuilt around the seated bounding box, mutating the passed stage so the
+    report reflects what was actually simulated. The ``can.msh`` file keeps
+    the source file's coordinates; the deck carries the seated ones.
 
     Raises:
         GateFailure: If the can mesh fails the §7 gate and ``enforce_gate``.
@@ -173,6 +202,12 @@ def build_meshes(
             enforce=enforce_gate,
             name="CAN",
         )
+        can_mesh.mesh.seat_on_floor()
+        seated = build_geometry(case, can_override=_seated_can_proxy(can_mesh.mesh, case))
+        geometry.can = seated.can
+        geometry.tool = seated.tool
+        geometry.floor = seated.floor
+        geometry.support = seated.support
     else:
         can_mesh = mesh_parametric_can(
             geometry.can,
@@ -221,6 +256,7 @@ def run_pipeline(
     material_roots: list[Path] | None = None,
     solver_config: str | Path | None = None,
     enforce_gate: bool = True,
+    progress: Callable[[str], None] | None = None,
 ) -> PipelineResult:
     """Run the whole pipeline for one case.
 
@@ -234,6 +270,9 @@ def run_pipeline(
         material_roots: Extra roots to search for the material card.
         solver_config: Override for ``configs/solver.yaml``.
         enforce_gate: Enforce the §7 mesh gate (ADR-06). Leave this on.
+        progress: Optional sink for human-readable progress lines (one per
+            stage transition, plus live engine cycle progress). ``csim all``
+            passes a console printer; leave ``None`` for silent library use.
 
     Returns:
         A :class:`PipelineResult` describing every stage.
@@ -246,6 +285,12 @@ def run_pipeline(
     run_dir = Path(outdir) if outdir is not None else case.run_dir
     run_dir.mkdir(parents=True, exist_ok=True)
 
+    started = time.monotonic()
+
+    def emit(message: str) -> None:
+        if progress is not None:
+            progress(f"[{time.monotonic() - started:6.0f}s] {message}")
+
     result = PipelineResult(case=case, material=material, run_dir=run_dir)
     if not material.is_verified:
         result.notices.append(
@@ -253,13 +298,36 @@ def run_pipeline(
             f"(source: {material.source}). Results are trend-only."
         )
 
+    total = 4 if skip_solver else 6
+    emit(f"case {case.name} ({case.load_case}) -> {run_dir}")
+
+    emit(f"[1/{total}] geometry")
     result.geometry = build_geometry(case)
     result.stages_completed.append("geometry")
 
+    emit(f"[2/{total}] meshing (target {case.mesh.target_size or MESH_TARGET_SIZE_DEFAULT_MM:g} mm)")
     mesh_dir = run_dir / "mesh"
     result.meshes = build_meshes(case, result.geometry, outdir=mesh_dir, enforce_gate=enforce_gate)
     result.stages_completed.append("meshing")
+    for label, mesh_result in result.meshes.items():
+        emit(
+            f"  {label}: {mesh_result.mesh.n_elements} elements, "
+            f"min SICN {mesh_result.quality.min_sicn:.3f}, "
+            f"gate {'PASS' if mesh_result.gate.passed else 'FAIL'}"
+        )
+    seated_offset = result.meshes["can"].mesh.metadata.get("seated_offset_mm")
+    if seated_offset is not None:
+        lo, hi = result.meshes["can"].mesh.bounding_box()
+        note = (
+            "STEP geometry auto-seated on the floor: translated by "
+            f"({seated_offset[0]:.2f}, {seated_offset[1]:.2f}, {seated_offset[2]:.2f}) mm; "
+            f"seated extents {hi[0] - lo[0]:.1f} x {hi[1] - lo[1]:.1f} x "
+            f"{hi[2] - lo[2]:.1f} mm, tools placed around them."
+        )
+        result.notices.append(note)
+        emit(f"  {note}")
 
+    emit(f"[3/{total}] deck")
     solver_cfg = Path(solver_config) if solver_config else case.solver.config
     result.deck = build_deck(
         case,
@@ -279,6 +347,7 @@ def run_pipeline(
             "solution gate was evaluated. This report covers inputs and meshing only."
         )
     else:
+        emit(f"[4/{total}] solver (longest stage - live cycle progress below)")
         result.run = run_solver(
             result.deck.starter_path,
             result.deck.engine_path,
@@ -287,11 +356,14 @@ def run_pipeline(
             stop_on_energy_error=case.solver.stop_on_energy_error,
             stop_on_negative_volume=case.solver.stop_on_negative_volume,
             run_name=result.deck.run_name,
+            progress=(lambda message: emit(message)) if progress is not None else None,
         )
         result.stages_completed.append("solver")
+        emit(f"[5/{total}] post-processing (convert, curves{', render' if not skip_render else ''})")
         result.post = _post_process(result, skip_render=skip_render, solver_config=solver_cfg)
         result.stages_completed.append("post")
 
+    emit(f"[{total}/{total}] report")
     result.report_path = _write_report(result)
     result.stages_completed.append("report")
 

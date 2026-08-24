@@ -22,8 +22,8 @@ geometry:
   kind: step
   step_path: examples/step/Honda_Can.stp
   thickness: 0.3        # mm; shell thickness assigned to the imported skin
-  radius: 33.0          # used only to size the reference tools
-  height: 115.0
+  radius: 33.0          # nominal only: the mesh is auto-seated on the floor
+  height: 115.0         # and the tools are placed from its seated bounding box
 
 material:
   key: aluminum_3003

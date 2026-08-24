@@ -130,6 +130,56 @@ def test_shell_mesh_counts_edges(can_mesh_fixture: ShellMesh) -> None:
     assert can_mesh_fixture.free_edge_count() == 8
 
 
+def test_seat_on_floor_centres_and_grounds_the_mesh() -> None:
+    mesh = ShellMesh(
+        node_ids=np.array([1, 2, 3, 4], dtype=np.int64),
+        nodes=np.array(
+            [
+                [100.0, -30.0, -7.0],
+                [140.0, -30.0, -7.0],
+                [140.0, -10.0, 3.0],
+                [100.0, -10.0, 3.0],
+            ]
+        ),
+        quads=np.array([[1, 2, 3, 4]], dtype=np.int64),
+        tris=np.zeros((0, 3), dtype=np.int64),
+        name="CAN",
+    )
+    offset = mesh.seat_on_floor()
+    assert offset == pytest.approx((-120.0, 20.0, 7.0))
+    lo, hi = mesh.bounding_box()
+    assert (lo[0] + hi[0]) / 2.0 == pytest.approx(0.0)
+    assert (lo[1] + hi[1]) / 2.0 == pytest.approx(0.0)
+    assert lo[2] == pytest.approx(0.0)
+    assert mesh.metadata["seated_offset_mm"] == pytest.approx([-120.0, 20.0, 7.0])
+
+
+def test_seated_can_proxy_follows_the_lying_orientation() -> None:
+    """A can modelled lying down must yield a wide, low reference proxy."""
+    from crushsim.config import load_case
+    from crushsim.pipeline import _seated_can_proxy
+
+    mesh = ShellMesh(
+        node_ids=np.array([1, 2, 3, 4], dtype=np.int64),
+        nodes=np.array(
+            [
+                [-57.5, -33.0, 0.0],
+                [57.5, -33.0, 0.0],
+                [57.5, 33.0, 66.0],
+                [-57.5, 33.0, 66.0],
+            ]
+        ),
+        quads=np.array([[1, 2, 3, 4]], dtype=np.int64),
+        tris=np.zeros((0, 3), dtype=np.int64),
+        name="CAN",
+    )
+    case = load_case(Path("configs/cases/lc2_step_example.yaml"))
+    proxy = _seated_can_proxy(mesh, case)
+    assert proxy.radius == pytest.approx(57.5)  # half the largest in-plane extent
+    assert proxy.height == pytest.approx(66.0)  # actual seated height, not nominal 115
+    assert proxy.thickness == pytest.approx(case.geometry.thickness)
+
+
 def test_shell_mesh_renumber_offsets_ids(can_mesh_fixture: ShellMesh) -> None:
     shifted = can_mesh_fixture.renumber(100)
     assert int(shifted.node_ids.min()) == 101

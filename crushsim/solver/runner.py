@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ..config import SolverPaths, load_solver_config
 from ..errors import SolverError
@@ -250,6 +252,75 @@ def _sane_child_rlimits() -> None:  # pragma: no cover - runs in the child
         resource.setrlimit(resource.RLIMIT_STACK, (limit, hard))
 
 
+_RUN_END_TIME_RE = re.compile(r"^/RUN/.*\n\s*([0-9.Ee+-]+)", re.MULTILINE)
+
+_ENGINE_POLL_INTERVAL_S: float = 15.0
+"""How often the progress monitor re-reads the engine's ``*.out`` listing."""
+
+
+def read_engine_end_time(engine_deck: str | Path) -> float | None:
+    """Read the termination time from an engine deck's ``/RUN`` block."""
+    try:
+        match = _RUN_END_TIME_RE.search(Path(engine_deck).read_text(errors="replace"))
+        return float(match.group(1)) if match else None
+    except (OSError, ValueError):
+        return None
+
+
+def _last_cycle_line(text: str) -> tuple[int, float, str | None] | None:
+    """Parse the last engine cycle line into ``(cycle, time, energy_error)``.
+
+    Engine cycle lines start with the cycle count and the simulated time; the
+    energy-balance error is the first ``%``-suffixed token on the line.
+    """
+    for line in reversed(text.splitlines()):
+        tokens = line.split()
+        if len(tokens) < 3 or not tokens[0].isdigit():
+            continue
+        try:
+            sim_time = float(tokens[1])
+        except ValueError:
+            continue
+        error = next((tok for tok in tokens[2:] if tok.endswith("%")), None)
+        return int(tokens[0]), sim_time, error
+    return None
+
+
+def _watch_engine_progress(
+    stop: threading.Event,
+    *,
+    run_dir: Path,
+    deck_stem: str,
+    end_time: float | None,
+    progress: Callable[[str], None],
+) -> None:
+    """Poll the engine's ``*.out`` listing and report cycle progress.
+
+    The engine only writes to its listing file, never to stdout while
+    running, so this file poll is the sole live progress source.
+    """
+    last_cycle = -1
+    while not stop.wait(_ENGINE_POLL_INTERVAL_S):
+        parsed = None
+        for out_file in sorted(run_dir.glob(f"{deck_stem}*.out")):
+            try:
+                text = out_file.read_text(errors="replace")[-6000:]
+            except OSError:
+                continue
+            parsed = _last_cycle_line(text) or parsed
+        if parsed is None or parsed[0] == last_cycle:
+            continue
+        last_cycle, sim_time, error = parsed
+        if end_time and end_time > 0.0:
+            prefix = f"engine {min(100.0, 100.0 * sim_time / end_time):5.1f}%"
+        else:
+            prefix = "engine"
+        message = f"  {prefix}  t={sim_time:.4e} s  cycle {last_cycle:,}"
+        if error is not None:
+            message += f"  energy error {error}"
+        progress(message)
+
+
 def _run_stage(
     *,
     stage: str,
@@ -259,6 +330,8 @@ def _run_stage(
     threads: int,
     env: dict[str, str],
     timeout_s: float | None,
+    progress: Callable[[str], None] | None = None,
+    end_time: float | None = None,
 ) -> StageResult:
     """Run one solver stage and capture its log."""
     command = [str(executable), "-i", deck.name]
@@ -269,6 +342,22 @@ def _run_stage(
 
     log_path = run_dir / f"{deck.stem}.{stage}.log"
     started = time.monotonic()
+    monitor_stop: threading.Event | None = None
+    monitor: threading.Thread | None = None
+    if progress is not None and stage == "engine":
+        monitor_stop = threading.Event()
+        monitor = threading.Thread(
+            target=_watch_engine_progress,
+            args=(monitor_stop,),
+            kwargs={
+                "run_dir": run_dir,
+                "deck_stem": deck.stem,
+                "end_time": end_time,
+                "progress": progress,
+            },
+            daemon=True,
+        )
+        monitor.start()
     try:
         completed = subprocess.run(
             command,
@@ -287,6 +376,11 @@ def _run_stage(
             f"The {stage} exceeded its timeout of {timeout_s} s. "
             "Raise solver.timeout_s or reduce the model size."
         ) from exc
+    finally:
+        if monitor_stop is not None:
+            monitor_stop.set()
+        if monitor is not None:
+            monitor.join(timeout=1.0)
     duration = time.monotonic() - started
 
     text = (completed.stdout or "") + "\n" + (completed.stderr or "")
@@ -315,6 +409,7 @@ def run_solver(
     stop_on_energy_error: bool = True,
     stop_on_negative_volume: bool = True,
     run_name: str | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> RunResult:
     """Run the starter then the engine, and write ``run_summary.json``.
 
@@ -327,6 +422,8 @@ def run_solver(
         stop_on_energy_error: Abort if the engine reports an energy error.
         stop_on_negative_volume: Abort if a negative volume is reported.
         run_name: Name recorded in the summary; defaults to the deck stem.
+        progress: Optional sink for human-readable progress lines; the engine
+            stage reports live cycle progress through it.
 
     Returns:
         A :class:`RunResult`; ``run_summary.json`` is written next to the decks.
@@ -359,6 +456,8 @@ def run_solver(
         config_copy=Path(paths.source) if paths.source else None,
     )
 
+    if progress is not None:
+        progress(f"  starter: {starter_exe.name}")
     starter_stage = _run_stage(
         stage="starter",
         executable=starter_exe,
@@ -377,6 +476,13 @@ def run_solver(
             + tail("\n".join(starter_stage.log.errors) or "", 20)
         )
 
+    end_time = read_engine_end_time(engine_path)
+    if progress is not None:
+        span = f", end time {end_time:g} s" if end_time else ""
+        progress(
+            f"  starter ok ({starter_stage.duration_s:.0f} s); "
+            f"engine: {engine_exe.name} ({threads} threads{span})"
+        )
     engine_stage = _run_stage(
         stage="engine",
         executable=engine_exe,
@@ -385,6 +491,8 @@ def run_solver(
         threads=threads,
         env=env,
         timeout_s=timeout_s,
+        progress=progress,
+        end_time=end_time,
     )
     result.stages.append(engine_stage)
     summary_path = write_run_summary(result)
