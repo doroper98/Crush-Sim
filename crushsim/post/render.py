@@ -180,6 +180,31 @@ def _global_range(meshes: Sequence[Any], scalar: str) -> tuple[float, float]:
 CURVE_PANEL_WIDTH_PX: int = 480
 """Width of the synced force-displacement panel beside the animation."""
 
+RIGID_TOOL_OPACITY: float = 0.3
+"""Opacity of rigid tool parts so the crushing part stays visible through them."""
+
+RIGID_TOOL_COLOR: str = "#8a929c"
+"""Neutral steel-grey for rigid tools (they carry no stress field of interest)."""
+
+
+def _split_rigid(mesh: Any, rigid_part_ids: Sequence[int] | None) -> tuple[Any, Any | None]:
+    """Split a frame into (deformable, rigid-tools) by the ``PART_ID`` array.
+
+    Returns the whole mesh and ``None`` when no split is possible - unknown
+    part ids, no ``PART_ID`` array (older converters), or everything rigid.
+    """
+    if not rigid_part_ids:
+        return mesh, None
+    part_ids = mesh.cell_data.get("PART_ID") if hasattr(mesh, "cell_data") else None
+    if part_ids is None:
+        return mesh, None
+    import numpy as np  # noqa: PLC0415
+
+    mask = np.isin(np.asarray(part_ids), list(rigid_part_ids))
+    if not mask.any() or mask.all():
+        return mesh, None
+    return mesh.extract_cells(~mask), mesh.extract_cells(mask)
+
 
 def _curve_panel_frames(curve: Any, n_frames: int, height: int) -> list[Any]:
     """Render one force-displacement panel per animation frame.
@@ -258,6 +283,7 @@ def render_sequence(
     gif_max_frames: int = 40,
     strict: bool = True,
     curve: Any | None = None,
+    rigid_part_ids: Sequence[int] | None = None,
 ) -> RenderResult:
     """Render a converted VTK sequence to MP4 (plus a summary GIF) per preset.
 
@@ -275,6 +301,9 @@ def render_sequence(
         curve: Optional force-displacement frame (``time`` / ``displacement``
             / ``force`` columns): when given, every video/GIF/still carries a
             synced curve panel beside the animation.
+        rigid_part_ids: ``PART_ID`` values of the rigid tools; those cells are
+            drawn semi-transparent grey so the crushing part stays visible
+            through the platen/jig.
 
     Raises:
         PostProcessError: If inputs are missing, or rendering is unavailable
@@ -346,10 +375,11 @@ def render_sequence(
                     geometry = mesh.clip(normal="y", origin=tuple(centre), invert=True)
                 except Exception:  # noqa: BLE001 - a clip failure must not kill the run
                     geometry = mesh
+            deformable, rigid = _split_rigid(geometry, rigid_part_ids)
             plotter = pv.Plotter(off_screen=True, window_size=window_size)
             plotter.set_background("white")
             plotter.add_mesh(
-                geometry,
+                deformable,
                 scalars=field_name,
                 cmap=cmap,
                 clim=clim,
@@ -357,6 +387,14 @@ def render_sequence(
                 scalar_bar_args={"title": field_name or "", "vertical": True},
                 show_scalar_bar=field_name is not None,
             )
+            if rigid is not None and rigid.n_cells:
+                plotter.add_mesh(
+                    rigid,
+                    color=RIGID_TOOL_COLOR,
+                    opacity=RIGID_TOOL_OPACITY,
+                    show_edges=False,
+                    show_scalar_bar=False,
+                )
             plotter.camera_position = camera
             plotter.show(auto_close=False)
             shot = plotter.screenshot(return_img=True)
