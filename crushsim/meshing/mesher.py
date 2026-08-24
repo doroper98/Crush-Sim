@@ -307,30 +307,71 @@ def _compute_quality(gmsh: Any, mesh: ShellMesh, *, worst_n: int = 10) -> MeshQu
 # ---------------------------------------------------------------------------
 
 
-def _build_can_surfaces(gmsh: Any, can: CanShell) -> list[int]:
+def _build_can_surfaces(gmsh: Any, can: CanShell, target_size: float) -> list[int]:
     """Build the can mid-surface in the current model and return surface tags.
 
-    The lateral wall is created by extruding a circle (an edge), which yields a
-    pure surface - never a solid - matching the FR-02 "outer skin only" rule.
+    The lateral wall is created by extruding two half-circle arcs (edges),
+    which yields pure surfaces - never a solid - matching the FR-02 "outer
+    skin only" rule. Splitting the wall in two makes each half a four-sided
+    face that is meshed as a structured quad grid: unstructured recombination
+    near the extrusion seam produces borderline quads (measured: min SICN
+    0.25-0.36 at a 1 mm target, gate-flaky across platforms), while the
+    structured grid is deterministic with min SICN > 0.9.
     """
     occ = gmsh.model.occ
     r = can.mid_surface_radius
-    circle = occ.addCircle(0.0, 0.0, 0.0, r)
-    extruded = occ.extrude([(1, circle)], 0.0, 0.0, can.height)
-    surfaces = [tag for dim, tag in extruded if dim == 2]
+    arcs = [
+        occ.addCircle(0.0, 0.0, 0.0, r, angle1=0.0, angle2=math.pi),
+        occ.addCircle(0.0, 0.0, 0.0, r, angle1=math.pi, angle2=2.0 * math.pi),
+    ]
+    extruded = occ.extrude([(1, a) for a in arcs], 0.0, 0.0, can.height)
+    walls = [tag for dim, tag in extruded if dim == 2]
+    surfaces = list(walls)
     if can.closed_bottom:
-        loop_b = occ.addCurveLoop([circle])
+        loop_b = occ.addCurveLoop(arcs)
         surfaces.append(occ.addPlaneSurface([loop_b]))
     if can.closed_top:
-        top_circle = occ.addCircle(0.0, 0.0, can.height, r)
-        loop_t = occ.addCurveLoop([top_circle])
+        top_arcs = [
+            occ.addCircle(0.0, 0.0, can.height, r, angle1=0.0, angle2=math.pi),
+            occ.addCircle(0.0, 0.0, can.height, r, angle1=math.pi, angle2=2.0 * math.pi),
+        ]
+        loop_t = occ.addCurveLoop(top_arcs)
         surfaces.append(occ.addPlaneSurface([loop_t]))
+    # Fragmenting is mandatory even without caps: the two extruded halves
+    # carry coincident-but-distinct seam edges, and meshing them unsewn
+    # duplicates every seam node - the §7 gate cannot see that (0 non-manifold
+    # edges), but the TYPE7 self-contact then collapses on the zero-distance
+    # node pairs (negative interface timestep, measured on the B-3 bench).
     if len(surfaces) > 1:
         fused, _ = occ.fragment([(2, surfaces[0])], [(2, s) for s in surfaces[1:]])
         surfaces = [tag for dim, tag in fused if dim == 2]
     occ.synchronize()
     if not surfaces:
         raise MeshingError("Failed to build the can mid-surface with the Gmsh OCC kernel")
+
+    # Structured grid on the wall halves: arc and seam divisions at the target
+    # size. The caps (when closed) stay unstructured but switch to the plain
+    # Delaunay algorithm: with the wall arcs' node spacing imposed on the disc
+    # rim, Frontal-Delaunay recombines a rim sliver (min SICN 0.06) where
+    # Delaunay recombines cleanly (0.60). Faces are told apart geometrically
+    # because fragmenting reassigns tags; OCC pads bounding boxes by ~1e-7,
+    # so "flat" needs a loose test.
+    n_arc = max(2, int(round(math.pi * r / target_size)) + 1)
+    n_height = max(2, int(round(can.height / target_size)) + 1)
+    for _dim, face in gmsh.model.getEntities(2):
+        bb = gmsh.model.getBoundingBox(2, face)
+        if abs(bb[5] - bb[2]) < 1e-3:  # flat cap [mm]
+            gmsh.model.mesh.setAlgorithm(2, face, 5)
+            continue
+        curves = gmsh.model.getBoundary([(2, face)], oriented=False)
+        if len(curves) != 4:
+            continue  # fragmented into something unexpected; mesh unstructured
+        for _cdim, ctag in curves:
+            length = float(occ.getMass(1, abs(ctag)))
+            is_arc = abs(length - math.pi * r) < abs(length - can.height)
+            gmsh.model.mesh.setTransfiniteCurve(abs(ctag), n_arc if is_arc else n_height)
+        gmsh.model.mesh.setTransfiniteSurface(face)
+        gmsh.model.mesh.setRecombine(2, face)
     return surfaces
 
 
@@ -700,8 +741,16 @@ def mesh_parametric_can(
         MeshingError: If Gmsh cannot build or mesh the geometry.
     """
 
-    def build(gmsh: Any, _target_size: float) -> None:
-        _build_can_surfaces(gmsh, can)
+    def build(gmsh: Any, target_size: float) -> None:
+        _build_can_surfaces(gmsh, can, target_size)
+
+    def finish(gmsh: Any) -> None:
+        # Fragmenting the halves and caps can leave a handful of coincident
+        # vertices (measured: 5 zero-distance node pairs on a closed can's top
+        # rim); merged here because duplicate nodes collapse the TYPE7
+        # self-contact timestep in the solver.
+        with contextlib.suppress(Exception):
+            gmsh.model.mesh.removeDuplicateNodes()
 
     return _mesh_with_gate(
         build,
@@ -709,6 +758,7 @@ def mesh_parametric_can(
         source=(
             f"parametric_can(R={can.radius}, H={can.height}, t={can.thickness})"
         ),
+        finish=finish,
         target_size=target_size,
         min_size=min_size,
         max_size=max_size,
