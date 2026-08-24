@@ -1,0 +1,61 @@
+# LC-2 variant: the Honda can pressed on its BROAD face at mid-height.
+#
+# The example export is a flat rectangular can (seated 120 x 12.6 x 65 mm).
+# lc2_step_example drives the jig along +X into the narrow end; this case is
+# the 90-degree-rotated scenario: a compact jig plate drives along +Y into the
+# wide 120 x 65 face, centred at 50% of the can height, with a full-size fixed
+# plane backing the opposite face. Equivalent to rotating the can 90 degrees
+# on the floor and pressing with the same tool.
+
+name: lc2_step_broadside
+load_case: LC-2
+description: >-
+  Broad-face lateral crush of the CATIA can export: a 40 mm rigid jig plate
+  drives into the wide face at mid-height, backed by a fixed plane.
+
+geometry:
+  kind: step
+  step_path: examples/step/Honda_Can.stp
+  thickness: 0.3        # mm; shell thickness assigned to the imported skin
+  radius: 33.0          # nominal only: the mesh is auto-seated on the floor
+  height: 115.0         # and the tools are placed from its seated bounding box
+
+material:
+  key: aluminum_3003
+
+mesh:
+  target_size: 1.5
+  min_size: 0.4
+  max_size: 3.0
+  recombine: true
+  curvature_points: 10
+
+loading:
+  tool: jig_plane
+  direction: [0.0, 1.0, 0.0]    # into the broad face (thin axis of the can)
+  stroke: 8.0                   # mm - deep local dent into the 12.6 mm body
+  velocity: 2.0
+  ramp_fraction: 0.1
+  tool_gap: 0.5
+  tool_size: 40.0               # compact plate: the dent stays local to mid-height
+  support: jig_plane            # fixed flat wall backing the opposite broad face
+  support_size: 160.0
+
+contact:
+  friction: 0.15
+  gap_scale: 0.8
+  stiffness_scale: 1.0
+
+solver:
+  config: configs/solver.yaml
+  threads: 8
+  end_time: auto
+  animation_frames: 25
+  time_history_points: 500
+  stop_on_energy_error: true
+  stop_on_negative_volume: true
+
+output:
+  dir: runs/lc2_step_broadside
+  render: true
+  report: true

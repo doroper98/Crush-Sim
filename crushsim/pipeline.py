@@ -11,6 +11,7 @@ written, so no ungated artefact ever reaches the solver.
 from __future__ import annotations
 
 import json
+import math
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -159,10 +160,20 @@ def _seated_can_proxy(mesh: Any, case: CaseConfig) -> CanShell:
     :class:`CanShell`; for imported geometry that reference must describe the
     part *as seated*, not the case's nominal radius/height - a can modelled
     lying down is wider than it is tall. The proxy takes the seated bounding
-    box: radius from the larger in-plane extent, height from the Z extent.
+    box: height from the Z extent, radius from the in-plane extent *along the
+    drive direction* for a lateral case (pressing the thin broad face of a
+    rectangular can must start at that face, not at the widest one), falling
+    back to the larger in-plane extent for axial drives.
     """
     lo, hi = mesh.bounding_box()
-    radius = max(hi[0] - lo[0], hi[1] - lo[1]) / 2.0
+    dx, dy = hi[0] - lo[0], hi[1] - lo[1]
+    ux, uy, uz = case.loading.direction
+    norm = math.sqrt(ux * ux + uy * uy + uz * uz) or 1.0
+    ux, uy, uz = ux / norm, uy / norm, uz / norm
+    if abs(uz) > 0.9:
+        radius = max(dx, dy) / 2.0
+    else:
+        radius = math.hypot(ux * dx / 2.0, uy * dy / 2.0) or max(dx, dy) / 2.0
     height = hi[2] - lo[2]
     return make_can(radius, height, case.geometry.thickness)
 
