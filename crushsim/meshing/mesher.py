@@ -337,7 +337,12 @@ def _build_can_surfaces(gmsh: Any, can: CanShell, target_size: float) -> list[in
         ]
         loop_t = occ.addCurveLoop(top_arcs)
         surfaces.append(occ.addPlaneSurface([loop_t]))
-    if len(surfaces) > len(walls):
+    # Fragmenting is mandatory even without caps: the two extruded halves
+    # carry coincident-but-distinct seam edges, and meshing them unsewn
+    # duplicates every seam node - the §7 gate cannot see that (0 non-manifold
+    # edges), but the TYPE7 self-contact then collapses on the zero-distance
+    # node pairs (negative interface timestep, measured on the B-3 bench).
+    if len(surfaces) > 1:
         fused, _ = occ.fragment([(2, surfaces[0])], [(2, s) for s in surfaces[1:]])
         surfaces = [tag for dim, tag in fused if dim == 2]
     occ.synchronize()
@@ -348,18 +353,19 @@ def _build_can_surfaces(gmsh: Any, can: CanShell, target_size: float) -> list[in
     # size. The caps (when closed) stay unstructured but switch to the plain
     # Delaunay algorithm: with the wall arcs' node spacing imposed on the disc
     # rim, Frontal-Delaunay recombines a rim sliver (min SICN 0.06) where
-    # Delaunay recombines cleanly (0.60).
+    # Delaunay recombines cleanly (0.60). Faces are told apart geometrically
+    # because fragmenting reassigns tags; OCC pads bounding boxes by ~1e-7,
+    # so "flat" needs a loose test.
     n_arc = max(2, int(round(math.pi * r / target_size)) + 1)
     n_height = max(2, int(round(can.height / target_size)) + 1)
-    wall_set = set(walls)
     for _dim, face in gmsh.model.getEntities(2):
-        curves = gmsh.model.getBoundary([(2, face)], oriented=False)
-        if face not in wall_set or len(curves) != 4:
-            bb = gmsh.model.getBoundingBox(2, face)
-            # OCC pads bounding boxes by ~1e-7, so "flat" needs a loose test.
-            if abs(bb[5] - bb[2]) < 1e-3:  # flat cap [mm]
-                gmsh.model.mesh.setAlgorithm(2, face, 5)
+        bb = gmsh.model.getBoundingBox(2, face)
+        if abs(bb[5] - bb[2]) < 1e-3:  # flat cap [mm]
+            gmsh.model.mesh.setAlgorithm(2, face, 5)
             continue
+        curves = gmsh.model.getBoundary([(2, face)], oriented=False)
+        if len(curves) != 4:
+            continue  # fragmented into something unexpected; mesh unstructured
         for _cdim, ctag in curves:
             length = float(occ.getMass(1, abs(ctag)))
             is_arc = abs(length - math.pi * r) < abs(length - can.height)
@@ -738,12 +744,21 @@ def mesh_parametric_can(
     def build(gmsh: Any, target_size: float) -> None:
         _build_can_surfaces(gmsh, can, target_size)
 
+    def finish(gmsh: Any) -> None:
+        # Fragmenting the halves and caps can leave a handful of coincident
+        # vertices (measured: 5 zero-distance node pairs on a closed can's top
+        # rim); merged here because duplicate nodes collapse the TYPE7
+        # self-contact timestep in the solver.
+        with contextlib.suppress(Exception):
+            gmsh.model.mesh.removeDuplicateNodes()
+
     return _mesh_with_gate(
         build,
         name=name,
         source=(
             f"parametric_can(R={can.radius}, H={can.height}, t={can.thickness})"
         ),
+        finish=finish,
         target_size=target_size,
         min_size=min_size,
         max_size=max_size,
