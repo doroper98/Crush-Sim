@@ -319,6 +319,43 @@ def test_render_sequence_produces_media(tmp_path: Path) -> None:
     assert result.gifs["iso"].is_file()
 
 
+def test_render_sequence_composites_the_curve_panel(tmp_path: Path) -> None:
+    """With a curve, every frame carries the synced force-displacement panel."""
+    ok, reason = rendering_available()
+    if not ok:
+        pytest.skip(f"offscreen rendering unavailable: {reason}")
+    pv = pytest.importorskip("pyvista")
+    pd = pytest.importorskip("pandas")
+    import imageio.v2 as imageio
+
+    from crushsim.post.render import CURVE_PANEL_WIDTH_PX
+
+    files: list[Path] = []
+    for index in range(3):
+        mesh = pv.Sphere(radius=10.0 + index)
+        mesh.point_data["von Mises"] = np.linspace(0.0, 100.0, mesh.n_points)
+        path = tmp_path / f"c{index}.vtk"
+        mesh.save(path)
+        files.append(path)
+
+    curve = pd.DataFrame(
+        {
+            "time": np.linspace(0.0, 0.04, 50),
+            "displacement": np.linspace(0.0, 20.0, 50),
+            "force": np.linspace(0.0, 5.0, 50) ** 2,
+        }
+    )
+    window = (160, 120)
+    result = render_sequence(
+        files, tmp_path / "anim3", presets=("iso",), window_size=window, curve=curve
+    )
+    assert result.rendered
+    assert result.skipped_reason is None or "panel" not in result.skipped_reason
+    still = imageio.imread(result.stills["iso"])
+    assert still.shape[1] == window[0] + CURVE_PANEL_WIDTH_PX
+    assert still.shape[0] >= window[1]
+
+
 def test_render_colormap_range_spans_the_whole_sequence(tmp_path: Path) -> None:
     """Frame-fixed colour scale: the range covers every frame (spec §4 FR-07)."""
     ok, reason = rendering_available()

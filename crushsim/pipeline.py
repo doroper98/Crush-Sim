@@ -449,6 +449,7 @@ def _post_process(
             anim.outputs,
             result.run_dir / "anim",
             strict=False,
+            curve=curve,
         )
         out["render"] = render.to_dict()
     return out

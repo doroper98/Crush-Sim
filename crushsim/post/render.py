@@ -177,6 +177,75 @@ def _global_range(meshes: Sequence[Any], scalar: str) -> tuple[float, float]:
     return (lo, hi)
 
 
+CURVE_PANEL_WIDTH_PX: int = 480
+"""Width of the synced force-displacement panel beside the animation."""
+
+
+def _curve_panel_frames(curve: Any, n_frames: int, height: int) -> list[Any]:
+    """Render one force-displacement panel per animation frame.
+
+    The full curve is drawn faintly, the already-crushed portion is traced
+    solid with a marker at the frame's time, and the running time / deflection
+    / force values are printed - so the video answers "how hard is it pushing
+    right now" without a second window. Frame times assume the solver's
+    uniform animation interval over the curve's time span.
+    """
+    import matplotlib  # noqa: PLC0415
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt  # noqa: PLC0415
+    import numpy as np  # noqa: PLC0415
+
+    t = curve["time"].to_numpy(dtype=float)
+    d = curve["displacement"].to_numpy(dtype=float)
+    f = curve["force"].to_numpy(dtype=float)
+
+    dpi = 100
+    fig, ax = plt.subplots(figsize=(CURVE_PANEL_WIDTH_PX / dpi, height / dpi), dpi=dpi)
+    ax.plot(d, f, color="#9aa7b8", linewidth=1.0)
+    trace = ax.plot([], [], color="#c0392b", linewidth=2.0)[0]
+    marker = ax.plot([], [], "o", color="#c0392b", markersize=7)[0]
+    label = ax.text(
+        0.03, 0.97, "", transform=ax.transAxes, va="top", ha="left", fontsize=9, family="monospace"
+    )
+    ax.set_xlabel("displacement [mm]")
+    ax.set_ylabel("force [N]")
+    ax.set_title("Force - displacement", fontsize=10)
+    ax.margins(x=0.05, y=0.08)
+    fig.tight_layout()
+
+    frames: list[Any] = []
+    t_end = float(t[-1]) if t.size else 1.0
+    for index in range(n_frames):
+        t_i = t_end * (index / (n_frames - 1)) if n_frames > 1 else t_end
+        d_i = float(np.interp(t_i, t, d))
+        f_i = float(np.interp(t_i, t, f))
+        done = t <= t_i
+        trace.set_data(d[done], f[done])
+        marker.set_data([d_i], [f_i])
+        label.set_text(f"t {t_i * 1e3:7.2f} ms\nd {d_i:7.2f} mm\nF {f_i:7.1f} N")
+        fig.canvas.draw()
+        rgba = np.asarray(fig.canvas.buffer_rgba())
+        frames.append(rgba[:, :, :3].copy())
+    plt.close(fig)
+    return frames
+
+
+def _beside(shot: Any, panel: Any) -> Any:
+    """Place the curve panel beside a rendered frame, padding height with white."""
+    import numpy as np  # noqa: PLC0415
+
+    height = max(shot.shape[0], panel.shape[0])
+
+    def pad(image: Any) -> Any:
+        if image.shape[0] == height:
+            return image
+        extra = np.full((height - image.shape[0], image.shape[1], 3), 255, dtype=image.dtype)
+        return np.vstack([image, extra])
+
+    return np.hstack([pad(shot), pad(panel)])
+
+
 def render_sequence(
     vtk_files: Sequence[str | Path],
     outdir: str | Path,
@@ -188,6 +257,7 @@ def render_sequence(
     cmap: str = "turbo",
     gif_max_frames: int = 40,
     strict: bool = True,
+    curve: Any | None = None,
 ) -> RenderResult:
     """Render a converted VTK sequence to MP4 (plus a summary GIF) per preset.
 
@@ -202,6 +272,9 @@ def render_sequence(
         gif_max_frames: Frame cap for the shareable GIF.
         strict: Raise when rendering is unavailable instead of returning a
             result flagged as skipped.
+        curve: Optional force-displacement frame (``time`` / ``displacement``
+            / ``force`` columns): when given, every video/GIF/still carries a
+            synced curve panel beside the animation.
 
     Raises:
         PostProcessError: If inputs are missing, or rendering is unavailable
@@ -238,6 +311,13 @@ def render_sequence(
 
     result = RenderResult(scalar=field_name, scalar_range=clim, frames=len(meshes))
     video_ok, video_reason = ffmpeg_available()
+
+    panel_frames: list[Any] | None = None
+    if curve is not None and len(meshes) > 0:
+        try:
+            panel_frames = _curve_panel_frames(curve, len(meshes), window_size[1])
+        except Exception as exc:  # noqa: BLE001 - the panel must never kill the render
+            result.skipped_reason = f"curve panel skipped: {exc}"
 
     bounds = np.array(meshes[0].bounds, dtype=float)
     centre = np.array(
@@ -279,8 +359,11 @@ def render_sequence(
             )
             plotter.camera_position = camera
             plotter.show(auto_close=False)
-            frames.append(plotter.screenshot(return_img=True))
+            shot = plotter.screenshot(return_img=True)
             plotter.close()
+            if panel_frames is not None:
+                shot = _beside(shot, panel_frames[len(frames)])
+            frames.append(shot)
 
         still = out / f"{preset}_last.png"
         imageio.imwrite(still, frames[-1])
