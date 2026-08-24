@@ -31,6 +31,7 @@ import numpy as np
 from ..errors import GateFailure, MeshingError
 from ..geometry.parametric import CanShell, ToolShape
 from ..units import (
+    MESH_MIN_EDGE_LENGTH_MM,
     MESH_REMESH_MAX_ATTEMPTS,
     MESH_REMESH_SHRINK_FACTOR,
     MESH_TARGET_SIZE_DEFAULT_MM,
@@ -51,6 +52,26 @@ fillet bands that otherwise force sliver elements (min SICN ~0.02)."""
 
 STEP_MESH_SMOOTHING_STEPS: int = 25
 """Laplacian smoothing passes for meshes on imported (healed) CAD faces."""
+
+STEP_STRIP_WIDTH_LIMIT_MM: float = 2.0 * MESH_MIN_EDGE_LENGTH_MM
+"""Faces narrower than this cannot hold an element that clears the §7 minimum
+edge length, so they are defeatured (removed and the shell re-sewn). Real CATIA
+can exports carry ~0.4 mm flat rim strips that otherwise pin the whole mesh
+below the gate."""
+
+STEP_STRIP_AREA_FRACTION_MAX: float = 0.1
+"""Defeaturing never removes more than this fraction of the total surface area:
+a shape made mostly of narrow faces is meshed as-is and judged by the gate."""
+
+STEP_SHORT_CURVE_TARGET_FACTOR: float = 2.0
+"""Boundary curves shorter than this multiple of the target size are meshed as
+a single element edge. Subdividing a sub-target corner arc squeezes sliver
+quads into the adjacent faces (measured: min SICN 0.06 -> 0.31 on a CATIA can
+export)."""
+
+STEP_BAND_SIDE_RATIO_MIN: float = 1.8
+"""A four-sided face counts as a narrow fillet band when its long sides are at
+least this multiple of its short sides (and the short sides are opposite)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -404,6 +425,123 @@ def _build_tool_surfaces(gmsh: Any, tool: ToolShape, *, can_height: float) -> li
 
 
 # ---------------------------------------------------------------------------
+# Defeaturing of imported CAD (FR-03: the gate judges the mesh, so features
+# that can never mesh above the gate are removed or constrained up front)
+# ---------------------------------------------------------------------------
+
+
+def _face_width_proxy(gmsh: Any, face_tag: int) -> float:
+    """Estimate the width of a face as ``2 * area / perimeter``.
+
+    Exact for long rectangular strips, conservative (over-estimating) for
+    everything else, so it only ever flags genuinely narrow faces.
+    """
+    occ = gmsh.model.occ
+    area = float(occ.getMass(2, face_tag))
+    perimeter = sum(
+        float(occ.getMass(1, abs(ct)))
+        for _, ct in gmsh.model.getBoundary([(2, face_tag)], oriented=False)
+    )
+    return 2.0 * area / perimeter if perimeter > 0.0 else math.inf
+
+
+def _defeature_strip_faces(gmsh: Any) -> int:
+    """Remove faces too narrow to ever satisfy the §7 minimum edge length.
+
+    The narrowest faces go first until :data:`STEP_STRIP_AREA_FRACTION_MAX` of
+    the surface area is spent; the shell is then healed again so the sub-mm gap
+    left behind is sewn shut. Returns the number of faces removed.
+    """
+    occ = gmsh.model.occ
+    faces = gmsh.model.getEntities(2)
+    if not faces:
+        return 0
+    areas = {tag: float(occ.getMass(2, tag)) for _, tag in faces}
+    total_area = sum(areas.values())
+    strips = sorted(
+        (width, tag)
+        for _, tag in faces
+        if (width := _face_width_proxy(gmsh, tag)) < STEP_STRIP_WIDTH_LIMIT_MM
+    )
+    budget = STEP_STRIP_AREA_FRACTION_MAX * total_area
+    chosen: list[tuple[int, int]] = []
+    spent = 0.0
+    for _width, tag in strips:
+        if spent + areas[tag] > budget:
+            break
+        chosen.append((2, tag))
+        spent += areas[tag]
+    if not chosen:
+        return 0
+    occ.remove(chosen, recursive=False)
+    with contextlib.suppress(Exception):  # healing must never block the import
+        occ.healShapes(
+            tolerance=STEP_HEAL_TOLERANCE_MM,
+            fixDegenerated=True,
+            fixSmallEdges=True,
+            fixSmallFaces=True,
+            sewFaces=True,
+            makeSolids=False,
+        )
+    occ.synchronize()
+    return len(chosen)
+
+
+def _constrain_micro_features(gmsh: Any, target_size: float) -> None:
+    """Mesh narrow fillet bands as structured ladders and sub-target curves as
+    single element edges.
+
+    Both constraints keep element edges at feature size instead of letting the
+    mesher subdivide features smaller than the target: unconstrained, a CATIA
+    can export meshes its 1.6 mm rim fillets into 0.2 mm slivers.
+    """
+    occ = gmsh.model.occ
+    short_limit = STEP_SHORT_CURVE_TARGET_FACTOR * target_size
+
+    # Structured ladders over narrow four-sided bands. A curve is committed to
+    # one node count only once; a band whose curve is already claimed with a
+    # different count is skipped so transfinite constraints stay consistent.
+    committed: dict[int, int] = {}
+    for _dim, face in gmsh.model.getEntities(2):
+        curves = gmsh.model.getBoundary([(2, face)], oriented=False)
+        if len(curves) != 4:
+            continue
+        lengths = sorted((float(occ.getMass(1, abs(ct))), abs(ct)) for _, ct in curves)
+        short_pair, long_pair = lengths[:2], lengths[2:]
+        if short_pair[1][0] >= short_limit:
+            continue
+        if long_pair[0][0] < STEP_BAND_SIDE_RATIO_MIN * short_pair[1][0]:
+            continue
+        endpoints = [
+            {pt for _, pt in gmsh.model.getBoundary([(1, ct)], oriented=False)}
+            for _, ct in short_pair
+        ]
+        if not all(endpoints) or endpoints[0] & endpoints[1]:
+            continue  # closed or adjacent short sides: not a ladder band
+        rungs = max(2, int(round(long_pair[1][0] / target_size)) + 1)
+        wanted = dict.fromkeys((ct for _, ct in short_pair), 2)
+        wanted.update(dict.fromkeys((ct for _, ct in long_pair), rungs))
+        if any(committed.get(ct, n) != n for ct, n in wanted.items()):
+            continue
+        for ct, n in wanted.items():
+            gmsh.model.mesh.setTransfiniteCurve(ct, n)
+            committed[ct] = n
+        gmsh.model.mesh.setTransfiniteSurface(face)
+        gmsh.model.mesh.setRecombine(2, face)
+
+    # Any remaining sub-target open curve becomes a single element edge.
+    for _dim, ct in gmsh.model.getEntities(1):
+        if ct in committed:
+            continue
+        length = float(occ.getMass(1, ct))
+        if not 0.0 < length < short_limit:
+            continue
+        if not gmsh.model.getBoundary([(1, ct)], oriented=False):
+            continue  # closed curve: one edge cannot form a loop
+        gmsh.model.mesh.setTransfiniteCurve(ct, 2)
+
+
+# ---------------------------------------------------------------------------
 # Public meshing entry points
 # ---------------------------------------------------------------------------
 
@@ -425,7 +563,7 @@ def _mesh_once(
     """Run one build-and-mesh pass and return the mesh with its quality stats."""
     with gmsh_session() as gmsh:
         gmsh.model.add(name)
-        build(gmsh)
+        build(gmsh, target_size)
         _configure_mesh_options(
             gmsh,
             target_size=target_size,
@@ -562,7 +700,7 @@ def mesh_parametric_can(
         MeshingError: If Gmsh cannot build or mesh the geometry.
     """
 
-    def build(gmsh: Any) -> None:
+    def build(gmsh: Any, _target_size: float) -> None:
         _build_can_surfaces(gmsh, can)
 
     return _mesh_with_gate(
@@ -598,7 +736,10 @@ def mesh_step_surfaces(
     """Mesh the surfaces of a STEP file as shells.
 
     Solids in the file are replaced by their boundary faces (FR-02: the outer
-    skin is meshed, the wall thickness is a shell property).
+    skin is meshed, the wall thickness is a shell property). Imported CAD is
+    healed and then defeatured: strip faces below the §7 minimum edge length
+    are removed, and sub-target fillet bands and corner arcs are meshed at
+    feature size instead of being subdivided into slivers.
 
     Raises:
         MeshingError: If the file is missing or contains no meshable surface.
@@ -608,7 +749,7 @@ def mesh_step_surfaces(
     if not p.is_file():
         raise MeshingError(f"STEP file not found: {p}")
 
-    def build(gmsh: Any) -> None:
+    def build(gmsh: Any, target_size: float) -> None:
         occ = gmsh.model.occ
         try:
             occ.importShapes(str(p))
@@ -630,6 +771,12 @@ def mesh_step_surfaces(
         except Exception:  # noqa: BLE001 - healing must never block the import
             pass
         occ.synchronize()
+        # Defeature what healing keeps but the gate can never accept: sub-limit
+        # strip faces are removed and the shell re-sewn, then sub-target fillet
+        # bands and corner arcs are constrained to feature-sized elements
+        # (measured on a CATIA can export: gate FAIL 0.02 -> PASS 0.38).
+        _defeature_strip_faces(gmsh)
+        _constrain_micro_features(gmsh, target_size)
         # Solids are never volume-meshed: generate(2) touches surfaces only, so
         # the result is the outer skin as shells (FR-02).
         if not gmsh.model.getEntities(2):
@@ -706,7 +853,7 @@ def mesh_tool(
             name=name,
         )
 
-    def build(gmsh: Any) -> None:
+    def build(gmsh: Any, _target_size: float) -> None:
         _build_tool_surfaces(gmsh, tool, can_height=can_height)
 
     return _mesh_with_gate(
