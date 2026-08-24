@@ -187,6 +187,26 @@ RIGID_TOOL_COLOR: str = "#8a929c"
 """Neutral steel-grey for rigid tools (they carry no stress field of interest)."""
 
 
+def _surface_cells_only(mesh: Any) -> Any:
+    """Drop 0D/1D cells from an animation frame, keeping the shell surface.
+
+    OpenRadioss animation files carry the rigid bodies' master-slave links as
+    1D line elements (a fan from each plate's centre to every node); rendered,
+    they read as radial lines painted on the tools, so only 2D cells survive.
+    """
+    import numpy as np  # noqa: PLC0415
+
+    celltypes = getattr(mesh, "celltypes", None)
+    if celltypes is None:
+        return mesh
+    import pyvista as pv  # noqa: PLC0415
+
+    surface = np.isin(np.asarray(celltypes), [pv.CellType.TRIANGLE, pv.CellType.QUAD])
+    if surface.all() or not surface.any():
+        return mesh
+    return mesh.extract_cells(surface)
+
+
 def _split_rigid(mesh: Any, rigid_part_ids: Sequence[int] | None) -> tuple[Any, Any | None]:
     """Split a frame into (deformable, rigid-tools) by the ``PART_ID`` array.
 
@@ -334,7 +354,7 @@ def render_sequence(
     out = Path(outdir)
     out.mkdir(parents=True, exist_ok=True)
 
-    meshes = [pv.read(str(f)) for f in files]
+    meshes = [_surface_cells_only(pv.read(str(f))) for f in files]
     field_name = _pick_scalar(meshes[0], scalar)
     clim = _global_range(meshes, field_name) if field_name else None
 
