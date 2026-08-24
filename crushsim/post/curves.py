@@ -13,6 +13,7 @@ Reported quantities (spec §4 FR-06):
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,11 +53,23 @@ _FORCE_KEYS: tuple[str, ...] = (
 _ENERGY_KEYS: dict[str, tuple[str, ...]] = {
     "internal": ("internal", "ie", "i-energy", "i_energy"),
     "kinetic": ("kinetic", "ke", "k-energy", "k_energy"),
+    "rotation": ("rotation",),
     "hourglass": ("hourglass", "hg", "hourgl"),
     "contact": ("contact", "cont"),
+    "spring": ("spring",),
     "external": ("external", "ext-work", "ext_work", "extwork"),
     "total": ("total",),
 }
+
+_BALANCE_KEYS: tuple[str, ...] = (
+    "internal",
+    "kinetic",
+    "rotation",
+    "hourglass",
+    "contact",
+    "spring",
+)
+"""The tracked energies that must jointly account for the external work."""
 
 
 def _normalise(name: str) -> str:
@@ -335,6 +348,43 @@ def compute_metrics(
     )
 
 
+def balance_energy_error(frame: pd.DataFrame) -> float | None:
+    """Worst energy-balance residual ``|E_tracked - W_ext| / |W_ext|`` of a run.
+
+    Every energy the solver tracks counts toward the balance - internal,
+    kinetic, rotation, contact (elastic, friction and damping), hourglass and
+    spring - so physical dissipation such as contact friction is part of the
+    balance, not an error. The engine console's ERROR column omits interface
+    energy: a healthy frictional crush prints -8% there while the true §7
+    residual is below 0.2% (measured on the B-3 axial bench).
+
+    Rows where the external work is under 1% of its peak are skipped - early
+    in the run the denominator is numerically meaningless.
+
+    Returns:
+        The worst residual fraction, or None when the frame lacks an
+        internal-energy or external-work column (or all rows are skipped).
+    """
+    columns = list(frame.columns)
+    series: dict[str, pd.Series] = {}
+    for label, keys in _ENERGY_KEYS.items():
+        col = _match_column(columns, keys)
+        if col is not None:
+            series[label] = pd.to_numeric(frame[col], errors="coerce").fillna(0.0)
+    if "internal" not in series or "external" not in series:
+        return None
+    external = series["external"]
+    scale = float(external.abs().max())
+    if not math.isfinite(scale) or scale <= 0.0:
+        return None
+    tracked = sum(series[k] for k in _BALANCE_KEYS if k in series)
+    mask = external.abs() >= 0.01 * scale
+    if not bool(mask.any()):
+        return None
+    residual = ((tracked - external).abs() / external.abs())[mask]
+    return float(residual.max())
+
+
 def extract_energy_balance(
     frame: pd.DataFrame,
     *,
@@ -346,8 +396,9 @@ def extract_energy_balance(
     Args:
         frame: Time-history frame containing energy columns.
         added_mass_ratio: Added mass / physical mass, read from the solver log.
-        energy_error: Energy error fraction from the solver log; when omitted it
-            is estimated from ``|external - (internal + kinetic)| / external``.
+        energy_error: Energy error fraction; when omitted it is computed with
+            :func:`balance_energy_error` (all tracked energies against the
+            external work), falling back to the final-row balance.
 
     Raises:
         PostProcessError: If no internal-energy column can be identified.
@@ -365,9 +416,12 @@ def extract_energy_balance(
         )
 
     if energy_error is None:
+        energy_error = balance_energy_error(frame)
+    if energy_error is None:
         external = values["external"]
         if external > 0.0:
-            energy_error = abs(external - (values["internal"] + values["kinetic"])) / external
+            tracked = sum(values.get(k, 0.0) for k in _BALANCE_KEYS)
+            energy_error = abs(external - tracked) / external
         else:
             energy_error = 0.0
 

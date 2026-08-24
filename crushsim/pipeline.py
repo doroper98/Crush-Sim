@@ -419,10 +419,12 @@ def _post_process(
     out["metrics"] = metrics.to_dict()
 
     engine_log = result.run.engine_log if result.run else None
+    # The energy error is computed from the time-history balance (all tracked
+    # energies vs external work): the engine console's ERROR column omits
+    # interface friction energy and over-reports on frictional cases.
     energy = extract_energy_balance(
         frame,
         added_mass_ratio=(engine_log.max_mass_error or 0.0) if engine_log else 0.0,
-        energy_error=(engine_log.max_energy_error if engine_log else None),
     )
     out["energy"] = energy.to_dict()
 
