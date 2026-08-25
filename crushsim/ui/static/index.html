@@ -160,7 +160,7 @@ async function loadCases(){
     const btn=card.querySelector("button"), msg=card.querySelector(".rowline .meta");
     btn.addEventListener("click",async()=>{
       btn.disabled=true; msg.textContent="시작 중…";
-      try{await api("/api/runs/"+encodeURIComponent(c.file),{method:"POST"});msg.textContent="시작됨";nav("Monitor");}
+      try{const r=await api("/api/runs/"+encodeURIComponent(c.file),{method:"POST"});msg.textContent="대기열 "+r.position+"번";nav("Monitor");}
       catch(e){msg.textContent=e.message;btn.disabled=false;}
     });
     grid.appendChild(card);
@@ -173,15 +173,25 @@ function fmt(v,unit,digits=1){return v==null?"–":Number(v).toFixed(digits)+uni
 async function loadRuns(){
   const data=await api("/api/runs");
   const box=$("activeRuns"); box.innerHTML="";
-  if(!data.active.length) box.innerHTML='<div class="empty">실행 중인 해석이 없습니다</div>';
+  if(!data.active.length&&!(data.queued||[]).length) box.innerHTML='<div class="empty">실행 중인 해석이 없습니다</div>';
+  for(const qf of (data.queued||[])){
+    const div=document.createElement("div"); div.className="runcard";
+    div.innerHTML=`<div class="runhead"><h3>${qf}</h3><span class="pill warn" style="background:color-mix(in srgb,var(--muted) 15%,transparent);color:var(--muted)">대기열</span>
+      <button class="btn" style="margin-left:auto">취소</button></div>`;
+    div.querySelector("button").addEventListener("click",()=>api("/api/runs/"+encodeURIComponent(qf),{method:"DELETE"}).then(refresh));
+    box.appendChild(div);
+  }
   for(const r of data.active){
     const div=document.createElement("div"); div.className="runcard";
     const state=r.running?'<span class="pill run">RUNNING</span>':(r.returncode===0?'<span class="pill ok">DONE</span>':`<span class="pill bad">EXIT ${r.returncode}</span>`);
+    const cancel=r.running?'<button class="btn" style="margin-left:auto">중단</button>':"";
     div.innerHTML=`
-      <div class="runhead"><h3>${r.case}</h3>${state}<span class="meta">${r.stage||""}</span></div>
+      <div class="runhead"><h3>${r.case}</h3>${state}<span class="meta">${r.stage||""}</span>${cancel}</div>
       <div class="bar"><i style="width:${r.engine_progress_pct||0}%"></i></div>
       <div class="meta">engine ${fmt(r.engine_progress_pct,"%")} · console energy ${fmt(r.console_energy_error_pct,"%")} (마찰 포함 수지는 종료 시 판정)</div>
       <pre class="log">${(r.log_tail||"").replace(/</g,"&lt;")}</pre>`;
+    const btn=div.querySelector("button");
+    if(btn)btn.addEventListener("click",()=>{if(confirm(r.case+" 해석을 중단할까요?"))api("/api/runs/"+encodeURIComponent(r.file),{method:"DELETE"}).then(refresh);});
     box.appendChild(div);
   }
   const tbody=$("runTable").querySelector("tbody"); tbody.innerHTML="";

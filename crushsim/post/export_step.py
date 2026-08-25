@@ -92,6 +92,22 @@ def _triangles(mesh: Any, keep_ids: set[int] | None) -> tuple[np.ndarray, np.nda
     return np.asarray(mesh.points, dtype=float), np.asarray(tris, dtype=np.int64)
 
 
+def _deformable_thicknesses(run_dir: Path) -> list[float]:
+    """Deformable-part thicknesses [mm] from the run summary (may be empty)."""
+    summary = run_dir / "pipeline_summary.json"
+    if not summary.is_file():
+        return []
+    try:
+        parts = (json.loads(summary.read_text(encoding="utf-8")).get("deck") or {}).get(
+            "parts"
+        ) or []
+        return sorted(
+            {float(p["thickness_mm"]) for p in parts if p.get("role") == "deformable"}
+        )
+    except Exception:  # noqa: BLE001 - cosmetic metadata only
+        return []
+
+
 def export_deformed_step(
     run_dir: str | Path,
     *,
@@ -184,6 +200,26 @@ def export_deformed_step(
     target.parent.mkdir(parents=True, exist_ok=True)
     writer = STEPControl_Writer()
     writer.Transfer(shape, STEPControl_AsIs)
+    # Stamp the shell nature and thickness into the STEP header so the file
+    # itself says how to rebuild the solid (CAD thicken with this t).
+    try:
+        from OCP.APIHeaderSection import APIHeaderSection_MakeHeader  # noqa: PLC0415
+        from OCP.TCollection import TCollection_HAsciiString  # noqa: PLC0415
+
+        thicknesses = _deformable_thicknesses(run)
+        shown = "/".join(f"{t:g}" for t in thicknesses) if thicknesses else "unknown"
+        header = APIHeaderSection_MakeHeader(writer.Model())
+        header.SetName(TCollection_HAsciiString(f"{run.name} {part} frame {index}"))
+        header.SetDescriptionValue(
+            1,
+            TCollection_HAsciiString(
+                f"Crush-Sim deformed SHELL MID-SURFACE (zero-thickness faces); "
+                f"wall thickness t={shown} mm is a shell property - thicken in "
+                "CAD to rebuild the solid. Scored regions may be locally thinner."
+            ),
+        )
+    except Exception:  # noqa: BLE001 - the header stamp must never block the export
+        pass
     status = writer.Write(str(target))
     if status != IFSelect_RetDone or not target.is_file():
         raise PostProcessError(f"STEP write failed (status {status}) for {target}")

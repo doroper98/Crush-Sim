@@ -15,7 +15,9 @@ UI is a front-end to the pipeline, never a second implementation of it.
 from __future__ import annotations
 
 import json
+import os
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -62,6 +64,54 @@ def create_app(root: str | Path = ".") -> FastAPI:
     runs_dir = base / "runs"
     ui_logs = runs_dir / "_ui_logs"
     active: dict[str, ActiveRun] = {}
+    # Runs are strictly serialised: two OpenRadioss engines contending for
+    # the same cores spin-lock each other ~100x slower (measured), so extra
+    # launches queue and a single worker drains them in order.
+    pending: list[str] = []
+    queue_lock = threading.Lock()
+    worker_ref: dict[str, threading.Thread | None] = {"thread": None}
+
+    def _worker() -> None:
+        while True:
+            with queue_lock:
+                if not pending:
+                    worker_ref["thread"] = None
+                    return
+                case_file = pending.pop(0)
+            path = cases_dir / case_file
+            ui_logs.mkdir(parents=True, exist_ok=True)
+            log_path = ui_logs / f"{path.stem}.log"
+            try:
+                case = load_case(path)
+                with log_path.open("w", encoding="utf-8") as log:
+                    # Own process group: cancelling must take the solver
+                    # engine down with the pipeline process.
+                    process = subprocess.Popen(
+                        [sys.executable, "-m", "crushsim", "all", "-c", str(path)],
+                        cwd=base,
+                        stdout=log,
+                        stderr=subprocess.STDOUT,
+                        start_new_session=True,
+                    )
+            except Exception as exc:  # noqa: BLE001 - a broken case must not kill the worker
+                log_path.write_text(f"launch failed: {exc}\n", encoding="utf-8")
+                continue
+            active[case_file] = ActiveRun(
+                case_name=case.name,
+                process=process,
+                log_path=log_path,
+                run_dir=base / case.output.dir,
+            )
+            process.wait()
+            active[case_file].poll()
+
+    def _ensure_worker() -> None:
+        with queue_lock:
+            thread = worker_ref["thread"]
+            if thread is None or not thread.is_alive():
+                thread = threading.Thread(target=_worker, daemon=True, name="csim-ui-runner")
+                worker_ref["thread"] = thread
+                thread.start()
 
     app = FastAPI(title="Crush-Sim UI", docs_url=None, redoc_url=None)
 
@@ -132,7 +182,7 @@ def create_app(root: str | Path = ".") -> FastAPI:
         path.write_text(text, encoding="utf-8")
         return {"saved": case_file}
 
-    def _run_status(run: ActiveRun) -> dict[str, Any]:
+    def _run_status(run: ActiveRun, file: str) -> dict[str, Any]:
         run.poll()
         tail = ""
         progress: float | None = None
@@ -155,6 +205,7 @@ def create_app(root: str | Path = ".") -> FastAPI:
                     break
         return {
             "case": run.case_name,
+            "file": file,
             "running": not run.finished,
             "returncode": run.returncode,
             "stage": stage,
@@ -169,27 +220,35 @@ def create_app(root: str | Path = ".") -> FastAPI:
         if not path.is_file():
             raise HTTPException(404, f"case not found: {case_file}")
         existing = active.get(case_file)
-        if existing is not None and not existing.finished:
+        if existing is not None:
             existing.poll()
             if not existing.finished:
                 raise HTTPException(409, f"{case_file} is already running")
-        ui_logs.mkdir(parents=True, exist_ok=True)
-        log_path = ui_logs / f"{path.stem}.log"
-        with log_path.open("w", encoding="utf-8") as log:
-            process = subprocess.Popen(
-                [sys.executable, "-m", "crushsim", "all", "-c", str(path)],
-                cwd=base,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-            )
-        case = load_case(path)
-        active[case_file] = ActiveRun(
-            case_name=case.name,
-            process=process,
-            log_path=log_path,
-            run_dir=base / case.output.dir,
-        )
-        return {"started": case_file, "pid": process.pid}
+        with queue_lock:
+            if case_file in pending:
+                raise HTTPException(409, f"{case_file} is already queued")
+            pending.append(case_file)
+            position = len(pending)
+        _ensure_worker()
+        return {"queued": case_file, "position": position}
+
+    @app.delete("/api/runs/{case_file}")
+    def cancel_run(case_file: str) -> dict[str, Any]:
+        """Dequeue a waiting run, or terminate a running one (whole group)."""
+        with queue_lock:
+            if case_file in pending:
+                pending.remove(case_file)
+                return {"cancelled": case_file, "was": "queued"}
+        run = active.get(case_file)
+        if run is not None:
+            run.poll()
+            if not run.finished:
+                try:
+                    os.killpg(os.getpgid(run.process.pid), signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                return {"cancelled": case_file, "was": "running"}
+        raise HTTPException(404, f"{case_file} is neither queued nor running")
 
     @app.get("/api/runs")
     def list_runs() -> dict[str, Any]:
@@ -217,8 +276,11 @@ def create_app(root: str | Path = ".") -> FastAPI:
                         "viewer": bool((summary.parent / "viewer.html").is_file()),
                     }
                 )
+        with queue_lock:
+            queued = list(pending)
         return {
-            "active": [_run_status(run) for run in active.values()],
+            "active": [_run_status(run, file) for file, run in active.items()],
+            "queued": queued,
             "finished": finished,
         }
 

@@ -137,6 +137,19 @@ def test_start_run_unknown_case_is_404(client: TestClient) -> None:
     assert client.post("/api/runs/nope.yaml").status_code == 404
 
 
+def test_start_run_queues_and_cancel_unknown_is_404(client: TestClient) -> None:
+    # Launch requests enter a serialised queue (two engines contending for
+    # the same cores spin-lock each other); the response reports the slot.
+    response = client.post("/api/runs/ui_case.yaml")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["queued"] == "ui_case.yaml"
+    assert body["position"] >= 1
+    # Unknown cancels are 404; the queued/started run itself is drained by
+    # the worker (the subprocess exits fast against the fixture root).
+    assert client.delete("/api/runs/nope.yaml").status_code == 404
+
+
 def test_viewer_for_unknown_run_is_404(client: TestClient) -> None:
     assert client.get("/api/runs/nope/viewer").status_code == 404
 
