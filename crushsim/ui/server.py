@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import yaml
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -32,6 +33,7 @@ from ..config import load_case
 _STATIC = Path(__file__).parent / "static"
 _PROGRESS = re.compile(r"engine\s+([0-9.]+)%.*?energy error\s+(-?[0-9.]+)%")
 _STAGE = re.compile(r"\[(\d)/6\]\s+(\S+)")
+_CASE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_\-]*\.yaml")
 
 
 @dataclass
@@ -67,6 +69,8 @@ def create_app(root: str | Path = ".") -> FastAPI:
     def list_cases() -> list[dict[str, Any]]:
         out = []
         for path in sorted(cases_dir.glob("*.yaml")):
+            if path.name.startswith("."):  # a save_case validation probe
+                continue
             try:
                 case = load_case(path)
                 out.append(
@@ -86,6 +90,47 @@ def create_app(root: str | Path = ".") -> FastAPI:
             except Exception as exc:  # noqa: BLE001 - a broken yaml must not hide the rest
                 out.append({"file": path.name, "name": path.stem, "error": str(exc)})
         return out
+
+    def _case_path_or_404(case_file: str) -> Path:
+        if not _CASE_NAME.fullmatch(case_file):
+            raise HTTPException(404, f"case not found: {case_file}")
+        return cases_dir / case_file
+
+    @app.get("/api/cases/{case_file}/raw")
+    def case_raw(case_file: str) -> dict[str, Any]:
+        """The case yaml as a plain mapping - the workflow editor's node values."""
+        path = _case_path_or_404(case_file)
+        if not path.is_file():
+            raise HTTPException(404, f"case not found: {case_file}")
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except yaml.YAMLError as exc:
+            raise HTTPException(409, f"unparseable yaml: {exc}") from exc
+        if not isinstance(data, dict):
+            raise HTTPException(409, "case yaml is not a mapping")
+        return data
+
+    @app.put("/api/cases/{case_file}")
+    def save_case(case_file: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Save a workflow-editor graph back to configs/cases/.
+
+        The payload is validated by the same ``load_case`` the pipeline uses -
+        an invalid graph is rejected with the loader's own message and the
+        file on disk is left untouched.
+        """
+        path = _case_path_or_404(case_file)
+        text = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True)
+        probe = cases_dir / f".{path.stem}.probe.yaml"
+        cases_dir.mkdir(parents=True, exist_ok=True)
+        probe.write_text(text, encoding="utf-8")
+        try:
+            load_case(probe)
+        except Exception as exc:  # noqa: BLE001 - loader message goes to the editor
+            raise HTTPException(422, str(exc)) from exc
+        finally:
+            probe.unlink(missing_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return {"saved": case_file}
 
     def _run_status(run: ActiveRun) -> dict[str, Any]:
         run.poll()

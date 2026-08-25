@@ -64,6 +64,21 @@ tr:last-child td{border-bottom:none}
 h2.section{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:26px 0 12px}
 h2.section:first-child{margin-top:0}
 .scroll{overflow-x:auto}
+.flowbar{display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
+.flowbar select,.flowbar input{font:inherit;font-size:13px;background:var(--panel);border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:6px 10px}
+.flowbar .meta{margin-left:auto}
+#flowWrap{position:relative;background:var(--panel2);border:1px solid var(--line);border-radius:10px;height:620px;overflow:auto}
+#flowCanvas{position:relative;width:1120px;height:860px}
+#wires{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+#wires path{fill:none;stroke:var(--muted);stroke-width:1.6;opacity:.6}
+.node{position:absolute;width:236px;background:var(--panel);border:1px solid var(--line);border-radius:9px;box-shadow:0 2px 10px rgba(0,0,0,.07)}
+.node h4{font-size:12.5px;font-weight:600;padding:8px 12px;border-bottom:1px solid var(--line);cursor:grab;user-select:none;border-radius:9px 9px 0 0;background:var(--chip)}
+.node .body{padding:9px 12px 11px;display:flex;flex-direction:column;gap:5px}
+.node label{font-size:11px;color:var(--muted);display:flex;justify-content:space-between;align-items:center;gap:8px}
+.node input,.node select{font-family:'IBM Plex Mono',monospace;font-size:11.5px;width:116px;background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:4px;padding:3px 6px}
+.node input[type=checkbox]{width:auto}
+.port{position:absolute;width:10px;height:10px;border-radius:50%;background:var(--accent);border:2px solid var(--panel);top:12px}
+.port.in{left:-6px}.port.out{right:-6px}
 </style>
 </head>
 <body>
@@ -71,6 +86,7 @@ h2.section:first-child{margin-top:0}
   <div><h1>Crush-Sim</h1><div class="sub" id="version">local pipeline UI</div></div>
   <nav>
     <button id="navCases" class="on">케이스</button>
+    <button id="navFlow">워크플로</button>
     <button id="navMonitor">실행 모니터</button>
     <button id="navResults">결과</button>
   </nav>
@@ -79,6 +95,20 @@ h2.section:first-child{margin-top:0}
   <section id="pageCases">
     <h2 class="section">케이스 라이브러리</h2>
     <div class="grid" id="caseGrid"><div class="empty">불러오는 중…</div></div>
+  </section>
+
+  <section id="pageFlow" hidden>
+    <h2 class="section">워크플로 편집기 — 노드 순서 = 해석 준비 순서</h2>
+    <div class="flowbar">
+      <select id="flowCase"></select>
+      <input id="flowName" placeholder="저장할 파일명.yaml" size="26">
+      <button class="btn" id="flowSave">저장</button>
+      <button class="btn primary" id="flowRun">저장 후 실행</button>
+      <span class="meta" id="flowMsg"></span>
+    </div>
+    <div id="flowWrap"><div id="flowCanvas">
+      <svg id="wires"></svg>
+    </div></div>
   </section>
 
   <section id="pageMonitor" hidden>
@@ -100,7 +130,7 @@ h2.section:first-child{margin-top:0}
 <script>
 "use strict";
 const $=id=>document.getElementById(id);
-const pages={Cases:$("pageCases"),Monitor:$("pageMonitor"),Results:$("pageResults")};
+const pages={Cases:$("pageCases"),Flow:$("pageFlow"),Monitor:$("pageMonitor"),Results:$("pageResults")};
 let current="Cases";
 function nav(name){
   current=name;
@@ -174,14 +204,182 @@ async function loadRuns(){
   if(!data.finished.length) tbody.innerHTML='<tr><td colspan="7" class="empty">완료된 런이 없습니다</td></tr>';
 }
 
+/* ------------------------------------------------------------------ */
+/* Workflow editor: the case yaml rendered as a node graph.            */
+/* Nodes = preparation steps in working order; wires = data flow into  */
+/* the solve. Saving writes a case yaml validated by the same loader   */
+/* the pipeline uses, so the graph can never produce an invalid case.  */
+/* ------------------------------------------------------------------ */
+
+const FLOW_NODES=[
+  {id:"geo",title:"① 형상 — 해석 대상",x:16,y:26,fields:[
+    {p:"geometry.kind",label:"종류",type:"select",opts:["parametric_can","step"],redraw:true},
+    {p:"geometry.step_path",label:"STEP 파일",type:"text",show:s=>gp(s,"geometry.kind")==="step"},
+    {p:"geometry.radius",label:"반경 mm",type:"num",show:s=>gp(s,"geometry.kind")!=="step"},
+    {p:"geometry.height",label:"높이 mm",type:"num",show:s=>gp(s,"geometry.kind")!=="step"},
+    {p:"geometry.thickness",label:"두께 mm",type:"num",show:s=>gp(s,"geometry.kind")!=="step"},
+  ]},
+  {id:"mesh",title:"② 메쉬",x:296,y:26,fields:[
+    {p:"mesh.target_size",label:"요소 크기 mm",type:"num"},
+    {p:"mesh.imperfection_mm",label:"불완전성 mm",type:"num"},
+  ]},
+  {id:"mat",title:"③ 재료",x:16,y:330,fields:[
+    {p:"material.key",label:"재료 카드",type:"text"},
+  ]},
+  {id:"tool",title:"④ 강체 공구 · 모션",x:296,y:220,fields:[
+    {p:"loading.tool",label:"공구 형상",type:"select",opts:["platen","jig_plane","v_block","indenter","cylinder"],redraw:true},
+    {p:"loading.direction",label:"이동 방향",type:"vec"},
+    {p:"loading.stroke",label:"스트로크 mm",type:"num"},
+    {p:"loading.velocity",label:"속도 m/s",type:"num"},
+    {p:"loading.tool_gap",label:"초기 갭 mm",type:"num"},
+    {p:"loading.indenter_radius",label:"공구 반경 mm",type:"num",show:s=>["indenter","cylinder"].includes(gp(s,"loading.tool"))},
+    {p:"loading.tool_size",label:"공구 크기 mm",type:"num"},
+  ]},
+  {id:"bc",title:"⑤ 지지 · 구속 (BC)",x:576,y:300,fields:[
+    {p:"loading.support",label:"고정 지지",type:"select",opts:["","jig_plane","v_block"]},
+    {p:"loading.clamp_can_base",label:"캔 바닥 고정",type:"bool"},
+    {p:"contact.friction",label:"마찰 계수",type:"num"},
+  ]},
+  {id:"solver",title:"⑥ 솔버",x:576,y:60,fields:[
+    {p:"solver.threads",label:"스레드",type:"num"},
+    {p:"solver.animation_frames",label:"애니메이션 프레임",type:"num"},
+  ]},
+  {id:"out",title:"⑦ 결과 출력",x:856,y:170,fields:[
+    {p:"output.dir",label:"출력 폴더",type:"text"},
+    {p:"output.render",label:"애니메이션",type:"bool"},
+    {p:"output.report",label:"리포트",type:"bool"},
+  ]},
+];
+const FLOW_WIRES=[["geo","mesh"],["mesh","solver"],["mat","solver"],["tool","solver"],["bc","solver"],["solver","out"]];
+let flowState=null, flowLoaded=false;
+
+function gp(o,path){for(const k of path.split(".")){if(o==null)return undefined;o=o[k];}return o;}
+function sp(o,path,v){
+  const ks=path.split("."), leaf=ks.pop();
+  for(const k of ks){if(typeof o[k]!=="object"||o[k]==null)o[k]={};o=o[k];}
+  if(v===undefined||v===""||v===null)delete o[leaf]; else o[leaf]=v;
+}
+
+function fieldInput(f){
+  const cur=gp(flowState,f.p);
+  if(f.type==="select"){
+    const sel=document.createElement("select");
+    for(const o of f.opts){const op=document.createElement("option");op.value=o;op.textContent=o===""?"(없음)":o;sel.appendChild(op);}
+    sel.value=cur??"";
+    sel.addEventListener("change",()=>{sp(flowState,f.p,sel.value||undefined);if(f.redraw)renderFlowBodies();});
+    return sel;
+  }
+  const inp=document.createElement("input");
+  if(f.type==="bool"){
+    inp.type="checkbox";inp.checked=!!cur;
+    inp.addEventListener("change",()=>sp(flowState,f.p,inp.checked));
+    return inp;
+  }
+  inp.type="text";
+  inp.value=cur==null?"":(f.type==="vec"&&Array.isArray(cur)?cur.join(", "):cur);
+  inp.addEventListener("change",()=>{
+    const v=inp.value.trim();
+    if(v==="")return sp(flowState,f.p,undefined);
+    if(f.type==="num"){const n=Number(v);if(!Number.isNaN(n))sp(flowState,f.p,n);}
+    else if(f.type==="vec"){const a=v.split(",").map(Number);if(a.length===3&&a.every(x=>!Number.isNaN(x)))sp(flowState,f.p,a);}
+    else sp(flowState,f.p,v);
+  });
+  return inp;
+}
+
+function renderFlowBodies(){
+  for(const def of FLOW_NODES){
+    const body=$("nodebody-"+def.id); body.innerHTML="";
+    for(const f of def.fields){
+      if(f.show&&!f.show(flowState))continue;
+      const lab=document.createElement("label");
+      lab.append(f.label,fieldInput(f));
+      body.appendChild(lab);
+    }
+  }
+  drawWires();
+}
+
+function drawWires(){
+  const svg=$("wires"), canvas=$("flowCanvas");
+  svg.innerHTML="";
+  const cb=canvas.getBoundingClientRect();
+  for(const [a,b] of FLOW_WIRES){
+    const na=$("node-"+a).getBoundingClientRect(), nb=$("node-"+b).getBoundingClientRect();
+    const x1=na.right-cb.left, y1=na.top-cb.top+17, x2=nb.left-cb.left, y2=nb.top-cb.top+17;
+    const mid=(x1+x2)/2;
+    const path=document.createElementNS("http://www.w3.org/2000/svg","path");
+    path.setAttribute("d",`M${x1},${y1} C${mid},${y1} ${mid},${y2} ${x2},${y2}`);
+    svg.appendChild(path);
+  }
+}
+
+function buildFlowNodes(){
+  const canvas=$("flowCanvas");
+  for(const def of FLOW_NODES){
+    const node=document.createElement("div");
+    node.className="node"; node.id="node-"+def.id;
+    node.style.left=def.x+"px"; node.style.top=def.y+"px";
+    node.innerHTML=`<h4>${def.title}</h4><div class="body" id="nodebody-${def.id}"></div>
+      <span class="port in"></span><span class="port out"></span>`;
+    const head=node.querySelector("h4");
+    head.addEventListener("mousedown",e=>{
+      e.preventDefault();
+      const sx=e.clientX-node.offsetLeft, sy=e.clientY-node.offsetTop;
+      const move=ev=>{node.style.left=Math.max(0,ev.clientX-sx)+"px";node.style.top=Math.max(0,ev.clientY-sy)+"px";drawWires();};
+      const up=()=>{removeEventListener("mousemove",move);removeEventListener("mouseup",up);};
+      addEventListener("mousemove",move); addEventListener("mouseup",up);
+    });
+    canvas.appendChild(node);
+  }
+}
+
+async function loadFlowCase(file){
+  flowState=await api("/api/cases/"+encodeURIComponent(file)+"/raw");
+  $("flowName").value=file;
+  renderFlowBodies();
+}
+
+async function initFlow(){
+  if(flowLoaded)return; flowLoaded=true;
+  buildFlowNodes();
+  const cases=(await api("/api/cases")).filter(c=>!c.error);
+  const sel=$("flowCase");
+  for(const c of cases){const op=document.createElement("option");op.value=c.file;op.textContent=c.file;sel.appendChild(op);}
+  sel.addEventListener("change",()=>loadFlowCase(sel.value).catch(e=>$("flowMsg").textContent=e.message));
+  const save=async()=>{
+    let name=$("flowName").value.trim();
+    if(!name)throw new Error("파일명을 입력하세요");
+    if(!name.endsWith(".yaml"))name+=".yaml";
+    if(gp(flowState,"output.dir")==null||$("flowName").value.trim()!==sel.value)
+      sp(flowState,"output.dir","runs/"+name.replace(/\.yaml$/,""));
+    if(name!==sel.value)sp(flowState,"name",name.replace(/\.yaml$/,""));
+    await api("/api/cases/"+encodeURIComponent(name),{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(flowState)});
+    return name;
+  };
+  $("flowSave").addEventListener("click",async()=>{
+    try{const n=await save();$("flowMsg").textContent="저장됨: "+n;}
+    catch(e){$("flowMsg").textContent=e.message;}
+  });
+  $("flowRun").addEventListener("click",async()=>{
+    try{
+      const n=await save();
+      await api("/api/runs/"+encodeURIComponent(n),{method:"POST"});
+      $("flowMsg").textContent="실행 시작: "+n; nav("Monitor");
+    }catch(e){$("flowMsg").textContent=e.message;}
+  });
+  if(cases.length)await loadFlowCase(cases[0].file);
+}
+
 async function refresh(){
   try{
     if(current==="Cases") await loadCases();
+    else if(current==="Flow") await initFlow();
     else await loadRuns();
   }catch(e){console.error(e);}
 }
 refresh();
-setInterval(()=>{if(current!=="Cases")refresh();},2500);
+setInterval(()=>{if(current!=="Cases"&&current!=="Flow")refresh();},2500);
 </script>
 </body>
 </html>

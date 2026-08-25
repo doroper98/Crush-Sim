@@ -454,6 +454,11 @@ def load_case(path: str | Path) -> CaseConfig:
         else _as_float(load_raw["support_size"], "loading.support_size", p),
         clamp_can_base=bool(load_raw.get("clamp_can_base", False)),
     )
+    _tools = ("platen", "jig_plane", "v_block", "indenter", "cylinder", "step")
+    if loading.tool not in _tools:
+        raise ConfigError(
+            f"loading.tool in {p} must be one of {', '.join(_tools)}, got {loading.tool!r}"
+        )
     if loading.support is not None and loading.support not in ("jig_plane", "v_block"):
         raise ConfigError(
             f"loading.support in {p} must be 'jig_plane' or 'v_block', got {loading.support!r}"

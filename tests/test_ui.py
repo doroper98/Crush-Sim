@@ -98,6 +98,41 @@ def test_runs_lists_finished_run_metrics(client: TestClient) -> None:
     assert run["report"] is True
 
 
+# ---------------------------------------------------------------------------
+# Workflow editor: raw case read + validated save
+# ---------------------------------------------------------------------------
+
+
+def test_case_raw_returns_yaml_mapping(client: TestClient) -> None:
+    data = client.get("/api/cases/ui_case.yaml/raw").json()
+    assert data["geometry"]["radius"] == 33.0
+    assert data["loading"]["tool"] == "platen"
+
+
+def test_save_case_roundtrip(client: TestClient, ui_root: Path) -> None:
+    data = client.get("/api/cases/ui_case.yaml/raw").json()
+    data["loading"]["stroke"] = 55.0
+    assert client.put("/api/cases/edited.yaml", json=data).status_code == 200
+    saved = yaml.safe_load((ui_root / "configs" / "cases" / "edited.yaml").read_text())
+    assert saved["loading"]["stroke"] == 55.0
+
+
+def test_save_case_rejects_invalid_case(client: TestClient, ui_root: Path) -> None:
+    data = client.get("/api/cases/ui_case.yaml/raw").json()
+    data["loading"]["tool"] = "banana"
+    response = client.put("/api/cases/bad.yaml", json=data)
+    assert response.status_code == 422
+    # The invalid graph never lands on disk, and no probe file is left behind.
+    cases = ui_root / "configs" / "cases"
+    assert not (cases / "bad.yaml").exists()
+    assert not list(cases.glob(".*probe*"))
+
+
+def test_save_case_rejects_bad_filename(client: TestClient) -> None:
+    assert client.put("/api/cases/..%2Fevil.yaml", json={}).status_code == 404
+    assert client.put("/api/cases/notyaml.txt", json={}).status_code in (404, 422)
+
+
 def test_start_run_unknown_case_is_404(client: TestClient) -> None:
     assert client.post("/api/runs/nope.yaml").status_code == 404
 
