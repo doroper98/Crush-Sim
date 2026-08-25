@@ -264,6 +264,15 @@ class MeshConfig:
     """Recombine triangles into a quad-dominant mesh."""
     curvature_points: int = 12
     """Gmsh ``Mesh.MeshSizeFromCurvature`` - elements per 2*pi of curvature."""
+    imperfection_mm: float = 0.0
+    """Seeded radial imperfection amplitude for the parametric can wall [mm].
+
+    A perfect cylinder's first buckling peak never mesh-converges (classical
+    imperfection sensitivity): each refinement finds a higher buckling mode and
+    the peak keeps falling. Seeding a small deterministic imperfection - the
+    industry-standard remedy - makes every mesh buckle in the same physical
+    mode so the peak converges. 0 disables it; the B-3 sweep uses ~0.5x the
+    wall thickness."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,6 +304,13 @@ class LoadingConfig:
     """
     support_size: float | None = None
     """Characteristic support size [mm]; defaults like ``tool_size``."""
+    clamp_can_base: bool = False
+    """Fix the can's base node ring (all six DOF).
+
+    A standing can pressed laterally at mid height has nothing holding it
+    down in a gravity-free quasi-static model - it tips over the support and
+    slides instead of crushing. Real fixtures grip the base; this models
+    that grip."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -414,6 +430,7 @@ def load_case(path: str | Path) -> CaseConfig:
         max_size=None if mesh_raw.get("max_size") is None else _as_float(mesh_raw["max_size"], "mesh.max_size", p),
         recombine=bool(mesh_raw.get("recombine", True)),
         curvature_points=int(mesh_raw.get("curvature_points", 12)),
+        imperfection_mm=_as_float(mesh_raw.get("imperfection_mm", 0.0), "mesh.imperfection_mm", p),
     )
     if mesh.target_size <= 0:
         raise ConfigError(f"mesh.target_size in {p} must be > 0")
@@ -435,6 +452,7 @@ def load_case(path: str | Path) -> CaseConfig:
         support_size=None
         if load_raw.get("support_size") is None
         else _as_float(load_raw["support_size"], "loading.support_size", p),
+        clamp_can_base=bool(load_raw.get("clamp_can_base", False)),
     )
     if loading.support is not None and loading.support not in ("jig_plane", "v_block"):
         raise ConfigError(

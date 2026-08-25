@@ -34,7 +34,7 @@ Deck layout produced (spec §4 FR-04, §5.2, §5.3):
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -265,6 +265,7 @@ class RadiossDeckWriter:
         load_case: str = "LC-1",
         description: str = "",
         solver_version_tag: str = "unpinned",
+        clamp_can_base: bool = False,
     ) -> None:
         if not parts:
             raise DeckError("A deck needs at least one part")
@@ -286,6 +287,7 @@ class RadiossDeckWriter:
         self.load_case = load_case
         self.description = description
         self.solver_version_tag = solver_version_tag
+        self.clamp_can_base = bool(clamp_can_base)
         self._assign_ids()
 
     # -- id assignment ------------------------------------------------------
@@ -529,6 +531,29 @@ class RadiossDeckWriter:
             s10("111 111") + i10(0) + i10(80 + bcs_id),
         ]
 
+    def _block_can_base_clamp(self) -> list[str]:
+        """Fix the can's base node ring (all six DOF): the fixture's grip.
+
+        Without it a standing can pressed laterally at mid height just tips
+        over the support and slides in a gravity-free quasi-static model
+        (measured on the cylindrical can: rigid-body lean, no local dent).
+        """
+        can = next(p for p in self.parts if p.role == "deformable")
+        z = np.asarray(can.mesh.nodes, dtype=float)[:, 2]
+        base_ids = [int(n) for n, zz in zip(can.mesh.node_ids, z) if zz <= float(z.min()) + 1.0]
+        if not base_ids:
+            return []
+        lines = [RULER, "/GRNOD/NODE/96", title("CAN_BASE")]
+        for i in range(0, len(base_ids), 10):
+            lines.append("".join(i10(n) for n in base_ids[i : i + 10]))
+        lines += [
+            "/BCS/5",
+            title("CAN_BASE_CLAMP"),
+            "#  Tra rot   skew_ID  grnod_ID",
+            s10("111 111") + i10(0) + i10(96),
+        ]
+        return lines
+
     def _block_tool_drive(self) -> list[str]:
         """REF_TOOL: constrain every DOF but the drive axis, then impose displacement."""
         tool = self.tool
@@ -707,6 +732,8 @@ class RadiossDeckWriter:
                 if bcs_id == 2:
                     bcs_id = 3
                 lines += self._block_fixed_bcs(part, bcs_id)
+        if self.clamp_can_base:
+            lines += self._block_can_base_clamp()
         lines += self._block_tool_drive()
         lines += self._block_contact()
         lines += self._block_time_history()
@@ -850,6 +877,7 @@ def build_deck(
         drive=drive,
         material=material,
         friction=case.contact.friction,
+        clamp_can_base=case.loading.clamp_can_base,
         gap_scale=case.contact.gap_scale,
         stiffness_scale=case.contact.stiffness_scale,
         animation_frames=case.solver.animation_frames,

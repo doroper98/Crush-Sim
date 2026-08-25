@@ -26,6 +26,7 @@ material:
 mesh:
   target_size: 2.0
   recombine: true
+  imperfection_mm: 0.1    # 1x wall thickness: regularises the buckling peak (B-3)
   curvature_points: 16
 
 loading:
