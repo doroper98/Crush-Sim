@@ -187,9 +187,30 @@ def generate_viewer(
         },
     }
 
+    # The viewer draws the shell mid-surface, so the wall looks paper-thin;
+    # state explicitly that the thickness is a solved property, not omitted.
+    thickness_note = ""
+    summary_path = run / "pipeline_summary.json"
+    if summary_path.is_file():
+        try:
+            parts = (
+                json.loads(summary_path.read_text(encoding="utf-8")).get("deck") or {}
+            ).get("parts") or []
+            values = sorted(
+                {float(p["thickness_mm"]) for p in parts if p.get("role") == "deformable"}
+            )
+            if values:
+                shown = "/".join(f"{v:g}" for v in values)
+                thickness_note = (
+                    f" · 쉘 중립면 표시 — 벽 두께 t={shown}mm는 쉘 물성으로 "
+                    "강성(굽힘 ∝ t³)·질량·접촉에 반영됨"
+                )
+        except Exception:  # noqa: BLE001 - a broken summary must not block the viewer
+            pass
+
     html = _TEMPLATE.read_text(encoding="utf-8")
     html = html.replace("__TITLE__", title)
-    html = html.replace("__NOTE__", note or f"{title} 런의 실제 프레임 데이터로")
+    html = html.replace("__NOTE__", (note or f"{title} 런의 실제 프레임 데이터로") + thickness_note)
     html = html.replace("__DATA__", json.dumps(data))
 
     target = Path(out_path) if out_path else run / "viewer.html"
