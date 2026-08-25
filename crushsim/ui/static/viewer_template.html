@@ -125,6 +125,7 @@ select{
         <button id="viewFront">정면</button>
         <button id="viewTop">위</button>
         <button id="wire">와이어프레임</button>
+        <button id="ghost" title="변형 전(STP 원형) 캔을 반투명으로 겹쳐 표시">원형 표시</button>
       </div>
       <div class="row" style="margin-top:10px">
         <label>컬러</label>
@@ -242,10 +243,29 @@ function viridis(t){
 }
 const partColor={1:[0.78,0.31,0.24],2:[0.62,0.66,0.72],3:[0.35,0.42,0.55],4:[0.47,0.56,0.5]};
 
-const state={t:0, playing:false, speed:1, wire:false, colorMode:"part",
+const state={t:0, playing:false, speed:1, wire:false, ghost:false, colorMode:"part",
   vis:{1:true,2:true,3:true,4:true}, opa:{1:1,2:0.35,3:0.6,4:0.35},
   clipAxis:-1, clipPos:0.5, clipFlip:false,
   rotX:-1.05, rotZ:0.7, dist:diag*1.9, pan:[0,0]};
+
+// Undeformed reference: the CAN part at frame 0 (the meshed STP shape),
+// drawn as a translucent grey ghost so deformation reads against the original.
+let ghostB=null;
+function buildGhost(){
+  const pid=1; if(!quadsByPart[pid]) return;
+  const idx=quadsByPart[pid], nq=idx.length, P0=pos[0];
+  const V=new Float32Array(nq*6*3), L=new Float32Array(nq*8*3);
+  let vp=0,lp=0; const p=[[0,0,0],[0,0,0],[0,0,0],[0,0,0]];
+  for(let k=0;k<nq;k++){
+    const q=idx[k];
+    for(let n=0;n<4;n++){const ni=quads[q*4+n]*3;for(let c2=0;c2<3;c2++)p[n][c2]=P0[ni+c2];}
+    for(const t3 of [0,1,2, 0,2,3]){V[vp]=p[t3][0];V[vp+1]=p[t3][1];V[vp+2]=p[t3][2];vp+=3;}
+    for(const e of [0,1, 1,2, 2,3, 3,0]){L[lp]=p[e][0];L[lp+1]=p[e][1];L[lp+2]=p[e][2];lp+=3;}
+  }
+  ghostB={vbo:gl.createBuffer(), lbo:gl.createBuffer(), nTri:nq*6, nLine:nq*8};
+  gl.bindBuffer(gl.ARRAY_BUFFER,ghostB.vbo); gl.bufferData(gl.ARRAY_BUFFER,V,gl.STATIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER,ghostB.lbo); gl.bufferData(gl.ARRAY_BUFFER,L,gl.STATIC_DRAW);
+}
 
 function frameLerp(){
   const f=state.t*(NF-1), i=Math.min(NF-2,Math.floor(f)), a=f-i;
@@ -364,6 +384,18 @@ function draw(){
     }
   }
   gl.depthMask(true);
+  if(state.ghost && ghostB){
+    gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.depthMask(false);
+    gl.bindBuffer(gl.ARRAY_BUFFER,ghostB.vbo);gl.enableVertexAttribArray(loc.aPos);gl.vertexAttribPointer(loc.aPos,3,gl.FLOAT,false,0,0);
+    gl.disableVertexAttribArray(loc.aNrm); gl.vertexAttrib3f(loc.aNrm,0,0,1);
+    gl.disableVertexAttribArray(loc.aCol); gl.vertexAttrib4f(loc.aCol,0.45,0.50,0.60,0.25);
+    gl.drawArrays(gl.TRIANGLES,0,ghostB.nTri);
+    gl.vertexAttrib4f(loc.aCol,0.40,0.45,0.55,0.55);
+    gl.bindBuffer(gl.ARRAY_BUFFER,ghostB.lbo);gl.vertexAttribPointer(loc.aPos,3,gl.FLOAT,false,0,0);
+    gl.drawArrays(gl.LINES,0,ghostB.nLine);
+    gl.enableVertexAttribArray(loc.aNrm); gl.enableVertexAttribArray(loc.aCol);
+    gl.depthMask(true);
+  }
 }
 
 // ---------- interaction ----------
@@ -411,6 +443,7 @@ $("viewIso").addEventListener("click",()=>{state.rotX=-1.05;state.rotZ=0.7;state
 $("viewFront").addEventListener("click",()=>{state.rotX=-Math.PI/2;state.rotZ=0;state.pan=[0,0];state.dist=diag*1.9;requestDraw();});
 $("viewTop").addEventListener("click",()=>{state.rotX=0;state.rotZ=0;state.pan=[0,0];state.dist=diag*1.9;requestDraw();});
 $("wire").addEventListener("click",e=>{state.wire=!state.wire;e.target.classList.toggle("on",state.wire);requestDraw();});
+$("ghost").addEventListener("click",e=>{if(!ghostB)buildGhost();state.ghost=!state.ghost;e.target.classList.toggle("on",state.ghost);requestDraw();});
 $("colorMode").addEventListener("change",e=>{state.colorMode=e.target.value;updateCbar();rebuild();requestDraw();});
 for(const pid of partIds){
   if(!$("v"+pid)) continue;
