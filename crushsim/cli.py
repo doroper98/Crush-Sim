@@ -604,6 +604,37 @@ def run_all(
 
 
 # ---------------------------------------------------------------------------
+# ui (FR-11, Phase 3)
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def ui(
+    root: Annotated[
+        Path, typer.Option("--root", help="Crush-Sim checkout to serve (configs/, runs/)")
+    ] = Path("."),
+    host: Annotated[str, typer.Option(help="Bind address")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(help="Port")] = 8384,
+    no_browser: Annotated[
+        bool, typer.Option("--no-browser", help="Do not open a browser tab")
+    ] = False,
+) -> None:
+    """Start the local web UI: case launcher, run monitor, results viewer."""
+    try:
+        from .ui.server import serve
+    except ImportError as exc:
+        _fail(
+            CrushSimError(
+                f"The UI needs the 'ui' extra ({exc.name} missing). "
+                "Install it with: pip install -e .[ui]"
+            )
+        )
+        return
+    typer.secho(f"Crush-Sim UI: http://{host}:{port}/  (Ctrl+C to stop)", fg=typer.colors.GREEN)
+    serve(root, host=host, port=port, open_browser=not no_browser)
+
+
+# ---------------------------------------------------------------------------
 # doctor (Phase 0, Day-1 gate)
 # ---------------------------------------------------------------------------
 
