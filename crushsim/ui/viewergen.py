@@ -129,11 +129,7 @@ def generate_viewer(
     if max_frames is not None and 2 <= max_frames < len(files):
         keep = np.unique(np.linspace(0, len(files) - 1, max_frames).round().astype(int))
         files = [files[i] for i in keep]
-    curve_csv = run / "force_displacement.csv"
-    if not curve_csv.is_file():
-        raise PostProcessError(
-            f"No curve at {curve_csv} - post-processing has not run."
-        )
+    curve_csv = run / "force_displacement.csv"  # absent on pressure-driven runs
 
     first_mesh = pv.read(files[0])
     quads, part, source = _aligned_cells(first_mesh)
@@ -163,7 +159,7 @@ def generate_viewer(
 
     import pandas as pd  # noqa: PLC0415
 
-    curve = pd.read_csv(curve_csv)
+    curve = pd.read_csv(curve_csv) if curve_csv.is_file() else None
     n_points = int(first_mesh.n_points)
     index_type: Any = np.uint16 if n_points < 65536 else np.uint32
     data = {
@@ -182,7 +178,9 @@ def generate_viewer(
         "pos": [_b64(p) for p in positions],
         "vm": [_b64(v) for v in von_mises],
         "ps": [_b64(p) for p in plastic],
-        "curve": {
+        "curve": None
+        if curve is None
+        else {
             "t": curve["time"].tolist(),
             "d": curve["displacement"].tolist(),
             "f": curve["force"].tolist(),

@@ -256,12 +256,16 @@ def test_b2_lateral_stiffness_matches_curved_beam_theory(b2_result: Path) -> Non
 
 @pytest.mark.bench
 def test_b3_peak_load_converges_with_mesh(b3_results: dict[str, Path]) -> None:
-    """B-3: peak load differs by <= 5% between the 1.0 and 0.5 mm meshes.
+    """B-3: peak load differs by <= 5% between the 0.5 and 0.35 mm meshes.
 
-    Spec §8 sweeps the same axial crush case at 2.0 / 1.0 / 0.5 mm; the fine
-    mesh is the reference, and the medium mesh must land within 5% of it for
-    the production 1.2 mm default to count as mesh-converged. The coarse point
-    is reported for the trend but carries no tolerance.
+    Spec §8 (v2.1.1) sweeps the same axial crush case at 1.0 / 0.5 / 0.35 mm;
+    the fine mesh is the reference and the medium mesh must land within 5% of
+    it. The pair sits one level finer than the original 1.0/0.5 gate: the
+    concertina fold wavelength 4*sqrt(R*t) ~ 7.3 mm needs >= 5 elements per
+    half-wave, which a 1.0 mm mesh cannot deliver (3.7) - its whole
+    post-buckling response, not just the peak, stays unconverged (measured:
+    mean crush load +33% vs the 0.5 mm mesh). The coarse point is reported
+    for the trend but carries no tolerance.
     """
     peaks = {
         label: compute_metrics(extract_force_displacement(read_th_csv(path))).peak_load
@@ -279,5 +283,5 @@ def test_b3_peak_load_converges_with_mesh(b3_results: dict[str, Path]) -> None:
     )
     coarse_drift = relative_error(peaks["coarse"], peaks["fine"])
     assert verdict.passed, (
-        f"{verdict.describe()} (coarse 2.0 mm point drifts {coarse_drift:+.1%})"
+        f"{verdict.describe()} (coarse 1.0 mm point drifts {coarse_drift:+.1%})"
     )

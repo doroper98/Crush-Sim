@@ -442,8 +442,9 @@ function updateCbar(){
   $("cbarMin").textContent="0";
 }
 
-// curve mapping: time -> displacement/force
-const CT=D.curve.t, CD=D.curve.d, CF=D.curve.f;
+// curve mapping: time -> displacement/force (absent on pressure-driven runs)
+const HASCURVE=!!(D.curve&&D.curve.t&&D.curve.t.length);
+const CT=HASCURVE?D.curve.t:[0], CD=HASCURVE?D.curve.d:[0], CF=HASCURVE?D.curve.f:[0];
 function curveAt(time){
   if(time<=CT[0])return[CD[0],CF[0]];
   for(let i=1;i<CT.length;i++) if(CT[i]>=time){
@@ -457,14 +458,18 @@ function simTime(){
   return D.times[i]*(1-a)+D.times[i+1]*a;
 }
 function updateReadout(){
-  const t=simTime(),[d,f]=curveAt(t);
+  const t=simTime();
+  if(!HASCURVE){$("readout").innerHTML=`t <b>${(t*1000).toFixed(2)} ms</b>`;return;}
+  const [d,f]=curveAt(t);
   $("readout").innerHTML=`t <b>${(t*1000).toFixed(2)} ms</b> &nbsp; d <b>${d.toFixed(2)} mm</b> &nbsp; F <b>${f.toFixed(1)} N</b>`;
 }
 // chart
 const chart=$("chart"),ctx=chart.getContext("2d");
 const fMax=Math.max(...CF), dMax=Math.max(...CD);
-$("chartNote").textContent=`피크 ${fMax.toFixed(0)} N @ ${CD[CF.indexOf(fMax)].toFixed(1)} mm`;
+if(HASCURVE){$("chartNote").textContent=`피크 ${fMax.toFixed(0)} N @ ${CD[CF.indexOf(fMax)].toFixed(1)} mm`;}
+else{$("chartNote").textContent="압력 구동 해석 — 하중-변위 곡선 없음";const c=$("chart");if(c)c.style.display="none";}
 function drawChart(){
+  if(!HASCURVE)return;
   const w=chart.clientWidth*devicePixelRatio,h=chart.clientHeight*devicePixelRatio;
   if(chart.width!==w||chart.height!==h){chart.width=w;chart.height=h;}
   const cs=getComputedStyle(document.documentElement);
