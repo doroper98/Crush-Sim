@@ -410,7 +410,6 @@ def _post_process(
         plot_force_displacement,
         read_th_csv,
     )
-    from .post.render import render_sequence
 
     assert result.deck is not None
     run_dir = result.deck.starter_path.parent
