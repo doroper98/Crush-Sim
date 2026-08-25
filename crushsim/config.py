@@ -264,6 +264,15 @@ class MeshConfig:
     """Recombine triangles into a quad-dominant mesh."""
     curvature_points: int = 12
     """Gmsh ``Mesh.MeshSizeFromCurvature`` - elements per 2*pi of curvature."""
+    imperfection_mm: float = 0.0
+    """Seeded radial imperfection amplitude for the parametric can wall [mm].
+
+    A perfect cylinder's first buckling peak never mesh-converges (classical
+    imperfection sensitivity): each refinement finds a higher buckling mode and
+    the peak keeps falling. Seeding a small deterministic imperfection - the
+    industry-standard remedy - makes every mesh buckle in the same physical
+    mode so the peak converges. 0 disables it; the B-3 sweep uses ~0.5x the
+    wall thickness."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -414,6 +423,7 @@ def load_case(path: str | Path) -> CaseConfig:
         max_size=None if mesh_raw.get("max_size") is None else _as_float(mesh_raw["max_size"], "mesh.max_size", p),
         recombine=bool(mesh_raw.get("recombine", True)),
         curvature_points=int(mesh_raw.get("curvature_points", 12)),
+        imperfection_mm=_as_float(mesh_raw.get("imperfection_mm", 0.0), "mesh.imperfection_mm", p),
     )
     if mesh.target_size <= 0:
         raise ConfigError(f"mesh.target_size in {p} must be > 0")
