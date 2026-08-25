@@ -316,9 +316,9 @@ class ExtraToolConfig:
 class LoadingConfig:
     """Reference-tool drive definition (spec §5.3)."""
 
-    tool: Literal["platen", "jig_plane", "v_block", "indenter", "cylinder", "step", "none"] = (
-        "platen"
-    )
+    tool: Literal[
+        "platen", "jig_plane", "v_block", "indenter", "cylinder", "bead_roller", "step", "none"
+    ] = "platen"
     """Main driven tool; ``none`` for tool-less cases (internal pressure only)."""
     direction: tuple[float, float, float] = (0.0, 0.0, -1.0)
     stroke: float = 40.0
@@ -335,7 +335,7 @@ class LoadingConfig:
     """Hemispherical indenter radius [mm] (LC-3)."""
     step_path: Path | None = None
     """Real-shape jig STEP file (LC-2 with ``tool: step``)."""
-    support: Literal["jig_plane", "v_block"] | None = None
+    support: Literal["jig_plane", "v_block", "bead_arbor"] | None = None
     """Fixed rigid support opposite the drive direction (LC-2/LC-3).
 
     A radially driven jig with nothing behind the can simply bulldozes it
@@ -355,6 +355,10 @@ class LoadingConfig:
     """Axial position of a radial main tool: fraction of the can height."""
     stage: int = 0
     """Motion stage of the main tool (see :class:`ExtraToolConfig`)."""
+    motion: Literal["linear", "orbit"] = "linear"
+    """``orbit``: the main tool circles the can axis (see ExtraToolConfig)."""
+    orbit_revs: float = 1.25
+    feed_revs: float = 1.0
     extra_tools: tuple[ExtraToolConfig, ...] = ()
     """Additional driven rigid tools (multi-tool processes)."""
 
@@ -568,20 +572,28 @@ def load_case(path: str | Path) -> CaseConfig:
         clamp_can_base=bool(load_raw.get("clamp_can_base", False)),
         height_frac=_as_float(load_raw.get("height_frac", 0.5), "loading.height_frac", p),
         stage=int(load_raw.get("stage", 0)),
+        motion=str(load_raw.get("motion", "linear")),  # type: ignore[arg-type]
+        orbit_revs=_as_float(load_raw.get("orbit_revs", 1.25), "loading.orbit_revs", p),
+        feed_revs=_as_float(load_raw.get("feed_revs", 1.0), "loading.feed_revs", p),
         extra_tools=tuple(
             _extra_tool(raw, index, p) for index, raw in enumerate(load_raw.get("extra_tools") or [])
         ),
     )
-    _tools = ("platen", "jig_plane", "v_block", "indenter", "cylinder", "step", "none")
+    _tools = (
+        "platen", "jig_plane", "v_block", "indenter", "cylinder", "bead_roller", "step", "none"
+    )
     if loading.tool not in _tools:
         raise ConfigError(
             f"loading.tool in {p} must be one of {', '.join(_tools)}, got {loading.tool!r}"
         )
+    if loading.motion not in ("linear", "orbit"):
+        raise ConfigError(f"loading.motion in {p} must be 'linear' or 'orbit'")
     if loading.tool == "none" and loading.extra_tools:
         raise ConfigError(f"loading.extra_tools in {p} need a main tool (loading.tool != 'none')")
-    if loading.support is not None and loading.support not in ("jig_plane", "v_block"):
+    _supports = ("jig_plane", "v_block", "bead_arbor")
+    if loading.support is not None and loading.support not in _supports:
         raise ConfigError(
-            f"loading.support in {p} must be 'jig_plane' or 'v_block', got {loading.support!r}"
+            f"loading.support in {p} must be one of {', '.join(_supports)}, got {loading.support!r}"
         )
     if loading.stroke <= 0:
         raise ConfigError(f"loading.stroke in {p} must be > 0")

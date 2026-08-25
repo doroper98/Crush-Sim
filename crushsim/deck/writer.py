@@ -1112,16 +1112,21 @@ def build_deck(
             )
         )
 
-    drive = (
-        DriveDefinition(
+    drive = None
+    if tool_mesh is not None:
+        drive = DriveDefinition(
             direction=case.loading.direction,
             stroke=case.loading.stroke,
             velocity_mm_s=m_per_s_to_mm_per_s(case.loading.velocity_m_s),
             ramp_fraction=case.loading.ramp_fraction,
         )
-        if tool_mesh is not None
-        else None
-    )
+        if case.loading.motion == "orbit":
+            if case.geometry.kind != "parametric_can":
+                raise DeckError("orbit motion needs a parametric can (known axis and radius)")
+            outer = (case.loading.tool_size or 3.0 * case.geometry.radius) * 0.5
+            drive.orbit_start_radius = case.geometry.radius + case.loading.tool_gap + outer
+            drive.orbit_revs = case.loading.orbit_revs
+            drive.orbit_feed_revs = case.loading.feed_revs
     extra_drives = []
     for t in extras:
         if t.motion == "orbit":

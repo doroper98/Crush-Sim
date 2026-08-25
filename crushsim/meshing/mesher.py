@@ -524,6 +524,27 @@ def _build_tool_surfaces(
         surfaces = [
             tag for dim, tag in gmsh.model.getBoundary([(3, torus)], oriented=False) if dim == 2
         ]
+    elif tool.kind == "bead_arbor":
+        # Internal support arbor for rotary beading: two coaxial sleeve bands
+        # (pure surfaces, like the can wall) above and below the groove
+        # window. The rollers press the wall into the window while the bands
+        # stop the free rim from ovalising - the production grooving-arbor
+        # arrangement. tool.size is the arbor diameter; tool.radius (or a
+        # 1.8 mm default) is the groove-window half-height; the origin's Z
+        # is the groove centre.
+        r_arb = tool.size * 0.5
+        window = tool.radius if tool.radius > 0.0 else 1.8
+        band = 3.0
+        z0 = float(origin[2])
+        surfaces = []
+        for za, zb in ((z0 - window - band, z0 - window), (z0 + window, z0 + window + band)):
+            arcs = [
+                occ.addCircle(0.0, 0.0, za, r_arb, angle1=0.0, angle2=math.pi),
+                occ.addCircle(0.0, 0.0, za, r_arb, angle1=math.pi, angle2=2.0 * math.pi),
+            ]
+            extruded = occ.extrude([(1, a) for a in arcs], 0.0, 0.0, zb - za)
+            surfaces += [tag for dim, tag in extruded if dim == 2]
+        occ.synchronize()
     else:
         raise MeshingError(
             f"Tool kind {tool.kind!r} has no parametric builder; "

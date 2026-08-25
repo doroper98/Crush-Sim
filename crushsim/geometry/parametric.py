@@ -17,7 +17,9 @@ from typing import Literal
 from ..errors import GeometryError
 from ..units import UNIT_SYSTEM
 
-ToolKind = Literal["platen", "jig_plane", "v_block", "indenter", "cylinder", "bead_roller", "step"]
+ToolKind = Literal[
+    "platen", "jig_plane", "v_block", "indenter", "cylinder", "bead_roller", "bead_arbor", "step"
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,6 +237,16 @@ def make_tool(
         raise GeometryError("Tool drive direction must be a non-zero vector")
     unit = (direction[0] / norm, direction[1] / norm, direction[2] / norm)
     tool_size = float(size) if size is not None else 1.5 * can.diameter
+
+    if kind == "bead_arbor":
+        # Internal support: always on the can axis, at the groove height.
+        return ToolShape(
+            kind=kind,
+            origin=(0.0, 0.0, height_frac * can.height),
+            direction=unit,
+            size=tool_size,
+            radius=0.0,
+        )
 
     axial = abs(unit[2]) > 0.9
     if axial:

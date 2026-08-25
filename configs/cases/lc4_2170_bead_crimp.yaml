@@ -1,20 +1,31 @@
-# LC-4 - 2170 battery can: rotary beading then crimping (two-stage forming).
+# LC-4 - 2170 battery can: rotary beading over an internal grooving arbor.
 #
-# Stage 0 (rotary beading): a torus-rim roller ORBITS the can axis while
-# feeding radially inward - the real process kinematics - leaving a
-# continuous circumferential groove around the neck (cf. the bead visible on
-# production 2170 cells). The feed completes over the first revolution and
-# the remaining quarter-turn irons the groove at constant depth.
-# Stage 1 (crimping, simplified): an axial platen presses the open rim down
-# so the neck folds at the groove. The real crimp with cap and gasket needs
-# those parts modelled; this run captures the can-side deformation only.
+# The production process: the can sits on a chuck (base clamped), an internal
+# arbor with a groove window supports the wall, and an opposed pair of
+# torus-rim rollers orbits the can axis, feeding radially inward at
+# spin-forming rates. The rollers press the wall into the arbor window,
+# leaving a continuous circumferential bead groove of uniform depth.
+#
+# Iteration history (each measured as 24-sector groove radii):
+#   v2 four static rollers      -> 4 discrete dents, no ring        (rejected)
+#   v3 one orbiting roller      -> ring, 2.1 mm depth spread (rim ovalises
+#                                  after the unbalanced side load)
+#   v4 opposed pair             -> 2-fold-symmetric 2.0 mm spread (plastic
+#                                  ovalisation frozen in by the fast feed)
+#   v5 2-rev spin-forming feed  -> still 2.0 mm (elastic ovalisation of the
+#                                  unsupported free rim is intrinsic)
+#   v6 internal arbor           -> this case
+#
+# Crimping is deliberately NOT part of this run: the arbor must come out
+# first (production uses a collapsible arbor), which needs the deformed
+# state carried into a second run - the FR planned as issue #26.
 
 name: lc4_2170_bead_crimp
 load_case: LC-3
 description: >-
   2170 battery can (R10.5 x H70 x t0.3, closed bottom, Ni-plated can steel):
-  stage-0 rotary beading (orbiting torus roller, 1.25 revolutions) near the
-  rim, stage-1 axial press folding the neck at the groove.
+  rotary beading - an opposed pair of torus rollers orbits 3 revolutions
+  (1 mm/rev feed, then a full ironing pass) over an internal grooving arbor.
 
 geometry:
   kind: parametric_can
@@ -33,31 +44,27 @@ mesh:
   curvature_points: 12
 
 loading:
-  # Main tool = the stage-1 crimp press (its contact force is the curve).
-  tool: platen
-  direction: [0.0, 0.0, -1.0]
-  stroke: 3.5               # 0.5 gap + 3.0 mm of rim fold-down
-  velocity: 1.5
+  # Main tool = one of the beading rollers (its contact force is the curve).
+  tool: bead_roller
+  motion: orbit
+  direction: [1.0, 0.0, 0.0]
+  stroke: 2.0               # radial feed: 0.5 gap + 1.5 mm groove depth
+  velocity: 10.0            # tangential speed of the roller centre [m/s]
+  orbit_revs: 3.0
+  feed_revs: 2.0            # 1 mm/rev spin-forming feed, then iron 1 rev
   ramp_fraction: 0.1
   tool_gap: 0.5
-  tool_size: 30.0
-  stage: 1
-  clamp_can_base: true      # the chuck grips the base during both stages
+  indenter_radius: 1.5      # roller rim (groove profile) radius
+  tool_size: 11.0           # roller outer diameter
+  height_frac: 0.914        # groove centre height
+  clamp_can_base: true      # the chuck grips the base
+  # Internal grooving arbor: sleeve bands above/below the groove window stop
+  # the free rim from ovalising. Diameter leaves 0.40 mm wall clearance,
+  # above the 0.32 mm scaled contact gap.
+  support: bead_arbor
+  support_size: 19.9
   extra_tools:
-    # Stage-0 rotary beading roller: torus rim (outer dia 11 mm, rim r 1.5),
-    # orbiting at 10 m/s tangential, feeding 2.0 mm (0.5 gap + 1.5 groove)
-    # over the first revolution.
-    # TWO rollers 180 degrees apart, orbiting together - like the production
-    # machines - cancelling the net radial force (a single roller ovalised
-    # the free rim, 2.1 mm groove spread). The feed is spread over TWO
-    # revolutions (1 mm/rev, spin-forming style): completing it in under a
-    # revolution froze a plastic ovalisation into the section that a
-    # constant-depth ironing pass could not erase (still 2.0 mm spread).
-    # A final full revolution irons at constant depth.
-    - {tool: bead_roller, motion: orbit, direction: [1.0, 0.0, 0.0],
-       stroke: 2.0, velocity: 10.0, orbit_revs: 3.0, feed_revs: 2.0,
-       tool_gap: 0.5, indenter_radius: 1.5, tool_size: 11.0,
-       height_frac: 0.914, stage: 0}
+    # The opposed roller, 180 degrees away, orbiting in lockstep.
     - {tool: bead_roller, motion: orbit, direction: [-1.0, 0.0, 0.0],
        stroke: 2.0, velocity: 10.0, orbit_revs: 3.0, feed_revs: 2.0,
        tool_gap: 0.5, indenter_radius: 1.5, tool_size: 11.0,

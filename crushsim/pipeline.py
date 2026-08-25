@@ -162,6 +162,7 @@ def build_geometry(case: CaseConfig, *, can_override: CanShell | None = None) ->
             opposite,
             gap=INITIAL_CONTACT_CLEARANCE,
             size=case.loading.support_size or case.loading.tool_size,
+            height_frac=case.loading.height_frac,
         )
     return GeometryStage(
         can=can,
