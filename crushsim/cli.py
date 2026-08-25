@@ -246,6 +246,10 @@ def deck(
             can_mesh=meshes["can"].mesh,
             tool_mesh=meshes["tool"].mesh,
             floor_mesh=meshes["floor"].mesh,
+            support_mesh=meshes["support"].mesh if "support" in meshes else None,
+            extra_tool_meshes=[
+                meshes[f"tool{i + 2}"].mesh for i in range(len(case.loading.extra_tools))
+            ],
             outdir=run_dir / "deck",
             solver_version_tag=_solver_tag(case.solver.config),
         )

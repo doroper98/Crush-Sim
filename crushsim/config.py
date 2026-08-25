@@ -276,6 +276,31 @@ class MeshConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ExtraToolConfig:
+    """One additional driven rigid tool (multi-tool processes, e.g. beading).
+
+    Extra tools share the can and contact settings with the main tool but
+    carry their own shape, drive and *stage*: tools in stage 0 move first
+    (together), stage 1 tools start once every stage-0 stroke has finished,
+    and so on. A beading + crimping process is stage-0 radial rollers
+    followed by a stage-1 axial die.
+    """
+
+    tool: Literal["platen", "jig_plane", "v_block", "indenter", "cylinder"] = "platen"
+    direction: tuple[float, float, float] = (0.0, 0.0, -1.0)
+    stroke: float = 10.0
+    velocity_m_s: float = DRIVE_VELOCITY_DEFAULT_M_S
+    ramp_fraction: float = 0.1
+    tool_gap: float = 0.5
+    tool_size: float | None = None
+    indenter_radius: float = 10.0
+    height_frac: float = 0.5
+    """Axial position of a radial tool: fraction of the can height."""
+    stage: int = 0
+    """Motion stage; each stage starts when the previous one's strokes end."""
+
+
+@dataclass(frozen=True, slots=True)
 class LoadingConfig:
     """Reference-tool drive definition (spec §5.3)."""
 
@@ -311,6 +336,12 @@ class LoadingConfig:
     down in a gravity-free quasi-static model - it tips over the support and
     slides instead of crushing. Real fixtures grip the base; this models
     that grip."""
+    height_frac: float = 0.5
+    """Axial position of a radial main tool: fraction of the can height."""
+    stage: int = 0
+    """Motion stage of the main tool (see :class:`ExtraToolConfig`)."""
+    extra_tools: tuple[ExtraToolConfig, ...] = ()
+    """Additional driven rigid tools (multi-tool processes)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -388,6 +419,46 @@ def _direction(value: Any, source: Path | str) -> tuple[float, float, float]:
     return (vec[0] / norm, vec[1] / norm, vec[2] / norm)
 
 
+_EXTRA_TOOL_KINDS = ("platen", "jig_plane", "v_block", "indenter", "cylinder")
+
+
+def _extra_tool(raw: Any, index: int, source: Path | str) -> ExtraToolConfig:
+    """Parse and validate one ``loading.extra_tools`` entry."""
+    key = f"loading.extra_tools[{index}]"
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{key} in {source} must be a mapping, got {raw!r}")
+    kind = str(raw.get("tool", "platen"))
+    if kind not in _EXTRA_TOOL_KINDS:
+        raise ConfigError(
+            f"{key}.tool in {source} must be one of {', '.join(_EXTRA_TOOL_KINDS)}, got {kind!r}"
+        )
+    tool = ExtraToolConfig(
+        tool=kind,  # type: ignore[arg-type]
+        direction=_direction(raw.get("direction"), source),
+        stroke=_as_float(raw.get("stroke", 10.0), f"{key}.stroke", source),
+        velocity_m_s=_as_float(
+            raw.get("velocity", DRIVE_VELOCITY_DEFAULT_M_S), f"{key}.velocity", source
+        ),
+        ramp_fraction=_as_float(raw.get("ramp_fraction", 0.1), f"{key}.ramp_fraction", source),
+        tool_gap=_as_float(raw.get("tool_gap", 0.5), f"{key}.tool_gap", source),
+        tool_size=None
+        if raw.get("tool_size") is None
+        else _as_float(raw["tool_size"], f"{key}.tool_size", source),
+        indenter_radius=_as_float(
+            raw.get("indenter_radius", 10.0), f"{key}.indenter_radius", source
+        ),
+        height_frac=_as_float(raw.get("height_frac", 0.5), f"{key}.height_frac", source),
+        stage=int(raw.get("stage", 0)),
+    )
+    if tool.stroke <= 0.0:
+        raise ConfigError(f"{key}.stroke in {source} must be > 0")
+    if tool.stage < 0:
+        raise ConfigError(f"{key}.stage in {source} must be >= 0")
+    if not 0.0 <= tool.height_frac <= 1.0:
+        raise ConfigError(f"{key}.height_frac in {source} must be in [0, 1]")
+    return tool
+
+
 def load_case(path: str | Path) -> CaseConfig:
     """Load and validate a case YAML file.
 
@@ -453,6 +524,11 @@ def load_case(path: str | Path) -> CaseConfig:
         if load_raw.get("support_size") is None
         else _as_float(load_raw["support_size"], "loading.support_size", p),
         clamp_can_base=bool(load_raw.get("clamp_can_base", False)),
+        height_frac=_as_float(load_raw.get("height_frac", 0.5), "loading.height_frac", p),
+        stage=int(load_raw.get("stage", 0)),
+        extra_tools=tuple(
+            _extra_tool(raw, index, p) for index, raw in enumerate(load_raw.get("extra_tools") or [])
+        ),
     )
     _tools = ("platen", "jig_plane", "v_block", "indenter", "cylinder", "step")
     if loading.tool not in _tools:

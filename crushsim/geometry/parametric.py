@@ -205,6 +205,7 @@ def make_tool(
     size: float | None = None,
     indenter_radius: float = 10.0,
     step_path: str | None = None,
+    height_frac: float = 0.5,
 ) -> ToolShape:
     """Place a reference tool against the can, offset by ``gap`` along ``-direction``.
 
@@ -220,6 +221,9 @@ def make_tool(
         indenter_radius: Hemispherical indenter radius [mm] for LC-3; also the
             pipe radius for the horizontal ``cylinder`` roller.
         step_path: Real-shape jig STEP file for ``kind == 'step'``.
+        height_frac: Axial position of a radial tool as a fraction of the can
+            height (0 = base, 1 = rim). Ignored for axial drives. A beading
+            roller sits near the top (e.g. 0.9); the default is mid height.
 
     Raises:
         GeometryError: If the direction is degenerate or the gap is negative.
@@ -245,7 +249,7 @@ def make_tool(
         # would double-count the builder's own setback and leave the tool
         # radius' worth of dead air in front of the can.
         offset = can.radius + gap
-        origin = (-unit[0] * offset, -unit[1] * offset, 0.5 * can.height)
+        origin = (-unit[0] * offset, -unit[1] * offset, height_frac * can.height)
 
     return ToolShape(
         kind=kind,

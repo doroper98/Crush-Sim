@@ -43,6 +43,7 @@ class GeometryStage:
     floor: ToolShape
     support: ToolShape | None = None
     step_path: Path | None = None
+    extra_tools: list[ToolShape] = field(default_factory=list)
 
     def summary(self) -> dict[str, Any]:
         """Flat dictionary for reports."""
@@ -50,6 +51,7 @@ class GeometryStage:
             **self.can.summary(),
             "tool": self.tool.summary(),
             "support": self.support.summary() if self.support else None,
+            "extra_tools": [t.summary() for t in self.extra_tools],
             "step_path": str(self.step_path) if self.step_path else None,
         }
 
@@ -122,7 +124,20 @@ def build_geometry(case: CaseConfig, *, can_override: CanShell | None = None) ->
         size=case.loading.tool_size,
         indenter_radius=case.loading.indenter_radius,
         step_path=str(case.loading.step_path) if case.loading.step_path else None,
+        height_frac=case.loading.height_frac,
     )
+    extra_tools = [
+        make_tool(
+            can,
+            extra.tool,
+            extra.direction,
+            gap=extra.tool_gap,
+            size=extra.tool_size,
+            indenter_radius=extra.indenter_radius,
+            height_frac=extra.height_frac,
+        )
+        for extra in case.loading.extra_tools
+    ]
     floor = make_tool(
         can,
         "platen",
@@ -150,6 +165,7 @@ def build_geometry(case: CaseConfig, *, can_override: CanShell | None = None) ->
         floor=floor,
         support=support,
         step_path=case.geometry.step_path,
+        extra_tools=extra_tools,
     )
 
 
@@ -219,6 +235,7 @@ def build_meshes(
         geometry.tool = seated.tool
         geometry.floor = seated.floor
         geometry.support = seated.support
+        geometry.extra_tools = seated.extra_tools
     else:
         can_mesh = mesh_parametric_can(
             geometry.can,
@@ -248,6 +265,15 @@ def build_meshes(
         name="REF_TOOL",
     )
     meshes = {"can": can_mesh, "floor": floor_mesh, "tool": tool_mesh}
+    for index, shape in enumerate(geometry.extra_tools):
+        name = f"tool{index + 2}"
+        meshes[name] = mesh_tool(
+            shape,
+            can_height=geometry.can.height,
+            target_size=rigid_target,
+            out_path=outdir / f"{name}.msh",
+            name=name.upper(),
+        )
     if geometry.support is not None:
         meshes["support"] = mesh_tool(
             geometry.support,
@@ -348,6 +374,9 @@ def run_pipeline(
         tool_mesh=result.meshes["tool"].mesh,
         floor_mesh=result.meshes["floor"].mesh,
         support_mesh=result.meshes["support"].mesh if "support" in result.meshes else None,
+        extra_tool_meshes=[
+            result.meshes[f"tool{i + 2}"].mesh for i in range(len(case.loading.extra_tools))
+        ],
         outdir=run_dir / "deck",
         solver_version_tag=_solver_tag(solver_cfg),
     )

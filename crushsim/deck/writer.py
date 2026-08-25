@@ -133,6 +133,13 @@ class DriveDefinition:
     """Total imposed displacement [mm]."""
     velocity_mm_s: float
     ramp_fraction: float = 0.1
+    t_start: float = 0.0
+    """Absolute time [s] at which this drive's motion window opens.
+
+    Multi-tool decks stage their strokes: stage-1 tools hold still (imposed
+    zero velocity) until every stage-0 stroke has finished. ``end_time`` and
+    the tables below stay in local (window) time; the writer shifts them.
+    """
     points: int = 201
     """Number of points in the displacement-vs-time function.
 
@@ -205,6 +212,27 @@ class DriveDefinition:
             pts.append((t, v))
         return pts
 
+    def padded_velocity_table(self, t_total: float) -> list[tuple[float, float]]:
+        """Velocity vs *absolute* time, held at zero outside the motion window.
+
+        Every driven tool stays velocity-controlled for the whole run - a tool
+        whose ``/IMPVEL`` simply expired would be free to drift under contact
+        springback. Zero-holds are inserted before ``t_start`` and after the
+        stroke completes.
+        """
+        pts = [(self.t_start + t, v) for t, v in self.velocity_table()]
+        out: list[tuple[float, float]] = []
+        if self.t_start > 0.0:
+            out.append((0.0, 0.0))
+            if pts[0][1] != 0.0:
+                out.append((self.t_start - 1.0e-9, 0.0))
+        out += pts
+        local_end = self.t_start + self.end_time
+        if t_total > local_end + 1.0e-12:
+            out.append((local_end + 1.0e-9, 0.0))
+            out.append((t_total, 0.0))
+        return out
+
 
 @dataclass(slots=True)
 class DeckResult:
@@ -266,14 +294,19 @@ class RadiossDeckWriter:
         description: str = "",
         solver_version_tag: str = "unpinned",
         clamp_can_base: bool = False,
+        extra_drives: list[DriveDefinition] | None = None,
     ) -> None:
         if not parts:
             raise DeckError("A deck needs at least one part")
         roles = [p.role for p in parts]
         if "deformable" not in roles:
             raise DeckError("A deck needs at least one deformable part (the can)")
-        if roles.count("tool") != 1:
-            raise DeckError("A deck needs exactly one REF_TOOL part")
+        self.extra_drives = list(extra_drives or [])
+        if roles.count("tool") != 1 + len(self.extra_drives):
+            raise DeckError(
+                f"A deck needs one driven part per drive: {roles.count('tool')} tool "
+                f"part(s) vs {1 + len(self.extra_drives)} drive(s)"
+            )
         self.run_name = run_name
         self.parts = parts
         self.drive = drive
@@ -283,7 +316,11 @@ class RadiossDeckWriter:
         self.stiffness_scale = float(stiffness_scale)
         self.animation_frames = max(1, int(animation_frames))
         self.time_history_points = max(1, int(time_history_points))
-        self.end_time = float(end_time) if end_time else drive.end_time
+        self.end_time = (
+            float(end_time)
+            if end_time
+            else max(d.t_start + d.end_time for d in [drive, *self.extra_drives])
+        )
         self.load_case = load_case
         self.description = description
         self.solver_version_tag = solver_version_tag
@@ -330,13 +367,15 @@ class RadiossDeckWriter:
         centre = np.asarray(mesh.nodes, dtype=float).mean(axis=0)
         return (float(centre[0]), float(centre[1]), float(centre[2]))
 
-    def _drive_axis(self) -> tuple[str, int, float]:
-        """Resolve the drive direction to ``(axis_name, skew_id, sign)``.
+    @staticmethod
+    def _drive_axis(drive: DriveDefinition, skew_candidate: int) -> tuple[str, int, float]:
+        """Resolve a drive direction to ``(axis_name, skew_id, sign)``.
 
         An axis-aligned direction uses the global frame; anything else gets a
-        ``/SKEW/FIX`` whose local X axis is the drive direction.
+        ``/SKEW/FIX`` (id ``skew_candidate``) whose local X axis is the drive
+        direction.
         """
-        d = np.asarray(self.drive.direction, dtype=float)
+        d = np.asarray(drive.direction, dtype=float)
         norm = float(np.linalg.norm(d))
         if norm <= 0.0:
             raise DeckError("Drive direction must be a non-zero vector")
@@ -344,7 +383,7 @@ class RadiossDeckWriter:
         for axis, name in enumerate(_AXIS_NAMES):
             if abs(abs(d[axis]) - 1.0) < 1.0e-9:
                 return name, 0, math.copysign(1.0, d[axis])
-        return "X", 1, 1.0
+        return "X", skew_candidate, 1.0
 
     # -- keyword blocks -----------------------------------------------------
 
@@ -475,9 +514,16 @@ class RadiossDeckWriter:
         lines.append(RULER)
         # Separate main surfaces per contact partner so /TH/INTER can report
         # the tool-side reaction force on its own (the crush-force curve).
+        tools = [p for p in self.parts if p.role == "tool"]
         lines.append("/SURF/PART/1")
         lines.append(title("TOOL_SURFACE"))
-        lines.append("".join(i10(p.part_id) for p in self.parts if p.role == "tool"))
+        # Interface 1 reports the crush-force curve (/TH/INTER), so it carries
+        # the REF_TOOL alone; extra driven tools contact through surface 4.
+        lines.append(i10(tools[0].part_id))
+        if len(tools) > 1:
+            lines.append("/SURF/PART/4")
+            lines.append(title("EXTRA_TOOL_SURFACE"))
+            lines.append("".join(i10(p.part_id) for p in tools[1:]))
         lines.append("/SURF/PART/2")
         lines.append(title("FIXED_SURFACES"))
         lines.append("".join(i10(p.part_id) for p in self.parts if p.role == "floor"))
@@ -555,56 +601,75 @@ class RadiossDeckWriter:
         return lines
 
     def _block_tool_drive(self) -> list[str]:
-        """REF_TOOL: constrain every DOF but the drive axis, then impose displacement."""
-        tool = self.tool
-        axis, skew_id, sign = self._drive_axis()
-        lines: list[str] = [RULER]
+        """Driven tools: constrain every DOF but each drive axis, impose velocity.
 
-        if skew_id:
-            d = np.asarray(self.drive.direction, dtype=float)
-            d = d / float(np.linalg.norm(d))
-            helper = np.array([0.0, 0.0, 1.0]) if abs(d[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
-            y_axis = np.cross(helper, d)
-            y_axis /= float(np.linalg.norm(y_axis))
-            origin = self._centroid(tool.mesh)
+        The first (REF_TOOL) drive keeps its historical ids (skew 1, grnod 95,
+        BCS 2, funct/impvel 1) so single-tool decks stay byte-identical; extra
+        tools take ids clear of every other block (skew k+1, grnod 50+k,
+        BCS 10+k, funct/impvel k+1).
+        """
+        tools = [p for p in self.parts if p.role == "tool"]
+        drives = [self.drive, *self.extra_drives]
+        multi = len(tools) > 1
+        lines: list[str] = []
+        for k, (tool, drive) in enumerate(zip(tools, drives)):
+            prefix = "REF_TOOL" if k == 0 else f"TOOL{k + 1}"
+            grnod_id = 95 if k == 0 else 50 + k
+            bcs_id = 2 if k == 0 else 10 + k
+            funct_id = 1 + k
+            axis, skew_id, sign = self._drive_axis(drive, 1 + k)
+            lines.append(RULER)
+
+            if skew_id:
+                d = np.asarray(drive.direction, dtype=float)
+                d = d / float(np.linalg.norm(d))
+                helper = (
+                    np.array([0.0, 0.0, 1.0]) if abs(d[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
+                )
+                y_axis = np.cross(helper, d)
+                y_axis /= float(np.linalg.norm(y_axis))
+                origin = self._centroid(tool.mesh)
+                lines += [
+                    f"/SKEW/FIX/{skew_id}",
+                    title(f"{prefix}_DRIVE_SKEW"),
+                    "#                 Ox                  Oy                  Oz",
+                    reals(origin),
+                    "#                 X1                  Y1                  Z1",
+                    reals(tuple(float(v) for v in d)),
+                    "#                 X2                  Y2                  Z2",
+                    reals(tuple(float(v) for v in y_axis)),
+                    RULER,
+                ]
+
+            # Free DOF: translation along the drive axis only; all rotations fixed.
+            trans_code = "".join("0" if _AXIS_NAMES[i] == axis else "1" for i in range(3))
             lines += [
-                f"/SKEW/FIX/{skew_id}",
-                title("REF_TOOL_DRIVE_SKEW"),
-                "#                 Ox                  Oy                  Oz",
-                reals(origin),
-                "#                 X1                  Y1                  Z1",
-                reals(tuple(float(v) for v in d)),
-                "#                 X2                  Y2                  Z2",
-                reals(tuple(float(v) for v in y_axis)),
+                f"/GRNOD/NODE/{grnod_id}",
+                title(f"{prefix}_MASTER"),
+                i10(tool.rbody_master_node),
+                f"/BCS/{bcs_id}",
+                title(f"{prefix}_GUIDE"),
+                "#  Tra rot   skew_ID  grnod_ID",
+                s10(f"{trans_code} 111") + i10(skew_id) + i10(grnod_id),
                 RULER,
+                f"/FUNCT/{funct_id}",
+                title(f"{prefix}_VELOCITY_RAMP"),
+                "#                  X                   Y",
             ]
-
-        # Free DOF: translation along the drive axis only; all rotations fixed.
-        trans_code = "".join("0" if _AXIS_NAMES[i] == axis else "1" for i in range(3))
-        lines += [
-            "/GRNOD/NODE/95",
-            title("REF_TOOL_MASTER"),
-            i10(tool.rbody_master_node),
-            "/BCS/2",
-            title("REF_TOOL_GUIDE"),
-            "#  Tra rot   skew_ID  grnod_ID",
-            s10(f"{trans_code} 111") + i10(skew_id) + i10(95),
-            RULER,
-            "/FUNCT/1",
-            title("REF_TOOL_VELOCITY_RAMP"),
-            "#                  X                   Y",
-        ]
-        for t, v in self.drive.velocity_table():
-            lines.append(reals((t, v)))
-        lines += [
-            RULER,
-            "/IMPVEL/1",
-            title("REF_TOOL_IMPOSED_VELOCITY"),
-            "#funct_IDT       Dir   skew_ID sensor_ID  grnod_ID  frame_ID",
-            i10(1) + s10(axis) + i10(skew_id) + i10(0) + i10(95) + i10(0),
-            "#            Scale_x             Scale_y              Tstart               Tstop",
-            reals((0.0, sign, 0.0, self.end_time)),
-        ]
+            table = (
+                drive.padded_velocity_table(self.end_time) if multi else drive.velocity_table()
+            )
+            for t, v in table:
+                lines.append(reals((t, v)))
+            lines += [
+                RULER,
+                f"/IMPVEL/{funct_id}",
+                title(f"{prefix}_IMPOSED_VELOCITY"),
+                "#funct_IDT       Dir   skew_ID sensor_ID  grnod_ID  frame_ID",
+                i10(funct_id) + s10(axis) + i10(skew_id) + i10(0) + i10(grnod_id) + i10(0),
+                "#            Scale_x             Scale_y              Tstart               Tstop",
+                reals((0.0, sign, 0.0, self.end_time)),
+            ]
         return lines
 
     def _block_contact(self) -> list[str]:
@@ -614,11 +679,14 @@ class RadiossDeckWriter:
         crush-force curve directly.
         """
         lines: list[str] = []
-        for inter_id, name, surf_id in (
+        pairs = [
             (1, "TOOL_CONTACT", 1),
             (2, "FIXED_CONTACT", 2),
             (3, "SELF_CONTACT", 3),
-        ):
+        ]
+        if sum(1 for p in self.parts if p.role == "tool") > 1:
+            pairs.append((4, "EXTRA_TOOL_CONTACT", 4))
+        for inter_id, name, surf_id in pairs:
             lines += self._contact_cards(inter_id, name, surf_id)
         return lines
 
@@ -810,6 +878,7 @@ def build_deck(
     tool_mesh: ShellMesh,
     floor_mesh: ShellMesh | None = None,
     support_mesh: ShellMesh | None = None,
+    extra_tool_meshes: list[ShellMesh] | None = None,
     outdir: str | Path,
     run_name: str | None = None,
     solver_version_tag: str = "unpinned",
@@ -864,6 +933,22 @@ def build_deck(
             role="tool",
         )
     )
+    extras = list(case.loading.extra_tools)
+    extra_meshes = list(extra_tool_meshes or [])
+    if len(extras) != len(extra_meshes):
+        raise DeckError(
+            f"loading.extra_tools defines {len(extras)} tool(s) but "
+            f"{len(extra_meshes)} extra mesh(es) were provided"
+        )
+    for index, mesh in enumerate(extra_meshes):
+        parts.append(
+            DeckPart(
+                name=f"TOOL{index + 2}",
+                mesh=mesh,
+                thickness=RIGID_SHELL_THICKNESS,
+                role="tool",
+            )
+        )
 
     drive = DriveDefinition(
         direction=case.loading.direction,
@@ -871,6 +956,30 @@ def build_deck(
         velocity_mm_s=m_per_s_to_mm_per_s(case.loading.velocity_m_s),
         ramp_fraction=case.loading.ramp_fraction,
     )
+    extra_drives = [
+        DriveDefinition(
+            direction=t.direction,
+            stroke=t.stroke,
+            velocity_mm_s=m_per_s_to_mm_per_s(t.velocity_m_s),
+            ramp_fraction=t.ramp_fraction,
+        )
+        for t in extras
+    ]
+    # Stage the strokes: each stage's window opens when the previous stage's
+    # longest stroke has finished; tools hold still outside their window.
+    stage_of = [case.loading.stage, *(t.stage for t in extras)]
+    all_drives = [drive, *extra_drives]
+    durations: dict[int, float] = {}
+    for stage, d in zip(stage_of, all_drives):
+        durations[stage] = max(durations.get(stage, 0.0), d.end_time)
+    stage_starts: dict[int, float] = {}
+    clock = 0.0
+    for stage in sorted(durations):
+        stage_starts[stage] = clock
+        clock += durations[stage]
+    for stage, d in zip(stage_of, all_drives):
+        d.t_start = stage_starts[stage]
+
     writer = RadiossDeckWriter(
         run_name=run_name or case.name,
         parts=parts,
@@ -886,5 +995,6 @@ def build_deck(
         load_case=case.load_case,
         description=case.description,
         solver_version_tag=solver_version_tag,
+        extra_drives=extra_drives,
     )
     return writer.write(outdir)

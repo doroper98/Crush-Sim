@@ -87,11 +87,14 @@ def _canonical_parts(
         remap[floor] = 2
         rest = [p for p in rest if p != floor]
     if rest:
-        tool = max(rest, key=lambda p: motion[p])
-        remap[tool] = 3
-        rest = [p for p in rest if p != tool]
-    if rest:
-        remap[rest[0]] = 4
+        # Every moving rigid is a TOOL (multi-tool decks have several); the
+        # static remainder are SUPPORTs.
+        top_motion = max(motion[p] for p in rest)
+        for p in rest:
+            moving = motion[p] > max(0.1, 0.05 * top_motion)
+            remap[p] = 3 if moving else 4
+        if not any(v == 3 for v in remap.values()):
+            remap[max(rest, key=lambda p: motion[p])] = 3
     return np.vectorize(remap.__getitem__)(part).astype(np.uint8)
 
 

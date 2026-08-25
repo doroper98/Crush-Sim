@@ -155,8 +155,11 @@ def test_deck_requires_a_deformable_part(material_card, tool_mesh_fixture) -> No
         )
 
 
-def test_deck_requires_exactly_one_tool(material_card, can_mesh_fixture, tool_mesh_fixture) -> None:
-    with pytest.raises(DeckError, match="REF_TOOL"):
+def test_deck_requires_one_tool_part_per_drive(
+    material_card, can_mesh_fixture, tool_mesh_fixture
+) -> None:
+    # Two tool parts but a single drive: the writer must refuse the mismatch.
+    with pytest.raises(DeckError, match="drive"):
         RadiossDeckWriter(
             run_name="x",
             parts=[
@@ -390,3 +393,86 @@ def test_lc2_engine_matches_golden(
         load_case="LC-2",
     )
     _check_golden("lc2_engine.rad", writer.engine_text(), update_golden)
+
+
+# ---------------------------------------------------------------------------
+# Multi-tool decks (staged drives: beading + crimping)
+# ---------------------------------------------------------------------------
+
+
+def _multi_tool_writer(material_card, can, floor, tool) -> RadiossDeckWriter:
+    main = DriveDefinition(
+        direction=(0.0, 0.0, -1.0), stroke=4.0, velocity_mm_s=1000.0, ramp_fraction=0.1
+    )
+    extra = DriveDefinition(
+        direction=(1.0, 0.0, 0.0), stroke=2.0, velocity_mm_s=1000.0, ramp_fraction=0.1
+    )
+    # The extra tool moves first (stage 0); the main tool starts afterwards.
+    main.t_start = extra.end_time
+    return RadiossDeckWriter(
+        run_name="multi",
+        parts=[
+            DeckPart(name="CAN", mesh=can, thickness=0.1, role="deformable", material=material_card),
+            DeckPart(name="FLOOR", mesh=floor, thickness=2.0, role="floor"),
+            DeckPart(name="REF_TOOL", mesh=tool, thickness=2.0, role="tool"),
+            DeckPart(name="TOOL2", mesh=tool, thickness=2.0, role="tool"),
+        ],
+        drive=main,
+        material=material_card,
+        extra_drives=[extra],
+    )
+
+
+def test_multi_tool_deck_blocks(
+    material_card, can_mesh_fixture, floor_mesh_fixture, tool_mesh_fixture
+) -> None:
+    writer = _multi_tool_writer(
+        material_card, can_mesh_fixture, floor_mesh_fixture, tool_mesh_fixture
+    )
+    text = writer.starter_text()
+    # Each driven tool gets its own guide, function and imposed velocity.
+    for keyword in (
+        "/IMPVEL/1",
+        "/IMPVEL/2",
+        "/FUNCT/2",
+        "TOOL2_MASTER",
+        "TOOL2_GUIDE",
+        "/SURF/PART/4",
+        "EXTRA_TOOL_SURFACE",
+        "/INTER/TYPE7/4",
+    ):
+        assert keyword in text, keyword
+    # Interface 1 (the force curve) carries the REF_TOOL part alone.
+    surf1 = text.split("/SURF/PART/1")[1].splitlines()[2]
+    assert surf1.strip() == "3"  # REF_TOOL is part 3 (CAN, FLOOR, REF_TOOL, TOOL2)
+
+
+def test_staged_drive_holds_still_outside_window() -> None:
+    drive = DriveDefinition(
+        direction=(0.0, 0.0, -1.0), stroke=4.0, velocity_mm_s=1000.0, ramp_fraction=0.1
+    )
+    drive.t_start = 2.0e-3
+    total = drive.t_start + drive.end_time + 1.0e-3
+    table = drive.padded_velocity_table(total)
+    assert table[0] == (0.0, 0.0)
+    # Zero until the window opens...
+    assert all(v == 0.0 for t, v in table if t <= drive.t_start)
+    # ...moving inside it, and zero again after the stroke completes.
+    assert any(v > 0.0 for _, v in table)
+    assert table[-1] == (total, 0.0)
+    assert table[-2][1] == 0.0
+
+
+def test_multi_tool_end_time_covers_both_stages(
+    material_card, can_mesh_fixture, floor_mesh_fixture, tool_mesh_fixture
+) -> None:
+    writer = _multi_tool_writer(
+        material_card, can_mesh_fixture, floor_mesh_fixture, tool_mesh_fixture
+    )
+    stage0 = DriveDefinition(
+        direction=(1.0, 0.0, 0.0), stroke=2.0, velocity_mm_s=1000.0, ramp_fraction=0.1
+    ).end_time
+    stage1 = DriveDefinition(
+        direction=(0.0, 0.0, -1.0), stroke=4.0, velocity_mm_s=1000.0, ramp_fraction=0.1
+    ).end_time
+    assert writer.end_time == pytest.approx(stage0 + stage1)
