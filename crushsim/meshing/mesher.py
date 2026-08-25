@@ -29,7 +29,7 @@ from typing import Any
 import numpy as np
 
 from ..errors import GateFailure, MeshingError
-from ..geometry.parametric import CanShell, ToolShape
+from ..geometry.parametric import BoxCan, CanShell, ToolShape
 from ..units import (
     MESH_MIN_EDGE_LENGTH_MM,
     MESH_REMESH_MAX_ATTEMPTS,
@@ -829,6 +829,188 @@ def _seed_imperfection(mesh: ShellMesh, can: CanShell, amplitude: float) -> None
     xyz[:, 0] *= scale
     xyz[:, 1] *= scale
     mesh.metadata["imperfection_mm"] = float(amplitude)
+
+
+def _stadium_outline(
+    occ: Any, length: float, width: float, z: float
+) -> tuple[list[int], list[int]]:
+    """Stadium outline in the z-plane: (corner point tags, curve tags).
+
+    Points are the four line/arc junctions at (+-c, +-r); curves are ordered
+    top line, left arc, bottom line, right arc, forming a closed loop.
+    """
+    r = width / 2.0
+    c = max(length / 2.0 - r, 1e-9)
+    p1 = occ.addPoint(c, r, z)
+    p2 = occ.addPoint(-c, r, z)
+    p3 = occ.addPoint(-c, -r, z)
+    p4 = occ.addPoint(c, -r, z)
+    e1 = occ.addPoint(c, 0.0, z)
+    e2 = occ.addPoint(-c, 0.0, z)
+    curves = [
+        occ.addLine(p1, p2),
+        occ.addCircleArc(p2, e2, p3),
+        occ.addLine(p3, p4),
+        occ.addCircleArc(p4, e1, p1),
+    ]
+    return [p1, p2, p3, p4], curves
+
+
+def _build_box_surfaces(gmsh: Any, box: BoxCan, target_size: float) -> None:
+    """Build the box-can mid-surface (walls + caps) with a structured score band.
+
+    Walls and the bottom are structured quad grids. The scored cap is built
+    from explicit faces: the inner flap, a four-piece structured band between
+    the two stadium outlines (clean quads, two elements across the band), and
+    the cap remainder with the stadium as a hole - so the thin score band is
+    made of well-shaped aligned quads instead of fragmented slivers.
+    """
+    occ = gmsh.model.occ
+    a, b, h = box.half_width_mid, box.half_depth_mid, box.height
+    ex = np.array([1.0, 0.0, 0.0])
+    ey = np.array([0.0, 1.0, 0.0])
+    ez = np.array([0.0, 0.0, 1.0])
+    faces = [
+        _add_plate(gmsh, np.array([a, 0.0, h / 2.0]), ex, ey, ez, b, h / 2.0),
+        _add_plate(gmsh, np.array([-a, 0.0, h / 2.0]), ex, ey, ez, b, h / 2.0),
+        _add_plate(gmsh, np.array([0.0, b, h / 2.0]), ey, ex, ez, a, h / 2.0),
+        _add_plate(gmsh, np.array([0.0, -b, h / 2.0]), ey, ex, ez, a, h / 2.0),
+    ]
+    if box.closed_bottom:
+        faces.append(_add_plate(gmsh, np.array([0.0, 0.0, 0.0]), ez, ex, ey, a, b))
+
+    band_faces: list[int] = []
+    if box.closed_top and box.vent is not None:
+        vent = box.vent
+        pts_i, cur_i = _stadium_outline(occ, vent.length - vent.band, vent.width - vent.band, h)
+        pts_o, cur_o = _stadium_outline(occ, vent.length + vent.band, vent.width + vent.band, h)
+        radials = [occ.addLine(pi, po) for pi, po in zip(pts_i, pts_o)]
+        # Four 4-sided band pieces: inner curve, radial, outer curve, radial.
+        for k in range(4):
+            loop = occ.addCurveLoop(
+                [cur_i[k], radials[(k + 1) % 4], -cur_o[k], -radials[k]]
+            )
+            band_faces.append(occ.addPlaneSurface([loop]))
+        flap = occ.addPlaneSurface([occ.addCurveLoop(cur_i)])
+        # Cap remainder: rectangle with the outer stadium as a hole.
+        c1 = occ.addPoint(a, b, h)
+        c2 = occ.addPoint(-a, b, h)
+        c3 = occ.addPoint(-a, -b, h)
+        c4 = occ.addPoint(a, -b, h)
+        rect = occ.addCurveLoop(
+            [occ.addLine(c1, c2), occ.addLine(c2, c3), occ.addLine(c3, c4), occ.addLine(c4, c1)]
+        )
+        remainder = occ.addPlaneSurface([rect, occ.addCurveLoop(cur_o)])
+        cap_faces = [flap, remainder]
+        faces += cap_faces + band_faces
+        occ.synchronize()
+    elif box.closed_top:
+        faces.append(_add_plate(gmsh, np.array([0.0, 0.0, h]), ez, ex, ey, a, b))
+
+    occ.fragment([(2, faces[0])], [(2, f) for f in faces[1:]])
+    occ.synchronize()
+
+    # All meshing constraints are applied AFTER the fragment (which retags
+    # entities): faces are re-identified geometrically. Cap faces are told
+    # apart by their centroid against the two stadium outlines; the band
+    # pieces get matched structured divisions (~square quads, two elements
+    # across the band), flap and remainder mesh with plain Delaunay.
+    vent = box.vent
+    band_len = max(vent.band, 1e-6) if vent else target_size
+    for _dim, face in gmsh.model.getEntities(2):
+        bb = gmsh.model.getBoundingBox(2, face)
+        on_cap = abs(bb[5] - bb[2]) < 1e-3 and abs(bb[2] - h) < 1e-3
+        boundary = gmsh.model.getBoundary([(2, face)], oriented=False)
+        if on_cap and vent is not None:
+            cx, cy, _cz = occ.getCenterOfMass(2, face)
+            in_outer = vent.contains(cx, cy, grow=vent.band)
+            in_inner = vent.contains(cx, cy, grow=-vent.band)
+            if in_outer and not in_inner and len(boundary) == 4:
+                for _cdim, ctag in boundary:
+                    length = float(occ.getMass(1, abs(ctag)))
+                    n = 3 if length < 2.0 * vent.band else max(3, int(round(length / band_len)) + 1)
+                    gmsh.model.mesh.setTransfiniteCurve(abs(ctag), n)
+                gmsh.model.mesh.setTransfiniteSurface(face)
+                gmsh.model.mesh.setRecombine(2, face)
+            else:
+                gmsh.model.mesh.setAlgorithm(2, face, 5)
+            continue
+        if len(boundary) != 4:
+            continue
+        for _cdim, ctag in boundary:
+            length = float(occ.getMass(1, abs(ctag)))
+            n = max(2, int(round(length / target_size)) + 1)
+            gmsh.model.mesh.setTransfiniteCurve(abs(ctag), n)
+        gmsh.model.mesh.setTransfiniteSurface(face)
+        gmsh.model.mesh.setRecombine(2, face)
+
+
+def mesh_box_can(
+    box: BoxCan,
+    *,
+    target_size: float = MESH_TARGET_SIZE_DEFAULT_MM,
+    min_size: float | None = None,
+    max_size: float | None = None,
+    recombine: bool = True,
+    curvature_points: int = 12,
+    out_path: str | Path | None = None,
+    max_attempts: int = MESH_REMESH_MAX_ATTEMPTS,
+    enforce: bool = True,
+    name: str = "can",
+) -> MeshResult:
+    """Mesh a prismatic (box) can shell; the scored vent band gets its own
+    per-element thickness (:attr:`ShellMesh.element_thickness`).
+
+    Raises:
+        GateFailure: If the mesh gate fails and ``enforce`` is True.
+        MeshingError: If Gmsh cannot build or mesh the geometry.
+    """
+
+    def build(gmsh: Any, size: float) -> None:
+        _build_box_surfaces(gmsh, box, size)
+
+    def finish(gmsh: Any) -> None:
+        with contextlib.suppress(Exception):
+            gmsh.model.mesh.removeDuplicateNodes()
+
+    result = _mesh_with_gate(
+        build,
+        name=name,
+        source=(
+            f"box_can(W={box.width}, D={box.depth}, H={box.height}, t={box.thickness})"
+        ),
+        finish=finish,
+        target_size=target_size,
+        min_size=min_size,
+        max_size=max_size,
+        recombine=recombine,
+        curvature_points=curvature_points,
+        out_path=out_path,
+        max_attempts=max_attempts,
+        enforce=enforce,
+    )
+    if box.vent is not None:
+        mesh = result.mesh
+        vent = box.vent
+        index = mesh.node_index()
+        thickness = np.full(mesh.n_quads + mesh.n_tris, box.thickness, dtype=float)
+        cursor = 0
+        for block in (mesh.quads, mesh.tris):
+            for element in block:
+                pts = mesh.nodes[[index[int(n)] for n in element]]
+                cx, cy, cz = pts.mean(axis=0)
+                on_cap = abs(cz - box.height) < 1e-3
+                if on_cap and vent.contains(cx, cy, grow=vent.band) and not vent.contains(
+                    cx, cy, grow=-vent.band
+                ):
+                    thickness[cursor] = vent.score_thickness
+                cursor += 1
+        mesh.element_thickness = thickness
+        scored = int((thickness < box.thickness).sum())
+        if not scored:
+            raise MeshingError("Vent score band caught no elements - check the vent size")
+        mesh.metadata["vent_scored_elements"] = scored
+    return result
 
 
 def mesh_parametric_can(

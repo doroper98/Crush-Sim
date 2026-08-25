@@ -241,15 +241,21 @@ def find_material_card(key: str, search_roots: list[Path] | None = None) -> Path
 class GeometryConfig:
     """Can geometry: either code-generated (Phase 1) or a STEP file (Phase 2)."""
 
-    kind: Literal["parametric_can", "step"] = "parametric_can"
+    kind: Literal["parametric_can", "box_can", "step"] = "parametric_can"
     radius: float = 33.0
-    """Outer radius [mm] (parametric only)."""
+    """Outer radius [mm] (parametric_can only)."""
     height: float = 115.0
     """Height [mm] (parametric only)."""
     thickness: float = 0.1
     """Wall thickness [mm]; shell property thickness."""
     closed_bottom: bool = False
     closed_top: bool = False
+    width: float | None = None
+    """Footprint width along X [mm] (box_can only)."""
+    depth: float | None = None
+    """Footprint depth along Y [mm] (box_can only)."""
+    vent: dict[str, float] | None = None
+    """Scored vent on the box_can cap: {length, width, band, score_thickness}."""
     step_path: Path | None = None
     """Path to the STEP file when ``kind == 'step'``."""
 
@@ -521,8 +527,10 @@ def load_case(path: str | Path) -> CaseConfig:
 
     geo_raw = dict(data.get("geometry") or {})
     kind = str(geo_raw.get("kind", "parametric_can"))
-    if kind not in ("parametric_can", "step"):
-        raise ConfigError(f"geometry.kind in {p} must be 'parametric_can' or 'step', got {kind!r}")
+    if kind not in ("parametric_can", "box_can", "step"):
+        raise ConfigError(
+            f"geometry.kind in {p} must be 'parametric_can', 'box_can' or 'step', got {kind!r}"
+        )
     step_path_raw = geo_raw.get("step_path") or geo_raw.get("path")
     if kind == "step" and not step_path_raw:
         raise ConfigError(f"geometry.step_path is required in {p} when geometry.kind == 'step'")
@@ -533,10 +541,28 @@ def load_case(path: str | Path) -> CaseConfig:
         thickness=_as_float(geo_raw.get("thickness", 0.1), "geometry.thickness", p),
         closed_bottom=bool(geo_raw.get("closed_bottom", False)),
         closed_top=bool(geo_raw.get("closed_top", False)),
+        width=None if geo_raw.get("width") is None else _as_float(geo_raw["width"], "geometry.width", p),
+        depth=None if geo_raw.get("depth") is None else _as_float(geo_raw["depth"], "geometry.depth", p),
+        vent=None
+        if geo_raw.get("vent") is None
+        else {
+            key: _as_float(value, f"geometry.vent.{key}", p)
+            for key, value in dict(geo_raw["vent"]).items()
+        },
         step_path=_resolve(step_path_raw, base),
     )
     if geometry.radius <= 0 or geometry.height <= 0 or geometry.thickness <= 0:
         raise ConfigError(f"geometry radius/height/thickness in {p} must all be > 0")
+    if geometry.kind == "box_can":
+        if geometry.width is None or geometry.depth is None:
+            raise ConfigError(f"geometry.kind box_can in {p} needs geometry.width and geometry.depth")
+        if geometry.vent is not None:
+            unknown = set(geometry.vent) - {"length", "width", "band", "score_thickness"}
+            if unknown:
+                raise ConfigError(f"geometry.vent in {p}: unknown key(s) {sorted(unknown)}")
+            for required in ("length", "width"):
+                if required not in geometry.vent:
+                    raise ConfigError(f"geometry.vent in {p} needs '{required}'")
 
     mesh_raw = dict(data.get("mesh") or {})
     mesh = MeshConfig(

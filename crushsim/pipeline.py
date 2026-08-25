@@ -20,9 +20,15 @@ from typing import Any, Callable
 from .config import CaseConfig, MaterialCard, load_case
 from .deck.writer import INITIAL_CONTACT_CLEARANCE, DeckResult, build_deck
 from .errors import CrushSimError, SolverError
-from .geometry.parametric import CanShell, ToolShape, make_can, make_tool
+from .geometry.parametric import BoxCan, CanShell, ToolShape, VentSpec, make_can, make_tool
 from .meshing.gates import GateResult
-from .meshing.mesher import MeshResult, mesh_parametric_can, mesh_step_surfaces, mesh_tool
+from .meshing.mesher import (
+    MeshResult,
+    mesh_box_can,
+    mesh_parametric_can,
+    mesh_step_surfaces,
+    mesh_tool,
+)
 from .report.builder import build_context, render_report
 from .solver.runner import RunResult, run_solver
 from .units import MESH_TARGET_SIZE_DEFAULT_MM
@@ -44,6 +50,8 @@ class GeometryStage:
     support: ToolShape | None = None
     step_path: Path | None = None
     extra_tools: list[ToolShape] = field(default_factory=list)
+    box: BoxCan | None = None
+    """The prismatic can (kind box_can); ``can`` is then its sizing proxy."""
 
     def summary(self) -> dict[str, Any]:
         """Flat dictionary for reports."""
@@ -52,6 +60,7 @@ class GeometryStage:
             "tool": self.tool.summary() if self.tool else None,
             "support": self.support.summary() if self.support else None,
             "extra_tools": [t.summary() for t in self.extra_tools],
+            "box": self.box.summary() if self.box else None,
             "step_path": str(self.step_path) if self.step_path else None,
         }
 
@@ -109,8 +118,30 @@ def build_geometry(case: CaseConfig, *, can_override: CanShell | None = None) ->
     Raises:
         GeometryError: If the case geometry is invalid.
     """
+    box: BoxCan | None = None
+    if case.geometry.kind == "box_can" and can_override is None:
+        vent = None
+        if case.geometry.vent is not None:
+            raw = dict(case.geometry.vent)
+            vent = VentSpec(
+                length=raw["length"],
+                width=raw["width"],
+                band=raw.get("band", 0.8),
+                score_thickness=raw.get("score_thickness", 0.05),
+            )
+        box = BoxCan(
+            width=case.geometry.width or 0.0,
+            depth=case.geometry.depth or 0.0,
+            height=case.geometry.height,
+            thickness=case.geometry.thickness,
+            closed_bottom=case.geometry.closed_bottom,
+            closed_top=case.geometry.closed_top,
+            vent=vent,
+        )
     can = can_override or make_can(
-        case.geometry.radius,
+        # For a box can this is the tool/floor sizing proxy: footprint
+        # half-diagonal as the radius, so plates clear the corners.
+        math.hypot(box.width, box.depth) / 2.0 if box else case.geometry.radius,
         case.geometry.height,
         case.geometry.thickness,
         closed_bottom=case.geometry.closed_bottom,
@@ -171,6 +202,7 @@ def build_geometry(case: CaseConfig, *, can_override: CanShell | None = None) ->
         support=support,
         step_path=case.geometry.step_path,
         extra_tools=extra_tools,
+        box=box,
     )
 
 
@@ -241,6 +273,18 @@ def build_meshes(
         geometry.floor = seated.floor
         geometry.support = seated.support
         geometry.extra_tools = seated.extra_tools
+    elif geometry.box is not None:
+        can_mesh = mesh_box_can(
+            geometry.box,
+            target_size=target,
+            min_size=case.mesh.min_size,
+            max_size=case.mesh.max_size,
+            recombine=case.mesh.recombine,
+            curvature_points=case.mesh.curvature_points,
+            out_path=outdir / "can.msh",
+            enforce=enforce_gate,
+            name="CAN",
+        )
     else:
         can_mesh = mesh_parametric_can(
             geometry.can,

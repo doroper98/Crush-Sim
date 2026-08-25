@@ -507,20 +507,31 @@ class RadiossDeckWriter:
     def _block_elements(self, part: DeckPart) -> list[str]:
         lines: list[str] = [RULER]
         eid = part.element_offset
+        thk = part.mesh.element_thickness
         # Element blocks (/SHELL, /SH3N) take NO title card - validated
         # against the real starter (a title line raises ERROR 100101).
+        # Per-element thickness (phi, Thk trailing fields) overrides the
+        # property where present - validated against the pinned starter by
+        # total-mass comparison; a scored vent line is a band of thinner
+        # elements.
         if part.mesh.n_quads:
             lines.append(f"/SHELL/{part.part_id}")
             lines.append("# shell_ID  node_ID1  node_ID2  node_ID3  node_ID4")
-            for quad in part.mesh.quads:
+            for index, quad in enumerate(part.mesh.quads):
                 eid += 1
-                lines.append(i10(eid) + "".join(i10(int(n)) for n in quad))
+                line = i10(eid) + "".join(i10(int(n)) for n in quad)
+                if thk is not None:
+                    line += f20(0.0) + f20(float(thk[index]))
+                lines.append(line)
         if part.mesh.n_tris:
             lines.append(f"/SH3N/{part.part_id}")
             lines.append("#  sh3n_ID  node_ID1  node_ID2  node_ID3")
-            for tri in part.mesh.tris:
+            for index, tri in enumerate(part.mesh.tris):
                 eid += 1
-                lines.append(i10(eid) + "".join(i10(int(n)) for n in tri))
+                line = i10(eid) + "".join(i10(int(n)) for n in tri)
+                if thk is not None:
+                    line += f20(0.0) + f20(float(thk[part.mesh.n_quads + index]))
+                lines.append(line)
         return lines
 
     def _block_part(self, part: DeckPart) -> list[str]:
