@@ -1,0 +1,537 @@
+<title>__TITLE__</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --bg:#f4f5f7; --panel:#ffffff; --panel2:#eceef2; --ink:#1a2230; --muted:#5b6675;
+  --line:#d8dce3; --accent:#f2542d; --accent-ink:#ffffff; --viewport:#e9ebef;
+  --track:#d8dce3; --chip:#eceef2;
+}
+:root:not([data-theme="light"]){}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#14171c; --panel:#1c2129; --panel2:#232936; --ink:#e8ebf0; --muted:#8b95a5;
+    --line:#2e3542; --accent:#ff6a3d; --accent-ink:#14171c; --viewport:#171b21;
+    --track:#2e3542; --chip:#232936;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#14171c; --panel:#1c2129; --panel2:#232936; --ink:#e8ebf0; --muted:#8b95a5;
+  --line:#2e3542; --accent:#ff6a3d; --accent-ink:#14171c; --viewport:#171b21;
+  --track:#2e3542; --chip:#232936;
+}
+*{box-sizing:border-box; margin:0}
+html,body{height:100%}
+body{
+  background:var(--bg); color:var(--ink);
+  font-family:'IBM Plex Sans KR',-apple-system,'Segoe UI',sans-serif;
+  font-size:14px; line-height:1.45; overflow:hidden;
+}
+.app{display:flex; height:100vh}
+.stage{flex:1; position:relative; min-width:0}
+canvas#gl{position:absolute; inset:0; width:100%; height:100%; display:block; background:var(--viewport); touch-action:none; cursor:grab}
+canvas#gl.dragging{cursor:grabbing}
+.hud{position:absolute; left:16px; top:14px; pointer-events:none}
+.hud h1{font-size:15px; font-weight:600; letter-spacing:-.01em}
+.hud .case{font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--muted); margin-top:2px}
+.readout{
+  position:absolute; left:16px; bottom:16px; pointer-events:none;
+  font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--muted);
+  background:color-mix(in srgb, var(--panel) 78%, transparent); border:1px solid var(--line);
+  border-radius:6px; padding:8px 12px; backdrop-filter:blur(4px);
+}
+.readout b{color:var(--ink); font-weight:500}
+.cbar{position:absolute; right:16px; top:50%; transform:translateY(-50%); width:46px; display:none; pointer-events:none}
+.cbar.on{display:block}
+.cbar .ramp{width:12px; height:190px; border-radius:3px; border:1px solid var(--line); margin-left:auto}
+.cbar .lab{font-family:'IBM Plex Mono',monospace; font-size:10px; color:var(--muted); text-align:right; margin-top:3px}
+.cbar .ttl{font-size:10px; color:var(--muted); text-align:right; margin-bottom:5px; letter-spacing:.04em}
+.side{
+  width:320px; flex:none; background:var(--panel); border-left:1px solid var(--line);
+  display:flex; flex-direction:column; overflow-y:auto;
+}
+.sec{padding:14px 16px; border-bottom:1px solid var(--line)}
+.sec h2{font-size:11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin-bottom:10px}
+.row{display:flex; align-items:center; gap:10px; margin-top:8px}
+.row:first-of-type{margin-top:0}
+.row label{flex:none; width:64px; color:var(--muted); font-size:12.5px}
+.row .val{font-family:'IBM Plex Mono',monospace; font-size:11.5px; color:var(--muted); flex:none; width:52px; text-align:right}
+input[type=range]{
+  flex:1; appearance:none; height:4px; border-radius:2px; background:var(--track); outline:none;
+}
+input[type=range]::-webkit-slider-thumb{
+  appearance:none; width:14px; height:14px; border-radius:50%; background:var(--accent);
+  border:none; cursor:pointer;
+}
+input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent)}
+.timebar{display:flex; align-items:center; gap:10px}
+button{
+  font:inherit; color:var(--ink); background:var(--chip); border:1px solid var(--line);
+  border-radius:6px; padding:5px 10px; cursor:pointer; font-size:12.5px;
+}
+button:hover{border-color:var(--muted)}
+button:focus-visible{outline:2px solid var(--accent); outline-offset:1px}
+button.primary{background:var(--accent); color:var(--accent-ink); border-color:transparent; font-weight:600; width:40px}
+button.on{background:var(--ink); color:var(--bg); border-color:transparent}
+.grp{display:flex; gap:6px; flex-wrap:wrap}
+.frameno{font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--muted); width:74px; flex:none; text-align:right}
+.chart{width:100%; height:150px; display:block}
+.note{font-size:11.5px; color:var(--muted); margin-top:8px}
+select{
+  font:inherit; font-size:12.5px; color:var(--ink); background:var(--chip);
+  border:1px solid var(--line); border-radius:6px; padding:4px 8px;
+}
+.parts .prow{display:grid; grid-template-columns:20px 56px 1fr 42px; align-items:center; gap:8px; margin-top:8px}
+.parts .prow:first-of-type{margin-top:0}
+.sw{width:12px; height:12px; border-radius:3px; border:1px solid var(--line)}
+@media (max-width:760px){
+  .app{flex-direction:column}
+  .side{width:100%; height:46%; border-left:none; border-top:1px solid var(--line)}
+}
+</style>
+
+<div class="app">
+  <div class="stage">
+    <canvas id="gl"></canvas>
+    <div class="hud">
+      <h1>__TITLE__</h1>
+      <div class="case" id="caseLabel"></div>
+    </div>
+    <div class="readout" id="readout"></div>
+    <div class="cbar" id="cbar">
+      <div class="ttl" id="cbarTitle"></div>
+      <div class="ramp" id="cbarRamp"></div>
+      <div class="lab" id="cbarMax"></div>
+      <div class="lab" style="margin-top:158px" id="cbarMin"></div>
+    </div>
+  </div>
+  <div class="side">
+    <div class="sec">
+      <h2>시간 · 프레임</h2>
+      <div class="timebar">
+        <button class="primary" id="play" aria-label="재생/일시정지">▶</button>
+        <input type="range" id="time" min="0" max="1000" value="0" step="1" aria-label="시간 슬라이더">
+        <div class="frameno" id="frameno"></div>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <label>재생 속도</label>
+        <input type="range" id="speed" min="0.25" max="3" value="1" step="0.25">
+        <div class="val" id="speedVal">1.0×</div>
+      </div>
+    </div>
+    <div class="sec">
+      <h2>뷰</h2>
+      <div class="grp">
+        <button id="viewIso">Iso</button>
+        <button id="viewFront">정면</button>
+        <button id="viewTop">위</button>
+        <button id="wire">와이어프레임</button>
+        <button id="ghost" title="변형 전(STP 원형) 캔을 반투명으로 겹쳐 표시">원형 표시</button>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <label>컬러</label>
+        <select id="colorMode">
+          <option value="part">파트 색</option>
+          <option value="vm">von Mises 응력</option>
+          <option value="ps">소성 변형률</option>
+        </select>
+      </div>
+      <p class="note">드래그: 회전 · 휠: 줌 · Shift+드래그: 이동</p>
+    </div>
+    <div class="sec parts">
+      <h2>파트 · 투명도</h2>
+      <div class="prow"><input type="checkbox" id="v1" checked><span style="display:flex;gap:6px;align-items:center"><span class="sw" id="sw1"></span>캔</span><input type="range" id="o1" min="0" max="1" value="1" step="0.05"><span class="val" id="ov1">100%</span></div>
+      <div class="prow"><input type="checkbox" id="v3" checked><span style="display:flex;gap:6px;align-items:center"><span class="sw" id="sw3"></span>공구</span><input type="range" id="o3" min="0" max="1" value="0.6" step="0.05"><span class="val" id="ov3">60%</span></div>
+      <div class="prow"><input type="checkbox" id="v2" checked><span style="display:flex;gap:6px;align-items:center"><span class="sw" id="sw2"></span>바닥</span><input type="range" id="o2" min="0" max="1" value="0.35" step="0.05"><span class="val" id="ov2">35%</span></div>
+      <div class="prow"><input type="checkbox" id="v4" checked><span style="display:flex;gap:6px;align-items:center"><span class="sw" id="sw4"></span>지지대</span><input type="range" id="o4" min="0" max="1" value="0.35" step="0.05"><span class="val" id="ov4">35%</span></div>
+    </div>
+    <div class="sec">
+      <h2>단면</h2>
+      <div class="grp">
+        <button id="clipOff" class="on">끔</button>
+        <button id="clipX">X</button>
+        <button id="clipY">Y</button>
+        <button id="clipZ">Z</button>
+        <button id="clipFlip">반전</button>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <label>위치</label>
+        <input type="range" id="clipPos" min="0" max="1" value="0.5" step="0.005">
+        <div class="val" id="clipVal">50%</div>
+      </div>
+    </div>
+    <div class="sec">
+      <h2>하중 – 변위</h2>
+      <canvas class="chart" id="chart"></canvas>
+      <p class="note" id="chartNote"></p>
+    </div>
+    <div class="sec">
+      <p class="note">Phase 3 결과 판독 화면 프로토타입 — __NOTE__ 구동됩니다. 프레임 사이는 선형 보간.</p>
+    </div>
+  </div>
+</div>
+
+<script type="application/json" id="simdata">__DATA__</script>
+<script>
+"use strict";
+const D = JSON.parse(document.getElementById("simdata").textContent);
+const b64f = s => new Float32Array(Uint8Array.from(atob(s), c=>c.charCodeAt(0)).buffer);
+const b64u16 = s => new Uint16Array(Uint8Array.from(atob(s), c=>c.charCodeAt(0)).buffer);
+const b64u8 = s => Uint8Array.from(atob(s), c=>c.charCodeAt(0));
+
+const quads = D.quads_dtype==="u2" ? b64u16(D.quads) : new Uint32Array(Uint8Array.from(atob(D.quads),c=>c.charCodeAt(0)).buffer);
+const part = b64u8(D.part);
+const NF = D.meta.frames, NQ = part.length;
+const pos = D.pos.map(b64f), vm = D.vm.map(b64f), ps = (D.ps||[]).map(b64f);
+if(!ps.length){const o=document.querySelector('option[value="ps"]'); if(o)o.remove();}
+document.getElementById("caseLabel").textContent = D.meta.case + " · " + D.meta.elements + " elems · " + NF + " frames";
+
+let vmMax=0, psMax=0;
+for(const a of vm) for(let i=0;i<a.length;i++) if(a[i]>vmMax) vmMax=a[i];
+for(const a of ps) for(let i=0;i<a.length;i++) if(a[i]>psMax) psMax=a[i];
+
+// bounds from frame 0
+const bmin=[1e9,1e9,1e9], bmax=[-1e9,-1e9,-1e9];
+for(let i=0;i<pos[0].length;i+=3) for(let k=0;k<3;k++){const v=pos[0][i+k]; if(v<bmin[k])bmin[k]=v; if(v>bmax[k])bmax[k]=v;}
+const center=[(bmin[0]+bmax[0])/2,(bmin[1]+bmax[1])/2,(bmin[2]+bmax[2])/2];
+const diag=Math.hypot(bmax[0]-bmin[0],bmax[1]-bmin[1],bmax[2]-bmin[2]);
+
+// ---------- WebGL ----------
+const canvas=document.getElementById("gl");
+const gl=canvas.getContext("webgl",{antialias:true});
+const VS=`attribute vec3 aPos; attribute vec3 aNrm; attribute vec4 aCol;
+uniform mat4 uMVP; uniform mat3 uNrm; varying vec3 vN; varying vec4 vC; varying vec3 vW;
+void main(){ gl_Position=uMVP*vec4(aPos,1.0); vN=uNrm*aNrm; vC=aCol; vW=aPos; }`;
+const FS=`precision mediump float; varying vec3 vN; varying vec4 vC; varying vec3 vW;
+uniform vec4 uClip; uniform float uClipOn; uniform vec3 uLight;
+void main(){
+  if(uClipOn>0.5 && dot(vW,uClip.xyz)>uClip.w) discard;
+  float d=abs(dot(normalize(vN),normalize(uLight)));
+  float shade=0.45+0.55*d;
+  gl_FragColor=vec4(vC.rgb*shade, vC.a);
+}`;
+function mkProg(vs,fs){
+  const p=gl.createProgram();
+  for(const [t,src] of [[gl.VERTEX_SHADER,vs],[gl.FRAGMENT_SHADER,fs]]){
+    const s=gl.createShader(t); gl.shaderSource(s,src); gl.compileShader(s);
+    if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw gl.getShaderInfoLog(s);
+    gl.attachShader(p,s);
+  }
+  gl.linkProgram(p); return p;
+}
+const prog=mkProg(VS,FS);
+const loc={aPos:gl.getAttribLocation(prog,"aPos"),aNrm:gl.getAttribLocation(prog,"aNrm"),aCol:gl.getAttribLocation(prog,"aCol"),
+  uMVP:gl.getUniformLocation(prog,"uMVP"),uNrm:gl.getUniformLocation(prog,"uNrm"),uClip:gl.getUniformLocation(prog,"uClip"),
+  uClipOn:gl.getUniformLocation(prog,"uClipOn"),uLight:gl.getUniformLocation(prog,"uLight")};
+
+// per-part expanded triangle buffers (rebuilt on frame/color change)
+const partIds=[1,2,3,4];
+const quadsByPart={};
+for(const pid of partIds){
+  const idx=[]; for(let q=0;q<NQ;q++) if(part[q]===pid) idx.push(q);
+  quadsByPart[pid]=idx;
+}
+const buffers={}; // pid -> {vbo,nbo,cbo,ebo(lines),nTri,nLine}
+for(const pid of partIds){
+  buffers[pid]={vbo:gl.createBuffer(),nbo:gl.createBuffer(),cbo:gl.createBuffer(),lbo:gl.createBuffer(),nTri:0,nLine:0};
+}
+
+// colormaps
+function viridis(t){
+  const c=[[68,1,84],[59,82,139],[33,145,140],[94,201,98],[253,231,37]];
+  t=Math.min(1,Math.max(0,t)); const x=t*(c.length-1), i=Math.min(c.length-2,Math.floor(x)), f=x-i;
+  return [ (c[i][0]+(c[i+1][0]-c[i][0])*f)/255, (c[i][1]+(c[i+1][1]-c[i][1])*f)/255, (c[i][2]+(c[i+1][2]-c[i][2])*f)/255 ];
+}
+const partColor={1:[0.78,0.31,0.24],2:[0.62,0.66,0.72],3:[0.35,0.42,0.55],4:[0.47,0.56,0.5]};
+
+const state={t:0, playing:false, speed:1, wire:false, ghost:false, colorMode:"part",
+  vis:{1:true,2:true,3:true,4:true}, opa:{1:1,2:0.35,3:0.6,4:0.35},
+  clipAxis:-1, clipPos:0.5, clipFlip:false,
+  rotX:-1.05, rotZ:0.7, dist:diag*1.9, pan:[0,0]};
+
+// Undeformed reference: the CAN part at frame 0 (the meshed STP shape),
+// drawn as a translucent grey ghost so deformation reads against the original.
+let ghostB=null;
+function buildGhost(){
+  const pid=1; if(!quadsByPart[pid]) return;
+  const idx=quadsByPart[pid], nq=idx.length, P0=pos[0];
+  const V=new Float32Array(nq*6*3), L=new Float32Array(nq*8*3);
+  let vp=0,lp=0; const p=[[0,0,0],[0,0,0],[0,0,0],[0,0,0]];
+  for(let k=0;k<nq;k++){
+    const q=idx[k];
+    for(let n=0;n<4;n++){const ni=quads[q*4+n]*3;for(let c2=0;c2<3;c2++)p[n][c2]=P0[ni+c2];}
+    for(const t3 of [0,1,2, 0,2,3]){V[vp]=p[t3][0];V[vp+1]=p[t3][1];V[vp+2]=p[t3][2];vp+=3;}
+    for(const e of [0,1, 1,2, 2,3, 3,0]){L[lp]=p[e][0];L[lp+1]=p[e][1];L[lp+2]=p[e][2];lp+=3;}
+  }
+  ghostB={vbo:gl.createBuffer(), lbo:gl.createBuffer(), nTri:nq*6, nLine:nq*8};
+  gl.bindBuffer(gl.ARRAY_BUFFER,ghostB.vbo); gl.bufferData(gl.ARRAY_BUFFER,V,gl.STATIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER,ghostB.lbo); gl.bufferData(gl.ARRAY_BUFFER,L,gl.STATIC_DRAW);
+}
+
+function frameLerp(){
+  const f=state.t*(NF-1), i=Math.min(NF-2,Math.floor(f)), a=f-i;
+  return {i, j:i+1, a};
+}
+function scalarAt(q){
+  const {i,j,a}=frameLerp();
+  const arr = (state.colorMode==="ps"&&ps.length)?ps:vm;
+  return arr[i][q]*(1-a)+arr[j][q]*a;
+}
+const smax=()=> state.colorMode==="vm"?vmMax:Math.max(psMax,1e-9);
+
+function rebuild(){
+  const {i,j,a}=frameLerp();
+  const P0=pos[i], P1=pos[j];
+  for(const pid of partIds){
+    const idx=quadsByPart[pid], nq=idx.length;
+    const V=new Float32Array(nq*6*3), N=new Float32Array(nq*6*3), C=new Float32Array(nq*6*4);
+    const L=new Float32Array(nq*8*3);
+    let vp=0,cp=0,lp=0;
+    const p=[[0,0,0],[0,0,0],[0,0,0],[0,0,0]];
+    for(let k=0;k<nq;k++){
+      const q=idx[k];
+      for(let n=0;n<4;n++){
+        const ni=quads[q*4+n]*3;
+        for(let c2=0;c2<3;c2++) p[n][c2]=P0[ni+c2]*(1-a)+P1[ni+c2]*a;
+      }
+      const ux=p[2][0]-p[0][0],uy=p[2][1]-p[0][1],uz=p[2][2]-p[0][2];
+      const wx=p[3][0]-p[1][0],wy=p[3][1]-p[1][1],wz=p[3][2]-p[1][2];
+      let nx=uy*wz-uz*wy, ny=uz*wx-ux*wz, nz=ux*wy-uy*wx;
+      const nl=Math.hypot(nx,ny,nz)||1; nx/=nl;ny/=nl;nz/=nl;
+      let r,g,b2;
+      if(state.colorMode==="part"){ [r,g,b2]=partColor[pid]; }
+      else { [r,g,b2]=viridis(scalarAt(q)/smax()); }
+      const alpha=state.opa[pid];
+      for(const t3 of [0,1,2, 0,2,3]){
+        V[vp]=p[t3][0];V[vp+1]=p[t3][1];V[vp+2]=p[t3][2];
+        N[vp]=nx;N[vp+1]=ny;N[vp+2]=nz; vp+=3;
+        C[cp]=r;C[cp+1]=g;C[cp+2]=b2;C[cp+3]=alpha; cp+=4;
+      }
+      for(const e of [0,1, 1,2, 2,3, 3,0]){
+        L[lp]=p[e][0];L[lp+1]=p[e][1];L[lp+2]=p[e][2];lp+=3;
+      }
+    }
+    const B=buffers[pid];
+    gl.bindBuffer(gl.ARRAY_BUFFER,B.vbo); gl.bufferData(gl.ARRAY_BUFFER,V,gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER,B.nbo); gl.bufferData(gl.ARRAY_BUFFER,N,gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER,B.cbo); gl.bufferData(gl.ARRAY_BUFFER,C,gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER,B.lbo); gl.bufferData(gl.ARRAY_BUFFER,L,gl.DYNAMIC_DRAW);
+    B.nTri=nq*6; B.nLine=nq*8;
+  }
+}
+
+// mat helpers
+function persp(fov,asp,near,far){
+  const f=1/Math.tan(fov/2), o=new Float32Array(16);
+  o[0]=f/asp;o[5]=f;o[10]=(far+near)/(near-far);o[11]=-1;o[14]=2*far*near/(near-far);
+  return o;
+}
+function mul(a,b){
+  const o=new Float32Array(16);
+  for(let i=0;i<4;i++)for(let j2=0;j2<4;j2++){let s=0;for(let k=0;k<4;k++)s+=a[k*4+j2]*b[i*4+k];o[i*4+j2]=s;}
+  return o;
+}
+function camera(){
+  const cz=Math.cos(state.rotZ),sz=Math.sin(state.rotZ),cx=Math.cos(state.rotX),sx=Math.sin(state.rotX);
+  // world -> view: translate(-center-pan), rotZ, rotX, translate(0,0,-dist)
+  const T=(x,y,z)=>new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, x,y,z,1]);
+  const RZ=new Float32Array([cz,sz,0,0, -sz,cz,0,0, 0,0,1,0, 0,0,0,1]);
+  const RX=new Float32Array([1,0,0,0, 0,cx,sx,0, 0,-sx,cx,0, 0,0,0,1]);
+  let M=T(-center[0],-center[1],-center[2]);
+  M=mul(RZ,M); M=mul(RX,M); M=mul(T(state.pan[0],state.pan[1],-state.dist),M);
+  return M;
+}
+function draw(){
+  const w=canvas.clientWidth*devicePixelRatio, h=canvas.clientHeight*devicePixelRatio;
+  if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;}
+  gl.viewport(0,0,w,h);
+  const cs=getComputedStyle(document.documentElement);
+  const bg=cs.getPropertyValue("--viewport").trim();
+  const r=parseInt(bg.slice(1,3),16)/255,g=parseInt(bg.slice(3,5),16)/255,b2=parseInt(bg.slice(5,7),16)/255;
+  gl.clearColor(r,g,b2,1);
+  gl.enable(gl.DEPTH_TEST); gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+  gl.useProgram(prog);
+  const V=camera(), P=persp(0.6,w/h,diag*0.02,diag*10), MVP=mul(P,V);
+  gl.uniformMatrix4fv(loc.uMVP,false,MVP);
+  // normal matrix ~ rotation part of V
+  const nm=new Float32Array([V[0],V[1],V[2],V[4],V[5],V[6],V[8],V[9],V[10]]);
+  gl.uniformMatrix3fv(loc.uNrm,false,nm);
+  gl.uniform3f(loc.uLight,0.4,0.35,0.85);
+  // clip plane
+  if(state.clipAxis>=0){
+    const n=[0,0,0]; n[state.clipAxis]=state.clipFlip?-1:1;
+    const lo=bmin[state.clipAxis], hi=bmax[state.clipAxis];
+    let d=lo+(hi-lo)*state.clipPos; if(state.clipFlip) d=-d;
+    gl.uniform4f(loc.uClip,n[0],n[1],n[2],d); gl.uniform1f(loc.uClipOn,1);
+  } else gl.uniform1f(loc.uClipOn,0);
+
+  const order=partIds.filter(p=>state.vis[p]).sort((a,b3)=>state.opa[b3]-state.opa[a]);
+  for(const pid of order){
+    const B=buffers[pid], transparent=state.opa[pid]<0.999;
+    if(transparent){gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.depthMask(false);}
+    else {gl.disable(gl.BLEND);gl.depthMask(true);}
+    gl.bindBuffer(gl.ARRAY_BUFFER,B.vbo);gl.enableVertexAttribArray(loc.aPos);gl.vertexAttribPointer(loc.aPos,3,gl.FLOAT,false,0,0);
+    gl.bindBuffer(gl.ARRAY_BUFFER,B.nbo);gl.enableVertexAttribArray(loc.aNrm);gl.vertexAttribPointer(loc.aNrm,3,gl.FLOAT,false,0,0);
+    gl.bindBuffer(gl.ARRAY_BUFFER,B.cbo);gl.enableVertexAttribArray(loc.aCol);gl.vertexAttribPointer(loc.aCol,4,gl.FLOAT,false,0,0);
+    gl.drawArrays(gl.TRIANGLES,0,B.nTri);
+    if(state.wire){
+      gl.disableVertexAttribArray(loc.aCol);
+      gl.vertexAttrib4f(loc.aCol,0.25,0.28,0.33,Math.min(0.5,state.opa[pid]+0.2));
+      gl.disableVertexAttribArray(loc.aNrm); gl.vertexAttrib3f(loc.aNrm,0,0,1);
+      gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
+      gl.bindBuffer(gl.ARRAY_BUFFER,B.lbo);gl.enableVertexAttribArray(loc.aPos);gl.vertexAttribPointer(loc.aPos,3,gl.FLOAT,false,0,0);
+      gl.drawArrays(gl.LINES,0,B.nLine);
+      gl.enableVertexAttribArray(loc.aNrm); gl.enableVertexAttribArray(loc.aCol);
+    }
+  }
+  gl.depthMask(true);
+  if(state.ghost && ghostB){
+    gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.depthMask(false);
+    gl.bindBuffer(gl.ARRAY_BUFFER,ghostB.vbo);gl.enableVertexAttribArray(loc.aPos);gl.vertexAttribPointer(loc.aPos,3,gl.FLOAT,false,0,0);
+    gl.disableVertexAttribArray(loc.aNrm); gl.vertexAttrib3f(loc.aNrm,0,0,1);
+    gl.disableVertexAttribArray(loc.aCol); gl.vertexAttrib4f(loc.aCol,0.45,0.50,0.60,0.25);
+    gl.drawArrays(gl.TRIANGLES,0,ghostB.nTri);
+    gl.vertexAttrib4f(loc.aCol,0.40,0.45,0.55,0.55);
+    gl.bindBuffer(gl.ARRAY_BUFFER,ghostB.lbo);gl.vertexAttribPointer(loc.aPos,3,gl.FLOAT,false,0,0);
+    gl.drawArrays(gl.LINES,0,ghostB.nLine);
+    gl.enableVertexAttribArray(loc.aNrm); gl.enableVertexAttribArray(loc.aCol);
+    gl.depthMask(true);
+  }
+}
+
+// ---------- interaction ----------
+let drag=null;
+canvas.addEventListener("pointerdown",e=>{drag={x:e.clientX,y:e.clientY,pan:e.shiftKey||e.button===2};canvas.setPointerCapture(e.pointerId);canvas.classList.add("dragging");});
+canvas.addEventListener("pointermove",e=>{
+  if(!drag)return;
+  const dx=e.clientX-drag.x, dy=e.clientY-drag.y; drag.x=e.clientX;drag.y=e.clientY;
+  if(drag.pan){const s=state.dist*0.0011; state.pan[0]+=dx*s; state.pan[1]-=dy*s;}
+  else {state.rotZ+=dx*0.008; state.rotX+=dy*0.008; state.rotX=Math.max(-Math.PI,Math.min(0,state.rotX));}
+  requestDraw();
+});
+canvas.addEventListener("pointerup",()=>{drag=null;canvas.classList.remove("dragging");});
+canvas.addEventListener("wheel",e=>{e.preventDefault();state.dist*=Math.exp(e.deltaY*0.0012);state.dist=Math.max(diag*0.25,Math.min(diag*6,state.dist));requestDraw();},{passive:false});
+canvas.addEventListener("contextmenu",e=>e.preventDefault());
+
+// ---------- UI ----------
+const $=id=>document.getElementById(id);
+const timeEl=$("time"), playEl=$("play");
+function setTime(t,fromSlider){
+  state.t=Math.max(0,Math.min(1,t));
+  if(!fromSlider) timeEl.value=Math.round(state.t*1000);
+  const {i,a}=frameLerp();
+  $("frameno").textContent="f "+String(i+ (a>0.5?1:0)).padStart(2,"0")+" / "+(NF-1);
+  updateReadout(); drawChart(); rebuild(); requestDraw();
+}
+timeEl.addEventListener("input",()=>setTime(timeEl.value/1000,true));
+let raf=null, lastTs=null;
+const reduceMotion=matchMedia("(prefers-reduced-motion: reduce)").matches;
+function tick(ts){
+  if(!state.playing)return;
+  if(lastTs!=null){
+    const dur=6/state.speed; // seconds for full sweep
+    let t=state.t+(ts-lastTs)/1000/dur; if(t>1)t=0;
+    setTime(t);
+  }
+  lastTs=ts; raf=requestAnimationFrame(tick);
+}
+playEl.addEventListener("click",()=>{
+  state.playing=!state.playing; playEl.textContent=state.playing?"❚❚":"▶";
+  lastTs=null; if(state.playing) raf=requestAnimationFrame(tick); else cancelAnimationFrame(raf);
+});
+$("speed").addEventListener("input",e=>{state.speed=+e.target.value;$("speedVal").textContent=state.speed.toFixed(2).replace(/0+$/,"").replace(/\.$/,"")+"×";});
+$("viewIso").addEventListener("click",()=>{state.rotX=-1.05;state.rotZ=0.7;state.pan=[0,0];state.dist=diag*1.9;requestDraw();});
+$("viewFront").addEventListener("click",()=>{state.rotX=-Math.PI/2;state.rotZ=0;state.pan=[0,0];state.dist=diag*1.9;requestDraw();});
+$("viewTop").addEventListener("click",()=>{state.rotX=0;state.rotZ=0;state.pan=[0,0];state.dist=diag*1.9;requestDraw();});
+$("wire").addEventListener("click",e=>{state.wire=!state.wire;e.target.classList.toggle("on",state.wire);requestDraw();});
+$("ghost").addEventListener("click",e=>{if(!ghostB)buildGhost();state.ghost=!state.ghost;e.target.classList.toggle("on",state.ghost);requestDraw();});
+$("colorMode").addEventListener("change",e=>{state.colorMode=e.target.value;updateCbar();rebuild();requestDraw();});
+for(const pid of partIds){
+  if(!$("v"+pid)) continue;
+  $("v"+pid).addEventListener("change",e=>{state.vis[pid]=e.target.checked;requestDraw();});
+  $("o"+pid).addEventListener("input",e=>{state.opa[pid]=+e.target.value;$("ov"+pid).textContent=Math.round(state.opa[pid]*100)+"%";rebuild();requestDraw();});
+  const c=partColor[pid]; $("sw"+pid).style.background=`rgb(${c[0]*255|0},${c[1]*255|0},${c[2]*255|0})`;
+}
+function setClip(ax){
+  state.clipAxis=ax;
+  for(const [id,v] of [["clipOff",-1],["clipX",0],["clipY",1],["clipZ",2]])
+    $(id).classList.toggle("on",ax===v);
+  requestDraw();
+}
+$("clipOff").addEventListener("click",()=>setClip(-1));
+$("clipX").addEventListener("click",()=>setClip(0));
+$("clipY").addEventListener("click",()=>setClip(1));
+$("clipZ").addEventListener("click",()=>setClip(2));
+$("clipFlip").addEventListener("click",e=>{state.clipFlip=!state.clipFlip;e.target.classList.toggle("on",state.clipFlip);requestDraw();});
+$("clipPos").addEventListener("input",e=>{state.clipPos=+e.target.value;$("clipVal").textContent=Math.round(state.clipPos*100)+"%";requestDraw();});
+
+function updateCbar(){
+  const on=state.colorMode!=="part";
+  $("cbar").classList.toggle("on",on);
+  if(!on)return;
+  const stops=[]; for(let i=0;i<=8;i++){const c=viridis(1-i/8);stops.push(`rgb(${c[0]*255|0},${c[1]*255|0},${c[2]*255|0}) ${i/8*100}%`);}
+  $("cbarRamp").style.background=`linear-gradient(${stops.join(",")})`;
+  $("cbarTitle").textContent=state.colorMode==="vm"?"von Mises [MPa]":"소성 변형률";
+  $("cbarMax").textContent=(state.colorMode==="vm"?vmMax:psMax).toPrecision(3);
+  $("cbarMin").textContent="0";
+}
+
+// curve mapping: time -> displacement/force (absent on pressure-driven runs)
+const HASCURVE=!!(D.curve&&D.curve.t&&D.curve.t.length);
+const CT=HASCURVE?D.curve.t:[0], CD=HASCURVE?D.curve.d:[0], CF=HASCURVE?D.curve.f:[0];
+function curveAt(time){
+  if(time<=CT[0])return[CD[0],CF[0]];
+  for(let i=1;i<CT.length;i++) if(CT[i]>=time){
+    const a=(time-CT[i-1])/(CT[i]-CT[i-1]||1e-12);
+    return [CD[i-1]+(CD[i]-CD[i-1])*a, CF[i-1]+(CF[i]-CF[i-1])*a];
+  }
+  return [CD[CD.length-1],CF[CF.length-1]];
+}
+function simTime(){
+  const {i,a}=frameLerp();
+  return D.times[i]*(1-a)+D.times[i+1]*a;
+}
+function updateReadout(){
+  const t=simTime();
+  if(!HASCURVE){$("readout").innerHTML=`t <b>${(t*1000).toFixed(2)} ms</b>`;return;}
+  const [d,f]=curveAt(t);
+  $("readout").innerHTML=`t <b>${(t*1000).toFixed(2)} ms</b> &nbsp; d <b>${d.toFixed(2)} mm</b> &nbsp; F <b>${f.toFixed(1)} N</b>`;
+}
+// chart
+const chart=$("chart"),ctx=chart.getContext("2d");
+const fMax=Math.max(...CF), dMax=Math.max(...CD);
+if(HASCURVE){$("chartNote").textContent=`피크 ${fMax.toFixed(0)} N @ ${CD[CF.indexOf(fMax)].toFixed(1)} mm`;}
+else{$("chartNote").textContent="압력 구동 해석 — 하중-변위 곡선 없음";const c=$("chart");if(c)c.style.display="none";}
+function drawChart(){
+  if(!HASCURVE)return;
+  const w=chart.clientWidth*devicePixelRatio,h=chart.clientHeight*devicePixelRatio;
+  if(chart.width!==w||chart.height!==h){chart.width=w;chart.height=h;}
+  const cs=getComputedStyle(document.documentElement);
+  const line=cs.getPropertyValue("--line").trim(),ink=cs.getPropertyValue("--ink").trim(),
+        acc=cs.getPropertyValue("--accent").trim(),muted=cs.getPropertyValue("--muted").trim();
+  ctx.clearRect(0,0,w,h);
+  const px=d=>8*devicePixelRatio+(w-16*devicePixelRatio)*d/dMax;
+  const py=f=>h-14*devicePixelRatio-(h-24*devicePixelRatio)*f/fMax;
+  ctx.strokeStyle=line;ctx.lineWidth=devicePixelRatio;
+  ctx.beginPath();ctx.moveTo(px(0),py(0));ctx.lineTo(px(dMax),py(0));ctx.stroke();
+  ctx.strokeStyle=muted;ctx.lineWidth=1.2*devicePixelRatio;ctx.globalAlpha=0.55;
+  ctx.beginPath();for(let i=0;i<CD.length;i++){const X=px(CD[i]),Y=py(CF[i]);i?ctx.lineTo(X,Y):ctx.moveTo(X,Y);}ctx.stroke();
+  ctx.globalAlpha=1;
+  const t=simTime();
+  ctx.strokeStyle=acc;ctx.lineWidth=2*devicePixelRatio;
+  ctx.beginPath();let started=false;
+  for(let i=0;i<CD.length;i++){if(CT[i]>t)break;const X=px(CD[i]),Y=py(CF[i]);started?ctx.lineTo(X,Y):ctx.moveTo(X,Y);started=true;}
+  ctx.stroke();
+  const [d,f]=curveAt(t);
+  ctx.fillStyle=acc;ctx.beginPath();ctx.arc(px(d),py(f),4*devicePixelRatio,0,7);ctx.fill();
+  ctx.fillStyle=ink;ctx.font=`${10*devicePixelRatio}px IBM Plex Mono,monospace`;
+  ctx.fillText(`${f.toFixed(0)} N`,Math.min(px(d)+6*devicePixelRatio,w-52*devicePixelRatio),py(f)-6*devicePixelRatio);
+}
+
+let drawQueued=false;
+function requestDraw(){if(drawQueued)return;drawQueued=true;requestAnimationFrame(()=>{drawQueued=false;draw();});}
+addEventListener("resize",()=>{requestDraw();drawChart();});
+matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change",()=>{requestDraw();drawChart();});
+
+updateCbar(); setTime(0);
+if(!reduceMotion){ /* start paused; user presses play */ }
+</script>

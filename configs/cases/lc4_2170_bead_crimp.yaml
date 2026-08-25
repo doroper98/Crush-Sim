@@ -1,0 +1,90 @@
+# LC-4 - 2170 battery can: rotary beading over an internal grooving arbor.
+#
+# The production process: the can sits on a chuck (base clamped), an internal
+# arbor with a groove window supports the wall, and an opposed pair of
+# torus-rim rollers orbits the can axis, feeding radially inward at
+# spin-forming rates. The rollers press the wall into the arbor window,
+# leaving a continuous circumferential bead groove of uniform depth.
+#
+# Iteration history (each measured as 24-sector groove radii):
+#   v2 four static rollers      -> 4 discrete dents, no ring        (rejected)
+#   v3 one orbiting roller      -> ring, 2.1 mm depth spread (rim ovalises
+#                                  after the unbalanced side load)
+#   v4 opposed pair             -> 2-fold-symmetric 2.0 mm spread (plastic
+#                                  ovalisation frozen in by the fast feed)
+#   v5 2-rev spin-forming feed  -> still 2.0 mm (elastic ovalisation of the
+#                                  unsupported free rim is intrinsic)
+#   v6 internal arbor           -> this case
+#
+# Crimping is deliberately NOT part of this run: the arbor must come out
+# first (production uses a collapsible arbor), which needs the deformed
+# state carried into a second run - the FR planned as issue #26.
+
+name: lc4_2170_bead_crimp
+load_case: LC-3
+description: >-
+  2170 battery can (R10.5 x H70 x t0.3, closed bottom, Ni-plated can steel):
+  rotary beading - an opposed pair of torus rollers orbits 3 revolutions
+  (1 mm/rev feed, then a full ironing pass) over an internal grooving arbor.
+
+geometry:
+  kind: parametric_can
+  radius: 10.5
+  height: 70.0
+  thickness: 0.3
+  closed_bottom: true
+  closed_top: false
+
+material:
+  key: ni_plated_steel_can  # literature card (Hilumin-class); trend-grade
+
+mesh:
+  target_size: 0.6      # 0.5 recombines a sliver on the bottom cap (SICN 0.03)
+  recombine: true
+  curvature_points: 12
+
+loading:
+  # Main tool = one of the beading rollers (its contact force is the curve).
+  tool: bead_roller
+  motion: orbit
+  direction: [1.0, 0.0, 0.0]
+  stroke: 2.0               # radial feed: 0.5 gap + 1.5 mm groove depth
+  velocity: 10.0            # tangential speed of the roller centre [m/s]
+  orbit_revs: 3.0
+  feed_revs: 2.0            # 1 mm/rev spin-forming feed, then iron 1 rev
+  ramp_fraction: 0.1
+  tool_gap: 0.5
+  indenter_radius: 1.5      # roller rim (groove profile) radius
+  tool_size: 11.0           # roller outer diameter
+  height_frac: 0.914        # groove centre height
+  clamp_can_base: true      # the chuck grips the base
+  # Internal grooving arbor: sleeve bands above/below the groove window stop
+  # the free rim from ovalising. Diameter leaves 0.40 mm wall clearance,
+  # above the 0.32 mm scaled contact gap.
+  support: bead_arbor
+  support_size: 19.9
+  extra_tools:
+    # The opposed roller, 180 degrees away, orbiting in lockstep.
+    - {tool: bead_roller, motion: orbit, direction: [-1.0, 0.0, 0.0],
+       stroke: 2.0, velocity: 10.0, orbit_revs: 3.0, feed_revs: 2.0,
+       tool_gap: 0.5, indenter_radius: 1.5, tool_size: 11.0,
+       height_frac: 0.914, stage: 0}
+
+contact:
+  friction: 0.15
+  gap_scale: 0.8
+  stiffness_scale: 1.0
+
+solver:
+  config: configs/solver.yaml
+  threads: 4
+  end_time: auto
+  animation_frames: 40
+  time_history_points: 500
+  stop_on_energy_error: true
+  stop_on_negative_volume: true
+
+output:
+  dir: runs/lc4_2170_bead_crimp
+  render: true
+  report: true

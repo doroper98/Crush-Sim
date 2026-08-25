@@ -28,6 +28,13 @@ class ShellMesh:
     nodes: np.ndarray
     quads: np.ndarray
     tris: np.ndarray
+    element_thickness: np.ndarray | None = None
+    """Optional per-element thickness [mm], quads first then tris.
+
+    Emitted as the /SHELL / /SH3N element-card thickness field, overriding
+    the part property where set - a scored vent line is a band of thinner
+    elements inside an otherwise uniform part (validated against the pinned
+    starter by total-mass comparison)."""
     name: str = "part"
     source: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -44,6 +51,13 @@ class ShellMesh:
             )
         if self.node_ids.size == 0:
             raise MeshingError(f"Mesh {self.name!r} has no nodes")
+        if self.element_thickness is not None:
+            self.element_thickness = np.asarray(self.element_thickness, dtype=float).reshape(-1)
+            if self.element_thickness.shape[0] != self.n_quads + self.n_tris:
+                raise MeshingError(
+                    f"Mesh {self.name!r}: {self.element_thickness.shape[0]} element "
+                    f"thicknesses for {self.n_quads + self.n_tris} elements"
+                )
         if self.n_elements == 0:
             raise MeshingError(f"Mesh {self.name!r} has no shell elements")
 
@@ -126,6 +140,27 @@ class ShellMesh:
         self.metadata["seated_offset_mm"] = [round(c, 6) for c in offset]
         return offset
 
+    def orient_outward(self, centre: tuple[float, float, float] | None = None) -> int:
+        """Flip shells so every element normal points away from ``centre``.
+
+        Internal-pressure loads (/PLOAD) act along the element normal, so a
+        closed can must present a consistent outward orientation - Gmsh's OCC
+        surfaces carry arbitrary per-face orientations. Valid for convex
+        closed shells (cylindrical or box cans); returns the flip count.
+        ``centre`` defaults to the mesh centroid.
+        """
+        c = np.asarray(centre if centre is not None else self.nodes.mean(axis=0), dtype=float)
+        index = self.node_index()
+        flipped = 0
+        for block in (self.quads, self.tris):
+            for element in block:
+                pts = self.nodes[[index[int(n)] for n in element]]
+                normal = np.cross(pts[1] - pts[0], pts[2] - pts[0])
+                if float(np.dot(normal, pts.mean(axis=0) - c)) < 0.0:
+                    element[:] = element[::-1]
+                    flipped += 1
+        return flipped
+
     def renumber(self, node_offset: int) -> "ShellMesh":
         """Return a copy whose node ids start at ``node_offset + 1``.
 
@@ -139,6 +174,9 @@ class ShellMesh:
             nodes=self.nodes.copy(),
             quads=remap(self.quads) if self.n_quads else self.quads.copy(),
             tris=remap(self.tris) if self.n_tris else self.tris.copy(),
+            element_thickness=None
+            if self.element_thickness is None
+            else self.element_thickness.copy(),
             name=self.name,
             source=self.source,
             metadata=dict(self.metadata),

@@ -17,7 +17,9 @@ from typing import Literal
 from ..errors import GeometryError
 from ..units import UNIT_SYSTEM
 
-ToolKind = Literal["platen", "jig_plane", "v_block", "indenter", "cylinder", "step"]
+ToolKind = Literal[
+    "platen", "jig_plane", "v_block", "indenter", "cylinder", "bead_roller", "bead_arbor", "step"
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +168,107 @@ class ToolShape:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class VentSpec:
+    """A stadium (pill) shaped scored vent on a prismatic can's cap.
+
+    The score is the outline of the stadium: a band of ``band`` mm width
+    centred on the outline is meshed with edges aligned to it and carries
+    ``score_thickness`` instead of the cap thickness. When the score tears
+    (failure strain + element deletion) the inner flap opens.
+
+    Attributes:
+        length: Stadium overall length [mm] (along the cap's long axis).
+        width: Stadium overall width [mm] (also the end-cap diameter).
+        band: Score band width [mm].
+        score_thickness: Residual thickness at the score [mm].
+    """
+
+    length: float
+    width: float
+    band: float = 0.8
+    score_thickness: float = 0.05
+
+    def __post_init__(self) -> None:
+        if not 0.0 < self.width <= self.length:
+            raise GeometryError(f"Vent needs 0 < width <= length, got {self.width}x{self.length}")
+        if self.band <= 0.0 or self.score_thickness <= 0.0:
+            raise GeometryError("Vent band and score_thickness must be > 0")
+
+    def contains(self, x: float, y: float, grow: float = 0.0) -> bool:
+        """Whether cap-local point (x, y) lies inside the stadium grown by ``grow``."""
+        r = self.width / 2.0 + grow / 2.0
+        c = max(self.length / 2.0 - self.width / 2.0, 0.0)
+        if abs(x) <= c:
+            return abs(y) <= r
+        return math.hypot(abs(x) - c, y) <= r
+
+
+@dataclass(frozen=True, slots=True)
+class BoxCan:
+    """A prismatic (box) cell can: mid-surface shell with a thickness parameter.
+
+    Coordinate convention matches the cylindrical can: height along +Z,
+    bottom face at Z = 0, footprint centred on the origin with ``width``
+    along X and ``depth`` along Y. The welded cap is part of the same shell
+    (a weld is exact as a merged-node connection).
+    """
+
+    width: float
+    height: float
+    depth: float
+    thickness: float
+    closed_bottom: bool = True
+    closed_top: bool = True
+    vent: VentSpec | None = None
+    unit_system: str = UNIT_SYSTEM
+
+    def __post_init__(self) -> None:
+        for label, value in (("width", self.width), ("depth", self.depth), ("height", self.height), ("thickness", self.thickness)):
+            if value <= 0.0:
+                raise GeometryError(f"Box can {label} must be > 0 mm, got {value!r}")
+        if self.thickness >= min(self.width, self.depth) / 4.0:
+            raise GeometryError("Box can walls must be thin for a shell idealisation")
+        if self.vent is not None:
+            if not self.closed_top:
+                raise GeometryError("A vent needs a closed top (the cap carries it)")
+            if self.vent.length + 2 * self.vent.band >= self.width or (
+                self.vent.width + 2 * self.vent.band >= self.depth
+            ):
+                raise GeometryError("Vent (plus score band) must fit inside the cap")
+
+    @property
+    def half_width_mid(self) -> float:
+        """Mid-surface half width [mm] (X)."""
+        return (self.width - self.thickness) / 2.0
+
+    @property
+    def half_depth_mid(self) -> float:
+        """Mid-surface half depth [mm] (Y)."""
+        return (self.depth - self.thickness) / 2.0
+
+    def summary(self) -> dict[str, object]:
+        """Flat dictionary for reports and run summaries."""
+        return {
+            "kind": "box_can",
+            "width_mm": self.width,
+            "depth_mm": self.depth,
+            "height_mm": self.height,
+            "thickness_mm": self.thickness,
+            "closed_bottom": self.closed_bottom,
+            "closed_top": self.closed_top,
+            "vent": None
+            if self.vent is None
+            else {
+                "length_mm": self.vent.length,
+                "width_mm": self.vent.width,
+                "band_mm": self.vent.band,
+                "score_thickness_mm": self.vent.score_thickness,
+            },
+            "unit_system": self.unit_system,
+        }
+
+
 def make_can(
     radius: float,
     height: float,
@@ -205,6 +308,7 @@ def make_tool(
     size: float | None = None,
     indenter_radius: float = 10.0,
     step_path: str | None = None,
+    height_frac: float = 0.5,
 ) -> ToolShape:
     """Place a reference tool against the can, offset by ``gap`` along ``-direction``.
 
@@ -220,6 +324,9 @@ def make_tool(
         indenter_radius: Hemispherical indenter radius [mm] for LC-3; also the
             pipe radius for the horizontal ``cylinder`` roller.
         step_path: Real-shape jig STEP file for ``kind == 'step'``.
+        height_frac: Axial position of a radial tool as a fraction of the can
+            height (0 = base, 1 = rim). Ignored for axial drives. A beading
+            roller sits near the top (e.g. 0.9); the default is mid height.
 
     Raises:
         GeometryError: If the direction is degenerate or the gap is negative.
@@ -231,6 +338,16 @@ def make_tool(
         raise GeometryError("Tool drive direction must be a non-zero vector")
     unit = (direction[0] / norm, direction[1] / norm, direction[2] / norm)
     tool_size = float(size) if size is not None else 1.5 * can.diameter
+
+    if kind == "bead_arbor":
+        # Internal support: always on the can axis, at the groove height.
+        return ToolShape(
+            kind=kind,
+            origin=(0.0, 0.0, height_frac * can.height),
+            direction=unit,
+            size=tool_size,
+            radius=0.0,
+        )
 
     axial = abs(unit[2]) > 0.9
     if axial:
@@ -245,13 +362,13 @@ def make_tool(
         # would double-count the builder's own setback and leave the tool
         # radius' worth of dead air in front of the can.
         offset = can.radius + gap
-        origin = (-unit[0] * offset, -unit[1] * offset, 0.5 * can.height)
+        origin = (-unit[0] * offset, -unit[1] * offset, height_frac * can.height)
 
     return ToolShape(
         kind=kind,
         origin=origin,
         direction=unit,
         size=tool_size,
-        radius=indenter_radius if kind in ("indenter", "cylinder") else 0.0,
+        radius=indenter_radius if kind in ("indenter", "cylinder", "bead_roller") else 0.0,
         step_path=step_path,
     )

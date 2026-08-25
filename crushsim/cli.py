@@ -244,8 +244,12 @@ def deck(
             case,
             case.material(),
             can_mesh=meshes["can"].mesh,
-            tool_mesh=meshes["tool"].mesh,
+            tool_mesh=meshes["tool"].mesh if "tool" in meshes else None,
             floor_mesh=meshes["floor"].mesh,
+            support_mesh=meshes["support"].mesh if "support" in meshes else None,
+            extra_tool_meshes=[
+                meshes[f"tool{i + 2}"].mesh for i in range(len(case.loading.extra_tools))
+            ],
             outdir=run_dir / "deck",
             solver_version_tag=_solver_tag(case.solver.config),
         )
@@ -601,6 +605,73 @@ def run_all(
         typer.secho(f"NOTE: {notice}", fg=typer.colors.YELLOW)
     if result.report_path:
         typer.secho(f"Report: {result.report_path}", fg=typer.colors.GREEN)
+
+
+# ---------------------------------------------------------------------------
+# export-step (issue #26): deformed shape at any frame -> STEP
+# ---------------------------------------------------------------------------
+
+
+@app.command(name="export-step")
+def export_step(
+    rundir: Annotated[Path, typer.Option("--rundir", help="Completed run directory")],
+    frame: Annotated[
+        Optional[int],
+        typer.Option("--frame", help="Frame index (negative counts from the end; default last)"),
+    ] = None,
+    time_s: Annotated[
+        Optional[float], typer.Option("--time", help="Pick the frame nearest this time [s]")
+    ] = None,
+    part: Annotated[
+        str, typer.Option("--part", help="'can' (default), 'all', or a deck part name")
+    ] = "can",
+    output: Annotated[Optional[Path], typer.Option("--output", "-o", help="Output .stp")] = None,
+) -> None:
+    """Export the deformed shape at a frame as STEP (faceted shell, AP214).
+
+    Reads the run's converted VTK sequence; needs the 'cad' extra (OCP).
+    """
+    from .post.export_step import export_deformed_step
+
+    try:
+        path = export_deformed_step(
+            rundir, frame=frame, time_s=time_s, part=part, out_path=output
+        )
+    except CrushSimError as exc:
+        _fail(exc)
+        return
+    typer.secho(f"STEP: {path}", fg=typer.colors.GREEN)
+
+
+# ---------------------------------------------------------------------------
+# ui (FR-11, Phase 3)
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def ui(
+    root: Annotated[
+        Path, typer.Option("--root", help="Crush-Sim checkout to serve (configs/, runs/)")
+    ] = Path("."),
+    host: Annotated[str, typer.Option(help="Bind address")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(help="Port")] = 8384,
+    no_browser: Annotated[
+        bool, typer.Option("--no-browser", help="Do not open a browser tab")
+    ] = False,
+) -> None:
+    """Start the local web UI: case launcher, run monitor, results viewer."""
+    try:
+        from .ui.server import serve
+    except ImportError as exc:
+        _fail(
+            CrushSimError(
+                f"The UI needs the 'ui' extra ({exc.name} missing). "
+                "Install it with: pip install -e .[ui]"
+            )
+        )
+        return
+    typer.secho(f"Crush-Sim UI: http://{host}:{port}/  (Ctrl+C to stop)", fg=typer.colors.GREEN)
+    serve(root, host=host, port=port, open_browser=not no_browser)
 
 
 # ---------------------------------------------------------------------------

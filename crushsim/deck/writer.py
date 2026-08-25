@@ -133,6 +133,24 @@ class DriveDefinition:
     """Total imposed displacement [mm]."""
     velocity_mm_s: float
     ramp_fraction: float = 0.1
+    t_start: float = 0.0
+    """Absolute time [s] at which this drive's motion window opens.
+
+    Multi-tool decks stage their strokes: stage-1 tools hold still (imposed
+    zero velocity) until every stage-0 stroke has finished. ``end_time`` and
+    the tables below stay in local (window) time; the writer shifts them.
+    """
+    orbit_start_radius: float = 0.0
+    """Orbit motion: initial radius of the tool centre about the can axis [mm].
+
+    ``orbit_revs > 0`` switches this drive to rotary (beading) kinematics:
+    the tool centre circles the Z axis through (0, 0), feeding radially
+    inward by ``stroke`` over ``orbit_feed_revs`` revolutions and holding
+    depth for the remainder. ``velocity_mm_s`` is the tangential speed of
+    the tool centre; ``direction`` gives the starting azimuth.
+    """
+    orbit_revs: float = 0.0
+    orbit_feed_revs: float = 0.0
     points: int = 201
     """Number of points in the displacement-vs-time function.
 
@@ -149,17 +167,66 @@ class DriveDefinition:
         return max(0.0, min(0.99, self.ramp_fraction)) * self.end_time
 
     @property
+    def is_orbit(self) -> bool:
+        """Whether this drive uses rotary (orbit) kinematics."""
+        return self.orbit_revs > 0.0
+
+    @property
     def end_time(self) -> float:
         """Engine end time [s] that delivers exactly ``stroke``.
 
         The cosine ease-in loses ``v * t_ramp / 2`` of travel relative to a
         step start, so the end time is stretched to compensate; the function
-        table then ends exactly on the requested stroke with no jump.
+        table then ends exactly on the requested stroke with no jump. An
+        orbit drive's end time covers ``orbit_revs`` revolutions at the
+        tangential speed (the same ease-in stretches the first revolution).
         """
         if self.velocity_mm_s <= 0.0:
             raise DeckError(f"Drive velocity must be > 0 mm/s, got {self.velocity_mm_s!r}")
         fraction = max(0.0, min(0.99, self.ramp_fraction))
+        if self.is_orbit:
+            path = 2.0 * math.pi * self.orbit_start_radius * self.orbit_revs
+            return (path / self.velocity_mm_s) / (1.0 - 0.5 * fraction)
         return (self.stroke / self.velocity_mm_s) / (1.0 - 0.5 * fraction)
+
+    def _orbit_angle(self, t: float) -> float:
+        """Swept angle [rad] at local time ``t``: cosine ease-in, then constant."""
+        t_end = self.end_time
+        ramp = self.ramp_time
+        omega = 2.0 * math.pi * self.orbit_revs / (t_end - 0.5 * ramp)
+        if ramp > 0.0 and t < ramp:
+            return omega * (t - (ramp / math.pi) * math.sin(math.pi * t / ramp)) / 2.0
+        return omega * (t - ramp / 2.0) if ramp > 0.0 else omega * t
+
+    def orbit_positions(self, t: float) -> tuple[float, float]:
+        """Tool-centre (x, y) at local time ``t`` for the orbit drive."""
+        theta0 = math.atan2(-self.direction[1], -self.direction[0])
+        theta = self._orbit_angle(t)
+        feed_angle = 2.0 * math.pi * max(self.orbit_feed_revs, 1e-9)
+        radius = self.orbit_start_radius - self.stroke * min(1.0, theta / feed_angle)
+        return (
+            radius * math.cos(theta0 + theta),
+            radius * math.sin(theta0 + theta),
+        )
+
+    def orbit_velocity_tables(self) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+        """(vx, vy) vs local time for the orbit drive (central differences).
+
+        Sampled densely (>= 160 points per revolution) so the piecewise-linear
+        /IMPVEL functions trace the circle, not a polygon.
+        """
+        t_end = self.end_time
+        n = max(3, int(max(self.points, 160 * self.orbit_revs)))
+        dt = t_end / (n - 1)
+        xs, ys = zip(*(self.orbit_positions(i * dt) for i in range(n)))
+        vx: list[tuple[float, float]] = []
+        vy: list[tuple[float, float]] = []
+        for i in range(n):
+            lo, hi = max(0, i - 1), min(n - 1, i + 1)
+            span = (hi - lo) * dt
+            vx.append((i * dt, (xs[hi] - xs[lo]) / span))
+            vy.append((i * dt, (ys[hi] - ys[lo]) / span))
+        return vx, vy
 
     def table(self) -> list[tuple[float, float]]:
         """Displacement-vs-time points: cosine ease-in, then constant velocity.
@@ -205,6 +272,45 @@ class DriveDefinition:
             pts.append((t, v))
         return pts
 
+    def padded_velocity_table(self, t_total: float) -> list[tuple[float, float]]:
+        """Velocity vs *absolute* time, held at zero outside the motion window.
+
+        Every driven tool stays velocity-controlled for the whole run - a tool
+        whose ``/IMPVEL`` simply expired would be free to drift under contact
+        springback. Zero-holds are inserted before ``t_start`` and after the
+        stroke completes.
+        """
+        pts = [(self.t_start + t, v) for t, v in self.velocity_table()]
+        out: list[tuple[float, float]] = []
+        if self.t_start > 0.0:
+            out.append((0.0, 0.0))
+            if pts[0][1] != 0.0:
+                out.append((self.t_start - 1.0e-9, 0.0))
+        out += pts
+        local_end = self.t_start + self.end_time
+        if t_total > local_end + 1.0e-12:
+            out.append((local_end + 1.0e-9, 0.0))
+            out.append((t_total, 0.0))
+        return out
+
+
+def _pad_table(
+    table: list[tuple[float, float]], t_start: float, t_total: float
+) -> list[tuple[float, float]]:
+    """Shift a local-time velocity table by ``t_start`` and zero-hold outside it."""
+    pts = [(t_start + t, v) for t, v in table]
+    out: list[tuple[float, float]] = []
+    if t_start > 0.0:
+        out.append((0.0, 0.0))
+        if pts[0][1] != 0.0:
+            out.append((t_start - 1.0e-9, 0.0))
+    out += pts
+    local_end = pts[-1][0]
+    if t_total > local_end + 1.0e-12:
+        out.append((local_end + 1.0e-9, 0.0))
+        out.append((t_total, 0.0))
+    return out
+
 
 @dataclass(slots=True)
 class DeckResult:
@@ -214,7 +320,7 @@ class DeckResult:
     starter_path: Path
     engine_path: Path
     parts: list[DeckPart]
-    drive: DriveDefinition
+    drive: DriveDefinition | None
     end_time: float
     node_count: int
     element_count: int
@@ -229,9 +335,9 @@ class DeckResult:
             "engine": str(self.engine_path),
             "parts": [p.summary() for p in self.parts],
             "end_time_s": self.end_time,
-            "stroke_mm": self.drive.stroke,
-            "velocity_mm_s": self.drive.velocity_mm_s,
-            "direction": list(self.drive.direction),
+            "stroke_mm": self.drive.stroke if self.drive else None,
+            "velocity_mm_s": self.drive.velocity_mm_s if self.drive else None,
+            "direction": list(self.drive.direction) if self.drive else None,
             "nodes": self.node_count,
             "elements": self.element_count,
             "material": self.material.key,
@@ -254,7 +360,7 @@ class RadiossDeckWriter:
         *,
         run_name: str,
         parts: list[DeckPart],
-        drive: DriveDefinition,
+        drive: DriveDefinition | None,
         material: MaterialCard,
         friction: float = CONTACT_FRICTION_DEFAULT,
         gap_scale: float = 0.8,
@@ -266,14 +372,26 @@ class RadiossDeckWriter:
         description: str = "",
         solver_version_tag: str = "unpinned",
         clamp_can_base: bool = False,
+        extra_drives: list[DriveDefinition] | None = None,
+        pressure: tuple[float, float, float] | None = None,
+        eps_p_max: float | None = None,
     ) -> None:
         if not parts:
             raise DeckError("A deck needs at least one part")
         roles = [p.role for p in parts]
         if "deformable" not in roles:
             raise DeckError("A deck needs at least one deformable part (the can)")
-        if roles.count("tool") != 1:
-            raise DeckError("A deck needs exactly one REF_TOOL part")
+        self.extra_drives = list(extra_drives or [])
+        n_drives = (1 if drive is not None else 0) + len(self.extra_drives)
+        if drive is None and self.extra_drives:
+            raise DeckError("extra_drives need a main drive")
+        if roles.count("tool") != n_drives:
+            raise DeckError(
+                f"A deck needs one driven part per drive: {roles.count('tool')} tool "
+                f"part(s) vs {n_drives} drive(s)"
+            )
+        if drive is None and pressure is None:
+            raise DeckError("A deck needs a driven tool or an internal pressure load")
         self.run_name = run_name
         self.parts = parts
         self.drive = drive
@@ -283,11 +401,16 @@ class RadiossDeckWriter:
         self.stiffness_scale = float(stiffness_scale)
         self.animation_frames = max(1, int(animation_frames))
         self.time_history_points = max(1, int(time_history_points))
-        self.end_time = float(end_time) if end_time else drive.end_time
+        drive_ends = [d.t_start + d.end_time for d in ([drive] if drive else []) + self.extra_drives]
+        if pressure is not None:
+            drive_ends.append(pressure[1] + pressure[2])
+        self.end_time = float(end_time) if end_time else max(drive_ends)
         self.load_case = load_case
         self.description = description
         self.solver_version_tag = solver_version_tag
         self.clamp_can_base = bool(clamp_can_base)
+        self.pressure = pressure
+        self.eps_p_max = eps_p_max
         self._assign_ids()
 
     # -- id assignment ------------------------------------------------------
@@ -330,13 +453,15 @@ class RadiossDeckWriter:
         centre = np.asarray(mesh.nodes, dtype=float).mean(axis=0)
         return (float(centre[0]), float(centre[1]), float(centre[2]))
 
-    def _drive_axis(self) -> tuple[str, int, float]:
-        """Resolve the drive direction to ``(axis_name, skew_id, sign)``.
+    @staticmethod
+    def _drive_axis(drive: DriveDefinition, skew_candidate: int) -> tuple[str, int, float]:
+        """Resolve a drive direction to ``(axis_name, skew_id, sign)``.
 
         An axis-aligned direction uses the global frame; anything else gets a
-        ``/SKEW/FIX`` whose local X axis is the drive direction.
+        ``/SKEW/FIX`` (id ``skew_candidate``) whose local X axis is the drive
+        direction.
         """
-        d = np.asarray(self.drive.direction, dtype=float)
+        d = np.asarray(drive.direction, dtype=float)
         norm = float(np.linalg.norm(d))
         if norm <= 0.0:
             raise DeckError("Drive direction must be a non-zero vector")
@@ -344,7 +469,7 @@ class RadiossDeckWriter:
         for axis, name in enumerate(_AXIS_NAMES):
             if abs(abs(d[axis]) - 1.0) < 1.0e-9:
                 return name, 0, math.copysign(1.0, d[axis])
-        return "X", 1, 1.0
+        return "X", skew_candidate, 1.0
 
     # -- keyword blocks -----------------------------------------------------
 
@@ -382,20 +507,31 @@ class RadiossDeckWriter:
     def _block_elements(self, part: DeckPart) -> list[str]:
         lines: list[str] = [RULER]
         eid = part.element_offset
+        thk = part.mesh.element_thickness
         # Element blocks (/SHELL, /SH3N) take NO title card - validated
         # against the real starter (a title line raises ERROR 100101).
+        # Per-element thickness (phi, Thk trailing fields) overrides the
+        # property where present - validated against the pinned starter by
+        # total-mass comparison; a scored vent line is a band of thinner
+        # elements.
         if part.mesh.n_quads:
             lines.append(f"/SHELL/{part.part_id}")
             lines.append("# shell_ID  node_ID1  node_ID2  node_ID3  node_ID4")
-            for quad in part.mesh.quads:
+            for index, quad in enumerate(part.mesh.quads):
                 eid += 1
-                lines.append(i10(eid) + "".join(i10(int(n)) for n in quad))
+                line = i10(eid) + "".join(i10(int(n)) for n in quad)
+                if thk is not None:
+                    line += f20(0.0) + f20(float(thk[index]))
+                lines.append(line)
         if part.mesh.n_tris:
             lines.append(f"/SH3N/{part.part_id}")
             lines.append("#  sh3n_ID  node_ID1  node_ID2  node_ID3")
-            for tri in part.mesh.tris:
+            for index, tri in enumerate(part.mesh.tris):
                 eid += 1
-                lines.append(i10(eid) + "".join(i10(int(n)) for n in tri))
+                line = i10(eid) + "".join(i10(int(n)) for n in tri)
+                if thk is not None:
+                    line += f20(0.0) + f20(float(thk[part.mesh.n_quads + index]))
+                lines.append(line)
         return lines
 
     def _block_part(self, part: DeckPart) -> list[str]:
@@ -446,7 +582,7 @@ class RadiossDeckWriter:
                 reals((card.E, card.nu)),
                 "#                  a                   b                   n"
                 "           EPS_p_max           SIG_max0",
-                reals((card.law2.A, card.law2.B, card.law2.n, 0.0, 0.0)),
+                reals((card.law2.A, card.law2.B, card.law2.n, self.eps_p_max or 0.0, 0.0)),
                 "#                  c           EPS_DOT_0       ICC   Fsmooth"
                 "               F_cut               Chard",
                 reals((0.0, 0.0)) + i10(1) + i10(0) + reals((0.0, 0.0)),
@@ -475,9 +611,17 @@ class RadiossDeckWriter:
         lines.append(RULER)
         # Separate main surfaces per contact partner so /TH/INTER can report
         # the tool-side reaction force on its own (the crush-force curve).
-        lines.append("/SURF/PART/1")
-        lines.append(title("TOOL_SURFACE"))
-        lines.append("".join(i10(p.part_id) for p in self.parts if p.role == "tool"))
+        tools = [p for p in self.parts if p.role == "tool"]
+        if tools:
+            lines.append("/SURF/PART/1")
+            lines.append(title("TOOL_SURFACE"))
+            # Interface 1 reports the crush-force curve (/TH/INTER), so it
+            # carries the REF_TOOL alone; extra tools contact via surface 4.
+            lines.append(i10(tools[0].part_id))
+        if len(tools) > 1:
+            lines.append("/SURF/PART/4")
+            lines.append(title("EXTRA_TOOL_SURFACE"))
+            lines.append("".join(i10(p.part_id) for p in tools[1:]))
         lines.append("/SURF/PART/2")
         lines.append(title("FIXED_SURFACES"))
         lines.append("".join(i10(p.part_id) for p in self.parts if p.role == "floor"))
@@ -555,55 +699,146 @@ class RadiossDeckWriter:
         return lines
 
     def _block_tool_drive(self) -> list[str]:
-        """REF_TOOL: constrain every DOF but the drive axis, then impose displacement."""
-        tool = self.tool
-        axis, skew_id, sign = self._drive_axis()
-        lines: list[str] = [RULER]
+        """Driven tools: constrain every DOF but each drive axis, impose velocity.
 
-        if skew_id:
-            d = np.asarray(self.drive.direction, dtype=float)
-            d = d / float(np.linalg.norm(d))
-            helper = np.array([0.0, 0.0, 1.0]) if abs(d[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
-            y_axis = np.cross(helper, d)
-            y_axis /= float(np.linalg.norm(y_axis))
-            origin = self._centroid(tool.mesh)
+        The first (REF_TOOL) drive keeps its historical ids (skew 1, grnod 95,
+        BCS 2, funct/impvel 1) so single-tool decks stay byte-identical; extra
+        tools take ids clear of every other block (skew k+1, grnod 50+k,
+        BCS 10+k, funct/impvel k+1).
+        """
+        tools = [p for p in self.parts if p.role == "tool"]
+        if not tools:
+            return []
+        drives = [self.drive, *self.extra_drives]
+        multi = len(tools) > 1
+        lines: list[str] = []
+        for k, (tool, drive) in enumerate(zip(tools, drives)):
+            prefix = "REF_TOOL" if k == 0 else f"TOOL{k + 1}"
+            grnod_id = 95 if k == 0 else 50 + k
+            bcs_id = 2 if k == 0 else 10 + k
+            funct_id = 1 + k
+            axis, skew_id, sign = self._drive_axis(drive, 1 + k)
+            lines.append(RULER)
+
+            if skew_id:
+                d = np.asarray(drive.direction, dtype=float)
+                d = d / float(np.linalg.norm(d))
+                helper = (
+                    np.array([0.0, 0.0, 1.0]) if abs(d[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
+                )
+                y_axis = np.cross(helper, d)
+                y_axis /= float(np.linalg.norm(y_axis))
+                origin = self._centroid(tool.mesh)
+                lines += [
+                    f"/SKEW/FIX/{skew_id}",
+                    title(f"{prefix}_DRIVE_SKEW"),
+                    "#                 Ox                  Oy                  Oz",
+                    reals(origin),
+                    "#                 X1                  Y1                  Z1",
+                    reals(tuple(float(v) for v in d)),
+                    "#                 X2                  Y2                  Z2",
+                    reals(tuple(float(v) for v in y_axis)),
+                    RULER,
+                ]
+
+            if drive.is_orbit:
+                # Rotary beading: the tool centre orbits the can axis, so X
+                # and Y stay free and each gets its own velocity function.
+                vx, vy = drive.orbit_velocity_tables()
+                if multi:
+                    vx = _pad_table(vx, drive.t_start, self.end_time)
+                    vy = _pad_table(vy, drive.t_start, self.end_time)
+                funct_y = 30 + k
+                lines += [
+                    f"/GRNOD/NODE/{grnod_id}",
+                    title(f"{prefix}_MASTER"),
+                    i10(tool.rbody_master_node),
+                    f"/BCS/{bcs_id}",
+                    title(f"{prefix}_GUIDE"),
+                    "#  Tra rot   skew_ID  grnod_ID",
+                    s10("001 111") + i10(0) + i10(grnod_id),
+                ]
+                for fid, comp, table in ((funct_id, "X", vx), (funct_y, "Y", vy)):
+                    lines += [
+                        RULER,
+                        f"/FUNCT/{fid}",
+                        title(f"{prefix}_ORBIT_V{comp}"),
+                        "#                  X                   Y",
+                    ]
+                    for t, v in table:
+                        lines.append(reals((t, v)))
+                    lines += [
+                        f"/IMPVEL/{fid}",
+                        title(f"{prefix}_ORBIT_{comp}"),
+                        "#funct_IDT       Dir   skew_ID sensor_ID  grnod_ID  frame_ID",
+                        i10(fid) + s10(comp) + i10(0) + i10(0) + i10(grnod_id) + i10(0),
+                        "#            Scale_x             Scale_y              Tstart               Tstop",
+                        reals((0.0, 1.0, 0.0, self.end_time)),
+                    ]
+                continue
+
+            # Free DOF: translation along the drive axis only; all rotations fixed.
+            trans_code = "".join("0" if _AXIS_NAMES[i] == axis else "1" for i in range(3))
             lines += [
-                f"/SKEW/FIX/{skew_id}",
-                title("REF_TOOL_DRIVE_SKEW"),
-                "#                 Ox                  Oy                  Oz",
-                reals(origin),
-                "#                 X1                  Y1                  Z1",
-                reals(tuple(float(v) for v in d)),
-                "#                 X2                  Y2                  Z2",
-                reals(tuple(float(v) for v in y_axis)),
+                f"/GRNOD/NODE/{grnod_id}",
+                title(f"{prefix}_MASTER"),
+                i10(tool.rbody_master_node),
+                f"/BCS/{bcs_id}",
+                title(f"{prefix}_GUIDE"),
+                "#  Tra rot   skew_ID  grnod_ID",
+                s10(f"{trans_code} 111") + i10(skew_id) + i10(grnod_id),
                 RULER,
+                f"/FUNCT/{funct_id}",
+                title(f"{prefix}_VELOCITY_RAMP"),
+                "#                  X                   Y",
             ]
+            table = (
+                drive.padded_velocity_table(self.end_time) if multi else drive.velocity_table()
+            )
+            for t, v in table:
+                lines.append(reals((t, v)))
+            lines += [
+                RULER,
+                f"/IMPVEL/{funct_id}",
+                title(f"{prefix}_IMPOSED_VELOCITY"),
+                "#funct_IDT       Dir   skew_ID sensor_ID  grnod_ID  frame_ID",
+                i10(funct_id) + s10(axis) + i10(skew_id) + i10(0) + i10(grnod_id) + i10(0),
+                "#            Scale_x             Scale_y              Tstart               Tstop",
+                reals((0.0, sign, 0.0, self.end_time)),
+            ]
+        return lines
 
-        # Free DOF: translation along the drive axis only; all rotations fixed.
-        trans_code = "".join("0" if _AXIS_NAMES[i] == axis else "1" for i in range(3))
-        lines += [
-            "/GRNOD/NODE/95",
-            title("REF_TOOL_MASTER"),
-            i10(tool.rbody_master_node),
-            "/BCS/2",
-            title("REF_TOOL_GUIDE"),
-            "#  Tra rot   skew_ID  grnod_ID",
-            s10(f"{trans_code} 111") + i10(skew_id) + i10(95),
+    def _block_pressure(self) -> list[str]:
+        """/PLOAD - uniform internal pressure on the can surface (surf 3).
+
+        The can mesh must be oriented outward (ShellMesh.orient_outward);
+        the pinned engine applies a positive pressure *along* the segment
+        normal (validated on the lc5 swell case: a negative scale imploded
+        the can), so the scale is positive to inflate. Idel=1 stops the load
+        on deleted (failed) elements - pressure escapes through a burst vent.
+        """
+        if self.pressure is None:
+            return []
+        peak, rise, hold = self.pressure
+        pts = [(0.0, 0.0), (rise, peak)]
+        if hold > 0.0:
+            pts.append((rise + hold, peak))
+        if self.end_time > rise + hold + 1.0e-12:
+            pts.append((self.end_time, peak))
+        lines = [
             RULER,
-            "/FUNCT/1",
-            title("REF_TOOL_VELOCITY_RAMP"),
+            "/FUNCT/9",
+            title("CAN_PRESSURE_RAMP"),
             "#                  X                   Y",
         ]
-        for t, v in self.drive.velocity_table():
+        for t, v in pts:
             lines.append(reals((t, v)))
         lines += [
             RULER,
-            "/IMPVEL/1",
-            title("REF_TOOL_IMPOSED_VELOCITY"),
-            "#funct_IDT       Dir   skew_ID sensor_ID  grnod_ID  frame_ID",
-            i10(1) + s10(axis) + i10(skew_id) + i10(0) + i10(95) + i10(0),
-            "#            Scale_x             Scale_y              Tstart               Tstop",
-            reals((0.0, sign, 0.0, self.end_time)),
+            "/PLOAD/1",
+            title("CAN_INTERNAL_PRESSURE"),
+            "#  surf_ID  functIDT sensor_ID    Ipinch      Idel            Ascale_x            Fscale_y",
+            i10(3) + i10(9) + i10(0) + i10(0) + i10(1) + " " * 10 + reals((1.0, 1.0)),
         ]
         return lines
 
@@ -614,11 +849,14 @@ class RadiossDeckWriter:
         crush-force curve directly.
         """
         lines: list[str] = []
-        for inter_id, name, surf_id in (
-            (1, "TOOL_CONTACT", 1),
+        has_tools = any(p.role == "tool" for p in self.parts)
+        pairs = ([(1, "TOOL_CONTACT", 1)] if has_tools else []) + [
             (2, "FIXED_CONTACT", 2),
             (3, "SELF_CONTACT", 3),
-        ):
+        ]
+        if sum(1 for p in self.parts if p.role == "tool") > 1:
+            pairs.append((4, "EXTRA_TOOL_CONTACT", 4))
+        for inter_id, name, surf_id in pairs:
             lines += self._contact_cards(inter_id, name, surf_id)
         return lines
 
@@ -681,17 +919,18 @@ class RadiossDeckWriter:
             i10(p.rbody_master_node) + i10(0) + f"{p.name}_MASTER"
             for p in rigid_parts
         ]
-        lines += [
-            RULER,
-            "/TH/INTER/4",
-            title("TOOL_CONTACT_FORCE"),
-            # Valid interface variables are FN*/FT* (hm_read_thgrou.F VARIN);
-            # FX/FY/FZ are rigid-body variables and are rejected here.
-            "#      var       var       var       var       var       var",
-            "FNX       FNY       FNZ       FTX       FTY       FTZ",
-            "#      Obj",
-            i10(1),
-        ]
+        if any(p.role == "tool" for p in self.parts):
+            lines += [
+                RULER,
+                "/TH/INTER/4",
+                title("TOOL_CONTACT_FORCE"),
+                # Valid interface variables are FN*/FT* (hm_read_thgrou.F
+                # VARIN); FX/FY/FZ are rigid-body variables, rejected here.
+                "#      var       var       var       var       var       var",
+                "FNX       FNY       FNZ       FTX       FTY       FTZ",
+                "#      Obj",
+                i10(1),
+            ]
         lines += [
             RULER,
             "/TH/PART/2",
@@ -735,6 +974,7 @@ class RadiossDeckWriter:
         if self.clamp_can_base:
             lines += self._block_can_base_clamp()
         lines += self._block_tool_drive()
+        lines += self._block_pressure()
         lines += self._block_contact()
         lines += self._block_time_history()
         lines += [RULER, "/END"]
@@ -807,9 +1047,10 @@ def build_deck(
     material: MaterialCard,
     *,
     can_mesh: ShellMesh,
-    tool_mesh: ShellMesh,
+    tool_mesh: ShellMesh | None = None,
     floor_mesh: ShellMesh | None = None,
     support_mesh: ShellMesh | None = None,
+    extra_tool_meshes: list[ShellMesh] | None = None,
     outdir: str | Path,
     run_name: str | None = None,
     solver_version_tag: str = "unpinned",
@@ -856,21 +1097,96 @@ def build_deck(
                 role="floor",
             )
         )
-    parts.append(
-        DeckPart(
-            name="REF_TOOL",
-            mesh=tool_mesh,
-            thickness=RIGID_SHELL_THICKNESS,
-            role="tool",
+    if tool_mesh is not None:
+        parts.append(
+            DeckPart(
+                name="REF_TOOL",
+                mesh=tool_mesh,
+                thickness=RIGID_SHELL_THICKNESS,
+                role="tool",
+            )
         )
-    )
+    extras = list(case.loading.extra_tools)
+    extra_meshes = list(extra_tool_meshes or [])
+    if len(extras) != len(extra_meshes):
+        raise DeckError(
+            f"loading.extra_tools defines {len(extras)} tool(s) but "
+            f"{len(extra_meshes)} extra mesh(es) were provided"
+        )
+    for index, mesh in enumerate(extra_meshes):
+        parts.append(
+            DeckPart(
+                name=f"TOOL{index + 2}",
+                mesh=mesh,
+                thickness=RIGID_SHELL_THICKNESS,
+                role="tool",
+            )
+        )
 
-    drive = DriveDefinition(
-        direction=case.loading.direction,
-        stroke=case.loading.stroke,
-        velocity_mm_s=m_per_s_to_mm_per_s(case.loading.velocity_m_s),
-        ramp_fraction=case.loading.ramp_fraction,
-    )
+    drive = None
+    if tool_mesh is not None:
+        drive = DriveDefinition(
+            direction=case.loading.direction,
+            stroke=case.loading.stroke,
+            velocity_mm_s=m_per_s_to_mm_per_s(case.loading.velocity_m_s),
+            ramp_fraction=case.loading.ramp_fraction,
+        )
+        if case.loading.motion == "orbit":
+            if case.geometry.kind != "parametric_can":
+                raise DeckError("orbit motion needs a parametric can (known axis and radius)")
+            outer = (case.loading.tool_size or 3.0 * case.geometry.radius) * 0.5
+            drive.orbit_start_radius = case.geometry.radius + case.loading.tool_gap + outer
+            drive.orbit_revs = case.loading.orbit_revs
+            drive.orbit_feed_revs = case.loading.feed_revs
+    extra_drives = []
+    for t in extras:
+        if t.motion == "orbit":
+            if case.geometry.kind != "parametric_can":
+                raise DeckError("orbit motion needs a parametric can (known axis and radius)")
+            outer = (t.tool_size or 1.5 * 2.0 * case.geometry.radius) * 0.5
+            extra_drives.append(
+                DriveDefinition(
+                    direction=t.direction,
+                    stroke=t.stroke,
+                    velocity_mm_s=m_per_s_to_mm_per_s(t.velocity_m_s),
+                    ramp_fraction=t.ramp_fraction,
+                    orbit_start_radius=case.geometry.radius + t.tool_gap + outer,
+                    orbit_revs=t.orbit_revs,
+                    orbit_feed_revs=t.feed_revs,
+                )
+            )
+        else:
+            extra_drives.append(
+                DriveDefinition(
+                    direction=t.direction,
+                    stroke=t.stroke,
+                    velocity_mm_s=m_per_s_to_mm_per_s(t.velocity_m_s),
+                    ramp_fraction=t.ramp_fraction,
+                )
+            )
+    # Stage the strokes: each stage's window opens when the previous stage's
+    # longest stroke has finished; tools hold still outside their window.
+    if drive is not None:
+        stage_of = [case.loading.stage, *(t.stage for t in extras)]
+        all_drives = [drive, *extra_drives]
+        durations: dict[int, float] = {}
+        for stage, d in zip(stage_of, all_drives):
+            durations[stage] = max(durations.get(stage, 0.0), d.end_time)
+        stage_starts: dict[int, float] = {}
+        clock = 0.0
+        for stage in sorted(durations):
+            stage_starts[stage] = clock
+            clock += durations[stage]
+        for stage, d in zip(stage_of, all_drives):
+            d.t_start = stage_starts[stage]
+
+    pressure = None
+    if case.pressure.peak > 0.0:
+        pressure = (case.pressure.peak, case.pressure.rise, case.pressure.hold)
+        # /PLOAD acts along element normals: a consistent outward orientation
+        # is what makes the internal pressure inflate the can everywhere.
+        can_mesh.orient_outward()
+
     writer = RadiossDeckWriter(
         run_name=run_name or case.name,
         parts=parts,
@@ -886,5 +1202,8 @@ def build_deck(
         load_case=case.load_case,
         description=case.description,
         solver_version_tag=solver_version_tag,
+        extra_drives=extra_drives,
+        pressure=pressure,
+        eps_p_max=case.eps_p_max,
     )
     return writer.write(outdir)

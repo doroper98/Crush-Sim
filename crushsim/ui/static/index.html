@@ -1,0 +1,627 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crush-Sim</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --bg:#f4f5f7; --panel:#ffffff; --panel2:#eceef2; --ink:#1a2230; --muted:#5b6675;
+  --line:#d8dce3; --accent:#f2542d; --accent-ink:#ffffff; --ok:#1e8e5a; --bad:#c93a3a;
+  --chip:#eceef2; --track:#d8dce3;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#14171c; --panel:#1c2129; --panel2:#232936; --ink:#e8ebf0; --muted:#8b95a5;
+    --line:#2e3542; --accent:#ff6a3d; --accent-ink:#14171c; --ok:#3dbd85; --bad:#e06767;
+    --chip:#232936; --track:#2e3542;
+  }
+}
+*{box-sizing:border-box;margin:0}
+body{background:var(--bg);color:var(--ink);font-family:'IBM Plex Sans KR',-apple-system,'Segoe UI',sans-serif;font-size:14px;line-height:1.5}
+header{display:flex;align-items:center;gap:20px;padding:14px 24px;background:var(--panel);border-bottom:1px solid var(--line)}
+header h1{font-size:16px;font-weight:600;letter-spacing:-.01em}
+header .sub{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--muted)}
+nav{display:flex;gap:4px;margin-left:auto}
+nav button{font:inherit;font-size:13.5px;color:var(--muted);background:none;border:none;border-radius:6px;padding:7px 14px;cursor:pointer}
+nav button.on{background:var(--chip);color:var(--ink);font-weight:600}
+nav button:focus-visible{outline:2px solid var(--accent)}
+main{max-width:1060px;margin:0 auto;padding:22px 24px 60px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:14px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px}
+.card h3{font-size:14.5px;font-weight:600;margin-bottom:2px}
+.card .lc{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--muted)}
+.card p{font-size:12.5px;color:var(--muted);margin:8px 0 12px;min-height:36px}
+.tags{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.tag{font-family:'IBM Plex Mono',monospace;font-size:10.5px;background:var(--chip);border-radius:4px;padding:2px 7px;color:var(--muted)}
+.btn{font:inherit;font-size:13px;border:1px solid var(--line);background:var(--chip);color:var(--ink);border-radius:6px;padding:6px 13px;cursor:pointer}
+.btn:hover{border-color:var(--muted)}
+.btn.primary{background:var(--accent);border-color:transparent;color:var(--accent-ink);font-weight:600}
+.btn:disabled{opacity:.45;cursor:default}
+.btn:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.rowline{display:flex;align-items:center;gap:10px}
+.empty{color:var(--muted);padding:36px 0;text-align:center}
+.runcard{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:14px}
+.runhead{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+.runhead h3{font-size:14.5px}
+.pill{font-size:11px;font-weight:600;border-radius:20px;padding:2px 10px}
+.pill.run{background:color-mix(in srgb,var(--accent) 15%,transparent);color:var(--accent)}
+.pill.ok{background:color-mix(in srgb,var(--ok) 15%,transparent);color:var(--ok)}
+.pill.bad{background:color-mix(in srgb,var(--bad) 15%,transparent);color:var(--bad)}
+.bar{height:6px;border-radius:3px;background:var(--track);overflow:hidden;margin:12px 0 6px}
+.bar i{display:block;height:100%;background:var(--accent);width:0;transition:width .6s}
+.meta{font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:var(--muted)}
+pre.log{font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:1.45;color:var(--muted);background:var(--panel2);border-radius:8px;padding:12px;margin-top:12px;max-height:220px;overflow:auto;white-space:pre-wrap}
+table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+th,td{text-align:left;padding:10px 14px;border-bottom:1px solid var(--line);font-size:13px}
+th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);background:var(--panel2)}
+td.num{font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums}
+tr:last-child td{border-bottom:none}
+.actions{display:flex;gap:6px;flex-wrap:wrap}
+.actions a{font-size:12px;color:var(--accent);text-decoration:none;border:1px solid var(--line);border-radius:5px;padding:3px 9px}
+.actions a:hover{border-color:var(--accent)}
+h2.section{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:26px 0 12px}
+h2.section:first-child{margin-top:0}
+.scroll{overflow-x:auto}
+.flowbar{display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
+.flowbar select,.flowbar input{font:inherit;font-size:13px;background:var(--panel);border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:6px 10px}
+.flowbar .meta{margin-left:auto}
+#flowWrap{position:relative;background:var(--panel2);border:1px solid var(--line);border-radius:10px;height:620px;overflow:auto}
+#flowCanvas{position:relative;width:1120px;height:860px}
+#wires{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+#wires path{fill:none;stroke:var(--muted);stroke-width:1.6;opacity:.6}
+.node{position:absolute;width:236px;background:var(--panel);border:1px solid var(--line);border-radius:9px;box-shadow:0 2px 10px rgba(0,0,0,.07)}
+.node h4{font-size:12.5px;font-weight:600;padding:8px 12px;border-bottom:1px solid var(--line);cursor:grab;user-select:none;border-radius:9px 9px 0 0;background:var(--chip)}
+.node .body{padding:9px 12px 11px;display:flex;flex-direction:column;gap:5px}
+.node label{font-size:11px;color:var(--muted);display:flex;justify-content:space-between;align-items:center;gap:8px}
+.node input,.node select{font-family:'IBM Plex Mono',monospace;font-size:11.5px;width:116px;background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:4px;padding:3px 6px}
+.node input[type=checkbox]{width:auto}
+.node .del{position:absolute;top:6px;right:8px;font-size:12px;color:var(--muted);cursor:pointer;background:none;border:none}
+.node .del:hover{color:var(--bad)}
+.node h4{padding-right:26px}
+.port{position:absolute;width:12px;height:12px;border-radius:50%;background:var(--panel2);border:2px solid var(--muted);cursor:crosshair;z-index:2}
+.port.out{right:-7px;background:var(--accent);border-color:var(--accent)}
+.port.in{left:-7px}
+.port.armed{box-shadow:0 0 0 4px color-mix(in srgb,var(--accent) 30%,transparent)}
+.port .plabel{position:absolute;left:16px;top:-3px;font-size:10px;color:var(--muted);white-space:nowrap;pointer-events:none}
+#wires{pointer-events:none}
+#wires path{pointer-events:stroke;cursor:pointer}
+#wires path:hover{stroke:var(--bad);opacity:1}
+#palette .btn{padding:3px 9px;font-size:12px;margin-right:4px}
+</style>
+</head>
+<body>
+<header>
+  <div><h1>Crush-Sim</h1><div class="sub" id="version">local pipeline UI</div></div>
+  <nav>
+    <button id="navCases" class="on">케이스</button>
+    <button id="navFlow">워크플로</button>
+    <button id="navMonitor">실행 모니터</button>
+    <button id="navResults">결과</button>
+  </nav>
+</header>
+<main>
+  <section id="pageCases">
+    <h2 class="section">케이스 라이브러리</h2>
+    <div class="grid" id="caseGrid"><div class="empty">불러오는 중…</div></div>
+  </section>
+
+  <section id="pageFlow" hidden>
+    <h2 class="section">워크플로 편집기 — 노드 순서 = 해석 준비 순서</h2>
+    <div class="flowbar">
+      <span class="meta">노드 추가:</span>
+      <span id="palette"></span>
+      <span class="meta" style="margin-left:14px">가져오기:</span>
+      <select id="flowCase"><option value="">케이스…</option></select>
+      <select id="flowGraph"><option value="">그래프…</option></select>
+      <input id="graphName" placeholder="그래프명.json" size="16">
+      <button class="btn" id="graphSave">그래프 저장</button>
+      <button class="btn primary" id="flowRun">케이스 생성 + 실행</button>
+      <span class="meta" id="flowMsg"></span>
+    </div>
+    <div id="flowWrap"><div id="flowCanvas">
+      <svg id="wires"></svg>
+    </div></div>
+  </section>
+
+  <section id="pageMonitor" hidden>
+    <h2 class="section">실행 중</h2>
+    <div id="activeRuns"><div class="empty">실행 중인 해석이 없습니다</div></div>
+  </section>
+
+  <section id="pageResults" hidden>
+    <h2 class="section">완료된 런</h2>
+    <div class="scroll"><table id="runTable">
+      <thead><tr>
+        <th>런</th><th>케이스</th><th>피크 하중</th><th>흡수 에너지</th><th>에너지 오차</th><th>게이트</th><th></th>
+      </tr></thead>
+      <tbody><tr><td colspan="7" class="empty">불러오는 중…</td></tr></tbody>
+    </table></div>
+  </section>
+</main>
+
+<script>
+"use strict";
+const $=id=>document.getElementById(id);
+const pages={Cases:$("pageCases"),Flow:$("pageFlow"),Monitor:$("pageMonitor"),Results:$("pageResults")};
+let current="Cases";
+function nav(name){
+  current=name;
+  for(const [k,el] of Object.entries(pages)){el.hidden=k!==name;$("nav"+k).classList.toggle("on",k===name);}
+  refresh();
+}
+for(const k of Object.keys(pages)) $("nav"+k).addEventListener("click",()=>nav(k));
+
+async function api(path,opts){const r=await fetch(path,opts);if(!r.ok)throw new Error((await r.json().catch(()=>({}))).detail||r.statusText);return r.json();}
+
+async function loadCases(){
+  const cases=await api("/api/cases");
+  const grid=$("caseGrid"); grid.innerHTML="";
+  for(const c of cases){
+    const card=document.createElement("div"); card.className="card";
+    if(c.error){card.innerHTML=`<h3>${c.file}</h3><p style="color:var(--bad)">${c.error}</p>`;grid.appendChild(card);continue;}
+    card.innerHTML=`
+      <h3>${c.name}</h3><div class="lc">${c.load_case} · ${c.file}</div>
+      <p>${c.description||""}</p>
+      <div class="tags">
+        <span class="tag">${c.geometry==="step"?(c.step_path.split("/").pop()):"parametric"}</span>
+        <span class="tag">tool: ${c.tool}</span>
+        <span class="tag">stroke ${c.stroke_mm} mm</span>
+        <span class="tag">${c.material}</span>
+      </div>
+      <div class="rowline"><button class="btn primary">실행</button><span class="meta"></span></div>`;
+    const btn=card.querySelector("button"), msg=card.querySelector(".rowline .meta");
+    btn.addEventListener("click",async()=>{
+      btn.disabled=true; msg.textContent="시작 중…";
+      try{const r=await api("/api/runs/"+encodeURIComponent(c.file),{method:"POST"});msg.textContent="대기열 "+r.position+"번";nav("Monitor");}
+      catch(e){msg.textContent=e.message;btn.disabled=false;}
+    });
+    grid.appendChild(card);
+  }
+  if(!cases.length) grid.innerHTML='<div class="empty">configs/cases/ 에 케이스가 없습니다</div>';
+}
+
+function fmt(v,unit,digits=1){return v==null?"–":Number(v).toFixed(digits)+unit;}
+
+async function loadRuns(){
+  const data=await api("/api/runs");
+  const box=$("activeRuns"); box.innerHTML="";
+  if(!data.active.length&&!(data.queued||[]).length) box.innerHTML='<div class="empty">실행 중인 해석이 없습니다</div>';
+  for(const qf of (data.queued||[])){
+    const div=document.createElement("div"); div.className="runcard";
+    div.innerHTML=`<div class="runhead"><h3>${qf}</h3><span class="pill warn" style="background:color-mix(in srgb,var(--muted) 15%,transparent);color:var(--muted)">대기열</span>
+      <button class="btn" style="margin-left:auto">취소</button></div>`;
+    div.querySelector("button").addEventListener("click",()=>api("/api/runs/"+encodeURIComponent(qf),{method:"DELETE"}).then(refresh));
+    box.appendChild(div);
+  }
+  for(const r of data.active){
+    const div=document.createElement("div"); div.className="runcard";
+    const state=r.running?'<span class="pill run">RUNNING</span>':(r.returncode===0?'<span class="pill ok">DONE</span>':`<span class="pill bad">EXIT ${r.returncode}</span>`);
+    const cancel=r.running?'<button class="btn" style="margin-left:auto">중단</button>':"";
+    div.innerHTML=`
+      <div class="runhead"><h3>${r.case}</h3>${state}<span class="meta">${r.stage||""}</span>${cancel}</div>
+      <div class="bar"><i style="width:${r.engine_progress_pct||0}%"></i></div>
+      <div class="meta">engine ${fmt(r.engine_progress_pct,"%")} · console energy ${fmt(r.console_energy_error_pct,"%")} (마찰 포함 수지는 종료 시 판정)</div>
+      <pre class="log">${(r.log_tail||"").replace(/</g,"&lt;")}</pre>`;
+    const btn=div.querySelector("button");
+    if(btn)btn.addEventListener("click",()=>{if(confirm(r.case+" 해석을 중단할까요?"))api("/api/runs/"+encodeURIComponent(r.file),{method:"DELETE"}).then(refresh);});
+    box.appendChild(div);
+  }
+  const tbody=$("runTable").querySelector("tbody"); tbody.innerHTML="";
+  for(const r of data.finished){
+    const tr=document.createElement("tr");
+    const gate=r.gate_passed==null?"–":(r.gate_passed?'<span class="pill ok">PASS</span>':'<span class="pill bad">FAIL</span>');
+    tr.innerHTML=`
+      <td>${r.name}</td><td class="meta">${r.case||""} · ${r.load_case||""}</td>
+      <td class="num">${fmt(r.peak_load_N," N",1)}</td>
+      <td class="num">${r.absorbed_energy_mJ==null?"–":(r.absorbed_energy_mJ/1000).toFixed(2)+" J"}</td>
+      <td class="num">${r.energy_error==null?"–":(r.energy_error*100).toFixed(2)+"%"}</td>
+      <td>${gate}</td>
+      <td><div class="actions">
+        ${r.report?`<a href="/runs/${r.name}/report.html" target="_blank">리포트</a>`:""}
+        <a href="/api/runs/${r.name}/viewer" target="_blank">3D 뷰어</a>
+        <a href="/api/runs/${r.name}/step" title="최종 프레임 변형 형상 STP (다른 프레임: csim export-step --frame N)">변형 STP</a>
+        <a href="/runs/${r.name}/force_displacement.csv" target="_blank">CSV</a>
+      </div></td>`;
+    tbody.appendChild(tr);
+  }
+  if(!data.finished.length) tbody.innerHTML='<tr><td colspan="7" class="empty">완료된 런이 없습니다</td></tr>';
+}
+
+/* ------------------------------------------------------------------ */
+/* Workflow editor v2: a free node graph (ComfyUI-style).              */
+/* Nodes are added from the palette and wired by clicking an output    */
+/* port then an input port. A solver node's input ports accept SEVERAL */
+/* connections; compiling takes the cartesian product, so three mesh   */
+/* nodes on one solver = a three-case sweep. Compiled cases go through */
+/* the same validated save API and the serialised run queue.           */
+/* ------------------------------------------------------------------ */
+
+function gp(o,path){for(const k of path.split(".")){if(o==null)return undefined;o=o[k];}return o;}
+function sp(o,path,v){
+  const ks=path.split("."), leaf=ks.pop();
+  for(const k of ks){if(typeof o[k]!=="object"||o[k]==null)o[k]={};o=o[k];}
+  if(v===undefined||v===""||v===null)delete o[leaf]; else o[leaf]=v;
+}
+
+const NODE_TYPES={
+  geometry:{title:"형상",out:"geom",ins:[],fields:[
+    {p:"kind",label:"종류",type:"select",opts:["parametric_can","box_can","step"],redraw:true},
+    {p:"step_path",label:"STEP 파일",type:"text",show:n=>n.params.kind==="step"},
+    {p:"radius",label:"반경 mm",type:"num",show:n=>n.params.kind==="parametric_can"},
+    {p:"width",label:"폭 mm",type:"num",show:n=>n.params.kind==="box_can"},
+    {p:"depth",label:"깊이 mm",type:"num",show:n=>n.params.kind==="box_can"},
+    {p:"height",label:"높이 mm",type:"num",show:n=>n.params.kind!=="step"},
+    {p:"thickness",label:"두께 mm",type:"num"},
+    {p:"closed_bottom",label:"바닥 닫힘",type:"bool"},
+    {p:"closed_top",label:"상단 닫힘",type:"bool"},
+  ],defaults:{kind:"parametric_can",radius:33,height:115,thickness:0.1}},
+  mesh:{title:"메쉬",out:"mesh",ins:[{port:"geom",label:"형상"}],fields:[
+    {p:"target_size",label:"요소 크기 mm",type:"num"},
+    {p:"imperfection_mm",label:"불완전성 mm",type:"num"},
+    {p:"tag",label:"브랜치 태그",type:"text"},
+  ],defaults:{target_size:1.5}},
+  material:{title:"재료",out:"mat",ins:[],fields:[
+    {p:"key",label:"재료 카드",type:"text"},
+    {p:"eps_p_max",label:"파단 변형률",type:"num"},
+    {p:"tag",label:"브랜치 태그",type:"text"},
+  ],defaults:{key:"aluminum_3003"}},
+  loading:{title:"하중 — 공구",out:"load",ins:[],fields:[
+    {p:"tool",label:"공구",type:"select",opts:["platen","jig_plane","v_block","indenter","cylinder","bead_roller"],redraw:true},
+    {p:"direction",label:"방향",type:"vec"},
+    {p:"stroke",label:"스트로크 mm",type:"num"},
+    {p:"velocity",label:"속도 m/s",type:"num"},
+    {p:"tool_gap",label:"초기 갭 mm",type:"num"},
+    {p:"indenter_radius",label:"공구 반경 mm",type:"num",show:n=>["indenter","cylinder","bead_roller"].includes(n.params.tool)},
+    {p:"tool_size",label:"공구 크기 mm",type:"num"},
+    {p:"height_frac",label:"높이 위치 0-1",type:"num"},
+    {p:"support",label:"고정 지지",type:"select",opts:["","jig_plane","v_block","bead_arbor"]},
+    {p:"clamp_can_base",label:"바닥 고정",type:"bool"},
+    {p:"tag",label:"브랜치 태그",type:"text"},
+  ],defaults:{tool:"platen",direction:[0,0,-1],stroke:40,velocity:2,tool_gap:0.5}},
+  pressure:{title:"하중 — 내압",out:"load",ins:[],fields:[
+    {p:"peak",label:"피크 MPa",type:"num"},
+    {p:"rise",label:"램프 s",type:"num"},
+    {p:"hold",label:"유지 s",type:"num"},
+    {p:"clamp_can_base",label:"바닥 고정",type:"bool"},
+    {p:"tag",label:"브랜치 태그",type:"text"},
+  ],defaults:{peak:3.0,rise:0.003,hold:0.001,clamp_can_base:true}},
+  contact:{title:"접촉",out:"contact",ins:[],fields:[
+    {p:"friction",label:"마찰 계수",type:"num"},
+  ],defaults:{friction:0.15}},
+  solver:{title:"솔버 · 실행",out:null,ins:[
+    {port:"mesh",label:"메쉬 (다중 = 스윕)",multi:true},
+    {port:"mat",label:"재료 (다중 = 스윕)",multi:true},
+    {port:"load",label:"하중 (다중 = 스윕)",multi:true},
+    {port:"contact",label:"접촉 (선택)"},
+  ],fields:[
+    {p:"prefix",label:"케이스 접두어",type:"text"},
+    {p:"load_case",label:"LC",type:"select",opts:["LC-1","LC-2","LC-3"]},
+    {p:"threads",label:"스레드",type:"num"},
+    {p:"animation_frames",label:"프레임",type:"num"},
+    {p:"render",label:"애니메이션",type:"bool"},
+    {p:"report",label:"리포트",type:"bool"},
+  ],defaults:{prefix:"graph_case",load_case:"LC-1",threads:4,animation_frames:25,render:true,report:true}},
+};
+
+let G={nodes:[],edges:[]};   // graph model
+let nextId=1, armedPort=null, flowLoaded=false;
+
+function addNode(type,x,y,params){
+  const def=NODE_TYPES[type];
+  const node={id:"n"+(nextId++),type,x:x??40+Math.random()*60,y:y??40+Math.random()*60,
+              params:Object.assign({},def.defaults,params||{})};
+  G.nodes.push(node); renderNode(node); drawEdges();
+  return node;
+}
+function removeNode(id){
+  G.nodes=G.nodes.filter(n=>n.id!==id);
+  G.edges=G.edges.filter(e=>e.from!==id&&e.to!==id);
+  const el=$("node-"+id); if(el)el.remove();
+  drawEdges();
+}
+function sources(nodeId,port){
+  return G.edges.filter(e=>e.to===nodeId&&e.port===port)
+    .map(e=>G.nodes.find(n=>n.id===e.from)).filter(Boolean);
+}
+
+function fieldInput(node,f){
+  const cur=node.params[f.p];
+  if(f.type==="select"){
+    const sel=document.createElement("select");
+    for(const o of f.opts){const op=document.createElement("option");op.value=o;op.textContent=o===""?"(없음)":o;sel.appendChild(op);}
+    sel.value=cur??"";
+    sel.addEventListener("change",()=>{node.params[f.p]=sel.value||undefined;if(f.redraw)renderNodeBody(node);});
+    return sel;
+  }
+  const inp=document.createElement("input");
+  if(f.type==="bool"){inp.type="checkbox";inp.checked=!!cur;
+    inp.addEventListener("change",()=>{node.params[f.p]=inp.checked;});return inp;}
+  inp.type="text";
+  inp.value=cur==null?"":(f.type==="vec"&&Array.isArray(cur)?cur.join(", "):cur);
+  inp.addEventListener("change",()=>{
+    const v=inp.value.trim();
+    if(v===""){delete node.params[f.p];return;}
+    if(f.type==="num"){const x=Number(v);if(!Number.isNaN(x))node.params[f.p]=x;}
+    else if(f.type==="vec"){const a=v.split(",").map(Number);if(a.length===3&&a.every(x=>!Number.isNaN(x)))node.params[f.p]=a;}
+    else node.params[f.p]=v;
+  });
+  return inp;
+}
+
+function renderNodeBody(node){
+  const def=NODE_TYPES[node.type], body=$("nodebody-"+node.id);
+  body.innerHTML="";
+  for(const f of def.fields){
+    if(f.show&&!f.show(node))continue;
+    const lab=document.createElement("label");
+    lab.append(f.label,fieldInput(node,f));
+    body.appendChild(lab);
+  }
+  drawEdges();
+}
+
+function renderNode(node){
+  const def=NODE_TYPES[node.type];
+  const el=document.createElement("div");
+  el.className="node"; el.id="node-"+node.id;
+  el.style.left=node.x+"px"; el.style.top=node.y+"px";
+  const padTop=def.ins.length?10+def.ins.length*20:9;
+  el.innerHTML=`<h4>${def.title}</h4><button class="del" title="노드 삭제">✕</button>
+    <div class="body" id="nodebody-${node.id}" style="padding-top:${padTop}px"></div>`;
+  // input ports stacked on the left
+  def.ins.forEach((pin,i)=>{
+    const port=document.createElement("span");
+    port.className="port in"; port.style.top=(34+i*20)+"px";
+    port.dataset.node=node.id; port.dataset.port=pin.port; port.dataset.dir="in";
+    port.innerHTML=`<span class="plabel">${pin.label}</span>`;
+    port.title=pin.label;
+    el.appendChild(port);
+  });
+  if(def.out){
+    const port=document.createElement("span");
+    port.className="port out"; port.style.top="12px";
+    port.dataset.node=node.id; port.dataset.type=def.out; port.dataset.dir="out";
+    port.title=def.out;
+    el.appendChild(port);
+  }
+  el.querySelector(".del").addEventListener("click",()=>removeNode(node.id));
+  const head=el.querySelector("h4");
+  head.addEventListener("mousedown",e=>{
+    e.preventDefault();
+    const sx=e.clientX-el.offsetLeft, sy=e.clientY-el.offsetTop;
+    const move=ev=>{node.x=Math.max(0,ev.clientX-sx);node.y=Math.max(0,ev.clientY-sy);
+      el.style.left=node.x+"px";el.style.top=node.y+"px";drawEdges();};
+    const up=()=>{removeEventListener("mousemove",move);removeEventListener("mouseup",up);};
+    addEventListener("mousemove",move); addEventListener("mouseup",up);
+  });
+  el.addEventListener("click",e=>{
+    const port=e.target.closest(".port"); if(!port)return;
+    e.stopPropagation();
+    if(port.dataset.dir==="out"){
+      if(armedPort)armedPort.classList.remove("armed");
+      armedPort=port; port.classList.add("armed");
+      $("flowMsg").textContent="연결할 입력 포트를 클릭하세요";
+      return;
+    }
+    if(!armedPort){$("flowMsg").textContent="먼저 출력 포트(주황)를 클릭하세요";return;}
+    const fromId=armedPort.dataset.node, fromType=armedPort.dataset.type;
+    const toId=port.dataset.node, toPort=port.dataset.port;
+    armedPort.classList.remove("armed"); armedPort=null;
+    if(fromId===toId){$("flowMsg").textContent="자기 자신에는 연결할 수 없습니다";return;}
+    if(fromType!==toPort){$("flowMsg").textContent=`타입 불일치: ${fromType} → ${toPort}`;return;}
+    const def=NODE_TYPES[G.nodes.find(n=>n.id===toId).type];
+    const pin=def.ins.find(i2=>i2.port===toPort);
+    if(!pin.multi) G.edges=G.edges.filter(e2=>!(e2.to===toId&&e2.port===toPort));
+    if(!G.edges.some(e2=>e2.from===fromId&&e2.to===toId&&e2.port===toPort))
+      G.edges.push({from:fromId,to:toId,port:toPort});
+    $("flowMsg").textContent="";
+    drawEdges();
+  });
+  $("flowCanvas").appendChild(el);
+  renderNodeBody(node);
+}
+
+function portPos(nodeId,port,dir){
+  const el=$("node-"+nodeId); if(!el)return null;
+  const sel=dir==="out"?'.port.out':`.port.in[data-port="${port}"]`;
+  const pe=el.querySelector(sel); if(!pe)return null;
+  const cb=$("flowCanvas").getBoundingClientRect(), pb=pe.getBoundingClientRect();
+  return [pb.left-cb.left+pb.width/2, pb.top-cb.top+pb.height/2];
+}
+function drawEdges(){
+  const svg=$("wires"); svg.innerHTML="";
+  G.edges.forEach((e,i)=>{
+    const a=portPos(e.from,null,"out"), b=portPos(e.to,e.port,"in");
+    if(!a||!b)return;
+    const mid=(a[0]+b[0])/2;
+    const path=document.createElementNS("http://www.w3.org/2000/svg","path");
+    path.setAttribute("d",`M${a[0]},${a[1]} C${mid},${a[1]} ${mid},${b[1]} ${b[0]},${b[1]}`);
+    path.addEventListener("click",()=>{G.edges.splice(i,1);drawEdges();});
+    const title=document.createElementNS("http://www.w3.org/2000/svg","title");
+    title.textContent="클릭하면 연결 삭제";
+    path.appendChild(title);
+    svg.appendChild(path);
+  });
+}
+
+function clearGraph(){
+  G={nodes:[],edges:[]}; nextId=1;
+  for(const el of [...document.querySelectorAll("#flowCanvas .node")])el.remove();
+  drawEdges();
+}
+
+function defaultGraph(){
+  clearGraph();
+  const g=addNode("geometry",16,30), m=addNode("mesh",300,30);
+  const mat=addNode("material",16,330), ld=addNode("loading",300,260);
+  const ct=addNode("contact",16,470), sv=addNode("solver",600,120);
+  G.edges.push({from:g.id,to:m.id,port:"geom"});
+  G.edges.push({from:m.id,to:sv.id,port:"mesh"});
+  G.edges.push({from:mat.id,to:sv.id,port:"mat"});
+  G.edges.push({from:ld.id,to:sv.id,port:"load"});
+  G.edges.push({from:ct.id,to:sv.id,port:"contact"});
+  drawEdges();
+}
+
+/* ---- import an existing case yaml as a graph ---- */
+async function importCase(file){
+  const y=await api("/api/cases/"+encodeURIComponent(file)+"/raw");
+  clearGraph();
+  const geo=addNode("geometry",16,30,Object.assign({},y.geometry));
+  const mesh=addNode("mesh",300,30,{target_size:gp(y,"mesh.target_size"),imperfection_mm:gp(y,"mesh.imperfection_mm")});
+  const mat=addNode("material",16,330,{key:gp(y,"material.key")||y.material,eps_p_max:gp(y,"material.eps_p_max")});
+  let load;
+  if(gp(y,"pressure.peak")>0&&gp(y,"loading.tool")==="none")
+    load=addNode("pressure",300,300,Object.assign({},y.pressure,{clamp_can_base:gp(y,"loading.clamp_can_base")}));
+  else load=addNode("loading",300,260,Object.assign({},y.loading));
+  const ct=addNode("contact",16,470,{friction:gp(y,"contact.friction")});
+  const sv=addNode("solver",600,120,{prefix:y.name,load_case:y.load_case,
+    threads:gp(y,"solver.threads"),animation_frames:gp(y,"solver.animation_frames"),
+    render:gp(y,"output.render"),report:gp(y,"output.report")});
+  G.edges.push({from:geo.id,to:mesh.id,port:"geom"});
+  G.edges.push({from:mesh.id,to:sv.id,port:"mesh"});
+  G.edges.push({from:mat.id,to:sv.id,port:"mat"});
+  G.edges.push({from:load.id,to:sv.id,port:"load"});
+  G.edges.push({from:ct.id,to:sv.id,port:"contact"});
+  drawEdges();
+}
+
+/* ---- compile the graph into case yamls, save and queue each ---- */
+function tagOf(node,fallback){return (node.params.tag||"").trim()||fallback;}
+function compileGraph(){
+  const cases=[], errors=[];
+  for(const sv of G.nodes.filter(n=>n.type==="solver")){
+    const meshes=sources(sv.id,"mesh"), mats=sources(sv.id,"mat"), loads=sources(sv.id,"load");
+    const contacts=sources(sv.id,"contact");
+    if(!meshes.length||!mats.length||!loads.length){
+      errors.push("솔버 노드에 메쉬·재료·하중이 모두 연결되어야 합니다"); continue;
+    }
+    const combos=meshes.length*mats.length*loads.length;
+    for(const m of meshes)for(const mat of mats)for(const ld of loads){
+      const geos=sources(m.id,"geom");
+      if(geos.length!==1){errors.push("메쉬 노드마다 형상 1개가 연결되어야 합니다");continue;}
+      const geo=geos[0].params, y={};
+      let name=(sv.params.prefix||"graph_case").replace(/[^A-Za-z0-9_\-]/g,"_");
+      if(combos>1){
+        const parts=[];
+        if(meshes.length>1)parts.push(tagOf(m,"m"+(meshes.indexOf(m)+1)));
+        if(mats.length>1)parts.push(tagOf(mat,"a"+(mats.indexOf(mat)+1)));
+        if(loads.length>1)parts.push(tagOf(ld,"l"+(loads.indexOf(ld)+1)));
+        name+="_"+parts.join("_");
+      }
+      y.name=name; y.load_case=sv.params.load_case||"LC-1";
+      y.geometry={kind:geo.kind};
+      for(const k of ["radius","height","thickness","closed_bottom","closed_top","width","depth","step_path","vent"])
+        if(geo[k]!==undefined)y.geometry[k]=geo[k];
+      y.material={key:mat.params.key};
+      if(mat.params.eps_p_max!==undefined)y.material.eps_p_max=mat.params.eps_p_max;
+      y.mesh={recombine:true};
+      if(m.params.target_size!==undefined)y.mesh.target_size=m.params.target_size;
+      if(m.params.imperfection_mm!==undefined)y.mesh.imperfection_mm=m.params.imperfection_mm;
+      if(ld.type==="pressure"){
+        y.loading={tool:"none"};
+        if(ld.params.clamp_can_base)y.loading.clamp_can_base=true;
+        y.pressure={peak:ld.params.peak,rise:ld.params.rise,hold:ld.params.hold};
+        y.solver={stop_on_energy_error:false};
+      } else {
+        y.loading={};
+        for(const k of ["tool","direction","stroke","velocity","ramp_fraction","tool_gap","tool_size",
+                        "indenter_radius","height_frac","support","support_size","clamp_can_base",
+                        "stage","motion","orbit_revs","feed_revs","extra_tools","step_path"])
+          if(ld.params[k]!==undefined)y.loading[k]=ld.params[k];
+      }
+      if(contacts.length)y.contact={friction:contacts[0].params.friction};
+      y.solver=Object.assign({config:"configs/solver.yaml",end_time:"auto"},y.solver||{});
+      if(sv.params.threads)y.solver.threads=sv.params.threads;
+      if(sv.params.animation_frames)y.solver.animation_frames=sv.params.animation_frames;
+      y.output={dir:"runs/"+name,render:!!sv.params.render,report:!!sv.params.report};
+      cases.push({file:name+".yaml",yaml:y});
+    }
+  }
+  return {cases,errors};
+}
+
+async function runGraph(){
+  const {cases,errors}=compileGraph();
+  const msg=$("flowMsg");
+  if(errors.length){msg.textContent=errors[0];return;}
+  if(!cases.length){msg.textContent="솔버 노드가 없습니다 — 팔레트에서 추가하세요";return;}
+  let done=0;
+  for(const c of cases){
+    try{
+      await api("/api/cases/"+encodeURIComponent(c.file),{method:"PUT",
+        headers:{"Content-Type":"application/json"},body:JSON.stringify(c.yaml)});
+      await api("/api/runs/"+encodeURIComponent(c.file),{method:"POST"});
+      done++; msg.textContent=`${done}/${cases.length} 대기열 등록…`;
+    }catch(e){msg.textContent=`${c.file}: ${e.message}`;return;}
+  }
+  msg.textContent=`${done}개 케이스 대기열 등록 완료`;
+  nav("Monitor");
+}
+
+/* ---- persistence ---- */
+async function saveGraphFile(){
+  let name=($("graphName").value||"").trim();
+  if(!name){$("flowMsg").textContent="그래프 파일명을 입력하세요";return;}
+  if(!name.endsWith(".json"))name+=".json";
+  await api("/api/graphs/"+encodeURIComponent(name),{method:"PUT",
+    headers:{"Content-Type":"application/json"},body:JSON.stringify(G)});
+  $("flowMsg").textContent="그래프 저장됨: "+name;
+  await fillGraphSelect();
+}
+async function loadGraphFile(name){
+  const data=await api("/api/graphs/"+encodeURIComponent(name));
+  clearGraph();
+  nextId=1;
+  for(const n of data.nodes||[]){
+    if(!NODE_TYPES[n.type])continue;
+    const node={id:n.id,type:n.type,x:n.x||40,y:n.y||40,params:n.params||{}};
+    G.nodes.push(node); renderNode(node);
+    const num=parseInt(String(n.id).replace(/\D/g,""),10);
+    if(!Number.isNaN(num))nextId=Math.max(nextId,num+1);
+  }
+  G.edges=(data.edges||[]).filter(e=>G.nodes.some(n=>n.id===e.from)&&G.nodes.some(n=>n.id===e.to));
+  drawEdges();
+  $("graphName").value=name;
+}
+async function fillGraphSelect(){
+  const names=await api("/api/graphs");
+  const sel=$("flowGraph");
+  sel.innerHTML='<option value="">그래프…</option>';
+  for(const n of names){const op=document.createElement("option");op.value=n;op.textContent=n;sel.appendChild(op);}
+}
+
+async function initFlow(){
+  if(flowLoaded)return; flowLoaded=true;
+  const pal=$("palette");
+  for(const [type,def] of Object.entries(NODE_TYPES)){
+    const b=document.createElement("button");
+    b.className="btn"; b.textContent="+ "+def.title;
+    b.addEventListener("click",()=>addNode(type));
+    pal.appendChild(b);
+  }
+  const cases=(await api("/api/cases")).filter(c=>!c.error);
+  const sel=$("flowCase");
+  for(const c of cases){const op=document.createElement("option");op.value=c.file;op.textContent=c.file;sel.appendChild(op);}
+  sel.addEventListener("change",()=>{if(sel.value)importCase(sel.value).catch(e=>$("flowMsg").textContent=e.message);});
+  $("flowGraph").addEventListener("change",e=>{if(e.target.value)loadGraphFile(e.target.value).catch(err=>$("flowMsg").textContent=err.message);});
+  $("graphSave").addEventListener("click",()=>saveGraphFile().catch(e=>$("flowMsg").textContent=e.message));
+  $("flowRun").addEventListener("click",()=>runGraph().catch(e=>$("flowMsg").textContent=e.message));
+  await fillGraphSelect();
+  defaultGraph();
+}
+
+async function refresh(){
+  try{
+    if(current==="Cases") await loadCases();
+    else if(current==="Flow") await initFlow();
+    else await loadRuns();
+  }catch(e){console.error(e);}
+}
+refresh();
+setInterval(()=>{if(current!=="Cases"&&current!=="Flow")refresh();},2500);
+</script>
+</body>
+</html>

@@ -221,6 +221,7 @@ def find_material_card(key: str, search_roots: list[Path] | None = None) -> Path
     """
     roots = search_roots or [
         Path("configs/materials/verified"),
+        Path("configs/materials/literature"),
         Path("configs/materials/harvested"),
     ]
     for root in roots:
@@ -240,15 +241,21 @@ def find_material_card(key: str, search_roots: list[Path] | None = None) -> Path
 class GeometryConfig:
     """Can geometry: either code-generated (Phase 1) or a STEP file (Phase 2)."""
 
-    kind: Literal["parametric_can", "step"] = "parametric_can"
+    kind: Literal["parametric_can", "box_can", "step"] = "parametric_can"
     radius: float = 33.0
-    """Outer radius [mm] (parametric only)."""
+    """Outer radius [mm] (parametric_can only)."""
     height: float = 115.0
     """Height [mm] (parametric only)."""
     thickness: float = 0.1
     """Wall thickness [mm]; shell property thickness."""
     closed_bottom: bool = False
     closed_top: bool = False
+    width: float | None = None
+    """Footprint width along X [mm] (box_can only)."""
+    depth: float | None = None
+    """Footprint depth along Y [mm] (box_can only)."""
+    vent: dict[str, float] | None = None
+    """Scored vent on the box_can cap: {length, width, band, score_thickness}."""
     step_path: Path | None = None
     """Path to the STEP file when ``kind == 'step'``."""
 
@@ -276,10 +283,49 @@ class MeshConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ExtraToolConfig:
+    """One additional driven rigid tool (multi-tool processes, e.g. beading).
+
+    Extra tools share the can and contact settings with the main tool but
+    carry their own shape, drive and *stage*: tools in stage 0 move first
+    (together), stage 1 tools start once every stage-0 stroke has finished,
+    and so on. A beading + crimping process is stage-0 radial rollers
+    followed by a stage-1 axial die.
+    """
+
+    tool: Literal["platen", "jig_plane", "v_block", "indenter", "cylinder", "bead_roller"] = (
+        "platen"
+    )
+    direction: tuple[float, float, float] = (0.0, 0.0, -1.0)
+    stroke: float = 10.0
+    velocity_m_s: float = DRIVE_VELOCITY_DEFAULT_M_S
+    ramp_fraction: float = 0.1
+    tool_gap: float = 0.5
+    tool_size: float | None = None
+    indenter_radius: float = 10.0
+    height_frac: float = 0.5
+    """Axial position of a radial tool: fraction of the can height."""
+    stage: int = 0
+    """Motion stage; each stage starts when the previous one's strokes end."""
+    motion: Literal["linear", "orbit"] = "linear"
+    """``orbit``: the tool circles the can axis while feeding radially inward
+    (rotary beading). ``stroke`` is the total radial feed, ``velocity`` the
+    tangential speed of the tool centre [m/s]."""
+    orbit_revs: float = 1.25
+    """Total revolutions around the can axis (orbit motion)."""
+    feed_revs: float = 1.0
+    """Revolutions over which the radial feed completes; the remainder of the
+    orbit irons the groove at constant depth."""
+
+
+@dataclass(frozen=True, slots=True)
 class LoadingConfig:
     """Reference-tool drive definition (spec §5.3)."""
 
-    tool: Literal["platen", "jig_plane", "v_block", "indenter", "cylinder", "step"] = "platen"
+    tool: Literal[
+        "platen", "jig_plane", "v_block", "indenter", "cylinder", "bead_roller", "step", "none"
+    ] = "platen"
+    """Main driven tool; ``none`` for tool-less cases (internal pressure only)."""
     direction: tuple[float, float, float] = (0.0, 0.0, -1.0)
     stroke: float = 40.0
     """Total imposed displacement magnitude [mm]."""
@@ -295,7 +341,7 @@ class LoadingConfig:
     """Hemispherical indenter radius [mm] (LC-3)."""
     step_path: Path | None = None
     """Real-shape jig STEP file (LC-2 with ``tool: step``)."""
-    support: Literal["jig_plane", "v_block"] | None = None
+    support: Literal["jig_plane", "v_block", "bead_arbor"] | None = None
     """Fixed rigid support opposite the drive direction (LC-2/LC-3).
 
     A radially driven jig with nothing behind the can simply bulldozes it
@@ -311,6 +357,33 @@ class LoadingConfig:
     down in a gravity-free quasi-static model - it tips over the support and
     slides instead of crushing. Real fixtures grip the base; this models
     that grip."""
+    height_frac: float = 0.5
+    """Axial position of a radial main tool: fraction of the can height."""
+    stage: int = 0
+    """Motion stage of the main tool (see :class:`ExtraToolConfig`)."""
+    motion: Literal["linear", "orbit"] = "linear"
+    """``orbit``: the main tool circles the can axis (see ExtraToolConfig)."""
+    orbit_revs: float = 1.25
+    feed_revs: float = 1.0
+    extra_tools: tuple[ExtraToolConfig, ...] = ()
+    """Additional driven rigid tools (multi-tool processes)."""
+
+
+@dataclass(frozen=True, slots=True)
+class PressureConfig:
+    """Uniform internal pressure on the can (vent burst / swelling track).
+
+    ``peak == 0`` disables the load. The pressure ramps linearly from zero to
+    ``peak`` over ``rise`` seconds and is then held for ``hold`` seconds; a
+    tool-less case's engine end time is ``rise + hold``.
+    """
+
+    peak: float = 0.0
+    """Peak internal pressure [MPa]."""
+    rise: float = 1.0e-3
+    """Linear ramp duration [s]."""
+    hold: float = 0.5e-3
+    """Hold duration at peak [s]."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -360,6 +433,9 @@ class CaseConfig:
     mesh: MeshConfig = field(default_factory=MeshConfig)
     loading: LoadingConfig = field(default_factory=LoadingConfig)
     contact: ContactConfig = field(default_factory=ContactConfig)
+    pressure: PressureConfig = field(default_factory=PressureConfig)
+    eps_p_max: float | None = None
+    """Failure plastic strain (LAW2 EPS_p_max -> element deletion); None disables."""
     solver: SolverRunConfig = field(default_factory=SolverRunConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
@@ -388,6 +464,53 @@ def _direction(value: Any, source: Path | str) -> tuple[float, float, float]:
     return (vec[0] / norm, vec[1] / norm, vec[2] / norm)
 
 
+_EXTRA_TOOL_KINDS = ("platen", "jig_plane", "v_block", "indenter", "cylinder", "bead_roller")
+
+
+def _extra_tool(raw: Any, index: int, source: Path | str) -> ExtraToolConfig:
+    """Parse and validate one ``loading.extra_tools`` entry."""
+    key = f"loading.extra_tools[{index}]"
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{key} in {source} must be a mapping, got {raw!r}")
+    kind = str(raw.get("tool", "platen"))
+    if kind not in _EXTRA_TOOL_KINDS:
+        raise ConfigError(
+            f"{key}.tool in {source} must be one of {', '.join(_EXTRA_TOOL_KINDS)}, got {kind!r}"
+        )
+    tool = ExtraToolConfig(
+        tool=kind,  # type: ignore[arg-type]
+        direction=_direction(raw.get("direction"), source),
+        stroke=_as_float(raw.get("stroke", 10.0), f"{key}.stroke", source),
+        velocity_m_s=_as_float(
+            raw.get("velocity", DRIVE_VELOCITY_DEFAULT_M_S), f"{key}.velocity", source
+        ),
+        ramp_fraction=_as_float(raw.get("ramp_fraction", 0.1), f"{key}.ramp_fraction", source),
+        tool_gap=_as_float(raw.get("tool_gap", 0.5), f"{key}.tool_gap", source),
+        tool_size=None
+        if raw.get("tool_size") is None
+        else _as_float(raw["tool_size"], f"{key}.tool_size", source),
+        indenter_radius=_as_float(
+            raw.get("indenter_radius", 10.0), f"{key}.indenter_radius", source
+        ),
+        height_frac=_as_float(raw.get("height_frac", 0.5), f"{key}.height_frac", source),
+        stage=int(raw.get("stage", 0)),
+        motion=str(raw.get("motion", "linear")),  # type: ignore[arg-type]
+        orbit_revs=_as_float(raw.get("orbit_revs", 1.25), f"{key}.orbit_revs", source),
+        feed_revs=_as_float(raw.get("feed_revs", 1.0), f"{key}.feed_revs", source),
+    )
+    if tool.motion not in ("linear", "orbit"):
+        raise ConfigError(f"{key}.motion in {source} must be 'linear' or 'orbit'")
+    if tool.motion == "orbit" and not 0.0 < tool.feed_revs <= tool.orbit_revs:
+        raise ConfigError(f"{key}.feed_revs in {source} must be in (0, orbit_revs]")
+    if tool.stroke <= 0.0:
+        raise ConfigError(f"{key}.stroke in {source} must be > 0")
+    if tool.stage < 0:
+        raise ConfigError(f"{key}.stage in {source} must be >= 0")
+    if not 0.0 <= tool.height_frac <= 1.0:
+        raise ConfigError(f"{key}.height_frac in {source} must be in [0, 1]")
+    return tool
+
+
 def load_case(path: str | Path) -> CaseConfig:
     """Load and validate a case YAML file.
 
@@ -404,8 +527,10 @@ def load_case(path: str | Path) -> CaseConfig:
 
     geo_raw = dict(data.get("geometry") or {})
     kind = str(geo_raw.get("kind", "parametric_can"))
-    if kind not in ("parametric_can", "step"):
-        raise ConfigError(f"geometry.kind in {p} must be 'parametric_can' or 'step', got {kind!r}")
+    if kind not in ("parametric_can", "box_can", "step"):
+        raise ConfigError(
+            f"geometry.kind in {p} must be 'parametric_can', 'box_can' or 'step', got {kind!r}"
+        )
     step_path_raw = geo_raw.get("step_path") or geo_raw.get("path")
     if kind == "step" and not step_path_raw:
         raise ConfigError(f"geometry.step_path is required in {p} when geometry.kind == 'step'")
@@ -416,10 +541,28 @@ def load_case(path: str | Path) -> CaseConfig:
         thickness=_as_float(geo_raw.get("thickness", 0.1), "geometry.thickness", p),
         closed_bottom=bool(geo_raw.get("closed_bottom", False)),
         closed_top=bool(geo_raw.get("closed_top", False)),
+        width=None if geo_raw.get("width") is None else _as_float(geo_raw["width"], "geometry.width", p),
+        depth=None if geo_raw.get("depth") is None else _as_float(geo_raw["depth"], "geometry.depth", p),
+        vent=None
+        if geo_raw.get("vent") is None
+        else {
+            key: _as_float(value, f"geometry.vent.{key}", p)
+            for key, value in dict(geo_raw["vent"]).items()
+        },
         step_path=_resolve(step_path_raw, base),
     )
     if geometry.radius <= 0 or geometry.height <= 0 or geometry.thickness <= 0:
         raise ConfigError(f"geometry radius/height/thickness in {p} must all be > 0")
+    if geometry.kind == "box_can":
+        if geometry.width is None or geometry.depth is None:
+            raise ConfigError(f"geometry.kind box_can in {p} needs geometry.width and geometry.depth")
+        if geometry.vent is not None:
+            unknown = set(geometry.vent) - {"length", "width", "band", "score_thickness"}
+            if unknown:
+                raise ConfigError(f"geometry.vent in {p}: unknown key(s) {sorted(unknown)}")
+            for required in ("length", "width"):
+                if required not in geometry.vent:
+                    raise ConfigError(f"geometry.vent in {p} needs '{required}'")
 
     mesh_raw = dict(data.get("mesh") or {})
     mesh = MeshConfig(
@@ -453,10 +596,30 @@ def load_case(path: str | Path) -> CaseConfig:
         if load_raw.get("support_size") is None
         else _as_float(load_raw["support_size"], "loading.support_size", p),
         clamp_can_base=bool(load_raw.get("clamp_can_base", False)),
+        height_frac=_as_float(load_raw.get("height_frac", 0.5), "loading.height_frac", p),
+        stage=int(load_raw.get("stage", 0)),
+        motion=str(load_raw.get("motion", "linear")),  # type: ignore[arg-type]
+        orbit_revs=_as_float(load_raw.get("orbit_revs", 1.25), "loading.orbit_revs", p),
+        feed_revs=_as_float(load_raw.get("feed_revs", 1.0), "loading.feed_revs", p),
+        extra_tools=tuple(
+            _extra_tool(raw, index, p) for index, raw in enumerate(load_raw.get("extra_tools") or [])
+        ),
     )
-    if loading.support is not None and loading.support not in ("jig_plane", "v_block"):
+    _tools = (
+        "platen", "jig_plane", "v_block", "indenter", "cylinder", "bead_roller", "step", "none"
+    )
+    if loading.tool not in _tools:
         raise ConfigError(
-            f"loading.support in {p} must be 'jig_plane' or 'v_block', got {loading.support!r}"
+            f"loading.tool in {p} must be one of {', '.join(_tools)}, got {loading.tool!r}"
+        )
+    if loading.motion not in ("linear", "orbit"):
+        raise ConfigError(f"loading.motion in {p} must be 'linear' or 'orbit'")
+    if loading.tool == "none" and loading.extra_tools:
+        raise ConfigError(f"loading.extra_tools in {p} need a main tool (loading.tool != 'none')")
+    _supports = ("jig_plane", "v_block", "bead_arbor")
+    if loading.support is not None and loading.support not in _supports:
+        raise ConfigError(
+            f"loading.support in {p} must be one of {', '.join(_supports)}, got {loading.support!r}"
         )
     if loading.stroke <= 0:
         raise ConfigError(f"loading.stroke in {p} must be > 0")
@@ -469,6 +632,21 @@ def load_case(path: str | Path) -> CaseConfig:
         gap_scale=_as_float(contact_raw.get("gap_scale", 0.8), "contact.gap_scale", p),
         stiffness_scale=_as_float(contact_raw.get("stiffness_scale", 1.0), "contact.stiffness_scale", p),
     )
+
+    pressure_raw = dict(data.get("pressure") or {})
+    pressure = PressureConfig(
+        peak=_as_float(pressure_raw.get("peak", 0.0), "pressure.peak", p),
+        rise=_as_float(pressure_raw.get("rise", 1.0e-3), "pressure.rise", p),
+        hold=_as_float(pressure_raw.get("hold", 0.5e-3), "pressure.hold", p),
+    )
+    if pressure.peak < 0.0:
+        raise ConfigError(f"pressure.peak in {p} must be >= 0")
+    if pressure.peak > 0.0 and pressure.rise <= 0.0:
+        raise ConfigError(f"pressure.rise in {p} must be > 0 when pressure.peak is set")
+    if loading.tool == "none" and pressure.peak <= 0.0:
+        raise ConfigError(
+            f"loading.tool 'none' in {p} needs an internal pressure load (pressure.peak > 0)"
+        )
 
     solver_raw = dict(data.get("solver") or {})
     solver = SolverRunConfig(
@@ -496,6 +674,11 @@ def load_case(path: str | Path) -> CaseConfig:
     else:
         material_key = str(mat_raw.get("key", "aluminum_3003"))
         material_path = _resolve(mat_raw.get("card"), Path("."))
+    eps_p_max = None
+    if isinstance(mat_raw, dict) and mat_raw.get("eps_p_max") is not None:
+        eps_p_max = _as_float(mat_raw["eps_p_max"], "material.eps_p_max", p)
+        if eps_p_max <= 0.0:
+            raise ConfigError(f"material.eps_p_max in {p} must be > 0")
 
     return CaseConfig(
         name=name,
@@ -508,6 +691,8 @@ def load_case(path: str | Path) -> CaseConfig:
         mesh=mesh,
         loading=loading,
         contact=contact,
+        pressure=pressure,
+        eps_p_max=eps_p_max,
         solver=solver,
         output=output,
         raw=data,

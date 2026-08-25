@@ -230,3 +230,32 @@ def test_non_mapping_case_raises(tmp_path: Path) -> None:
 def test_end_time_auto_is_none(make_case) -> None:
     case = make_case("auto", solver={"end_time": "auto"})
     assert case.solver.end_time is None
+
+
+def test_extra_tools_parse_and_validate(tmp_path: Path) -> None:
+    payload = {
+        "name": "multi",
+        "load_case": "LC-3",
+        "geometry": {"kind": "parametric_can", "radius": 10.5, "height": 70.0, "thickness": 0.3},
+        "material": {"key": "aluminum_3003"},
+        "loading": {
+            "tool": "platen",
+            "stroke": 3.5,
+            "stage": 1,
+            "extra_tools": [
+                {"tool": "cylinder", "direction": [1, 0, 0], "stroke": 2.0,
+                 "indenter_radius": 1.5, "height_frac": 0.9, "stage": 0},
+            ],
+        },
+        "output": {"dir": "runs/multi"},
+    }
+    case = load_case(_write(tmp_path / "multi.yaml", payload))
+    (extra,) = case.loading.extra_tools
+    assert extra.tool == "cylinder"
+    assert extra.stage == 0
+    assert extra.height_frac == 0.9
+    assert case.loading.stage == 1
+
+    payload["loading"]["extra_tools"][0]["tool"] = "banana"
+    with pytest.raises(ConfigError, match="extra_tools"):
+        load_case(_write(tmp_path / "bad.yaml", payload))

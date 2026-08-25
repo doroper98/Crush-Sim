@@ -140,3 +140,14 @@ def test_inspect_step_reports_missing_extra_clearly(example_step: Path) -> None:
 def test_optional_dependency_error_is_an_import_error() -> None:
     error = OptionalDependencyError("cadquery-ocp", "cad")
     assert isinstance(error, ImportError)
+
+
+def test_radial_tool_height_frac_places_the_roller():
+    can = make_can(10.5, 70.0, 0.3)
+    tool = make_tool(
+        can, "cylinder", (1.0, 0.0, 0.0), gap=0.5, size=12.0,
+        indenter_radius=1.5, height_frac=0.9,
+    )
+    assert tool.origin[2] == pytest.approx(63.0)
+    # Default stays at mid height.
+    assert make_tool(can, "cylinder", (1.0, 0.0, 0.0)).origin[2] == pytest.approx(35.0)

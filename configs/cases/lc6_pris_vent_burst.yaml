@@ -1,0 +1,65 @@
+# LC-6 - prismatic (Honda-class) cell: internal pressure to vent burst.
+#
+# The welded-cap prismatic can is modelled as one shell body (a weld is
+# exact as merged nodes). The cap carries a stadium-shaped scored vent: the
+# score line is a structured band of thinner elements (per-element /SHELL
+# thickness, starter-validated by mass comparison) aligned with the outline.
+# A uniform internal pressure ramps up; the score band reaches the failure
+# strain first, its elements delete (Idel=1 stops the pressure on them),
+# and the flap opens - the burst-pressure stage of issue #24.
+
+name: lc6_pris_vent_burst
+load_case: LC-3
+description: >-
+  Prismatic cell can (120.5 x 13.1 x 65, t0.6, Ni-plated steel, welded cap)
+  with a 14 x 7 mm stadium vent scored to 0.06 mm: internal pressure ramp to
+  burst through the score band.
+
+geometry:
+  kind: box_can
+  width: 120.5
+  depth: 13.1
+  height: 65.0
+  thickness: 0.6
+  closed_bottom: true
+  closed_top: true
+  vent:
+    length: 14.0
+    width: 7.0
+    band: 1.0
+    score_thickness: 0.06
+
+material:
+  key: ni_plated_steel_can
+  eps_p_max: 0.35           # score band tears here -> element deletion
+
+mesh:
+  target_size: 1.2
+  recombine: true
+  curvature_points: 12
+
+loading:
+  tool: none                # pressure-driven
+  clamp_can_base: true
+
+pressure:
+  peak: 3.0                 # MPa - typical prismatic vent range is 1-3 MPa
+  rise: 3.0e-3
+  hold: 1.0e-3
+
+contact:
+  friction: 0.15
+
+solver:
+  config: configs/solver.yaml
+  threads: 4
+  end_time: auto
+  animation_frames: 40
+  time_history_points: 500
+  stop_on_energy_error: false  # element deletion removes IE from the balance at burst
+  stop_on_negative_volume: true
+
+output:
+  dir: runs/lc6_pris_vent_burst
+  render: true
+  report: true

@@ -417,3 +417,63 @@ def test_render_colormap_range_spans_the_whole_sequence(tmp_path: Path) -> None:
     )
     assert result.scalar_range is not None
     assert result.scalar_range[1] == pytest.approx(250.0, rel=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# Deformed-shape STEP export (issue #26)
+# ---------------------------------------------------------------------------
+
+
+def test_export_deformed_step_roundtrip(tmp_path):
+    pytest.importorskip("OCP")
+    import json
+
+    import numpy as np
+    import pyvista as pv
+
+    from crushsim.post.export_step import export_deformed_step
+
+    # A 2-element "deformed" mesh: one quad (part 1, the can) + one tri (part 2).
+    points = np.array(
+        [[0, 0, 0], [10, 0, 0], [10, 10, 1.5], [0, 10, 1.5], [20, 0, 0], [20, 10, 0]],
+        dtype=float,
+    )
+    cells = np.array([4, 0, 1, 2, 3, 3, 1, 4, 5])
+    celltypes = np.array([9, 5], dtype=np.uint8)  # quad, tri
+    grid = pv.UnstructuredGrid(cells, celltypes, points)
+    grid.cell_data["PART_ID"] = np.array([1, 2])
+    run = tmp_path / "run"
+    (run / "vtk").mkdir(parents=True)
+    grid.save(run / "vtk" / "frame_A001.vtk")
+    (run / "pipeline_summary.json").write_text(
+        json.dumps(
+            {
+                "deck": {
+                    "parts": [
+                        {"name": "CAN", "part_id": 1, "role": "deformable"},
+                        {"name": "FLOOR", "part_id": 2, "role": "floor"},
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    out = export_deformed_step(run, frame=-1, part="can")
+    assert out.is_file() and out.suffix == ".stp"
+    text = out.read_text(errors="replace")
+    assert "ISO-10303-21" in text  # a real STEP file
+
+    # The can quad became two faces; the floor tri must NOT be exported.
+    import gmsh
+
+    gmsh.initialize()
+    gmsh.option.setNumber("General.Terminal", 0)
+    try:
+        gmsh.open(str(out))
+        surfaces = gmsh.model.getEntities(2)
+        assert len(surfaces) == 2
+        bb = gmsh.model.getBoundingBox(-1, -1)
+        assert bb[3] < 15.0  # floor tri at x=20 excluded
+    finally:
+        gmsh.finalize()

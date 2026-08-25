@@ -20,9 +20,15 @@ from typing import Any, Callable
 from .config import CaseConfig, MaterialCard, load_case
 from .deck.writer import INITIAL_CONTACT_CLEARANCE, DeckResult, build_deck
 from .errors import CrushSimError, SolverError
-from .geometry.parametric import CanShell, ToolShape, make_can, make_tool
+from .geometry.parametric import BoxCan, CanShell, ToolShape, VentSpec, make_can, make_tool
 from .meshing.gates import GateResult
-from .meshing.mesher import MeshResult, mesh_parametric_can, mesh_step_surfaces, mesh_tool
+from .meshing.mesher import (
+    MeshResult,
+    mesh_box_can,
+    mesh_parametric_can,
+    mesh_step_surfaces,
+    mesh_tool,
+)
 from .report.builder import build_context, render_report
 from .solver.runner import RunResult, run_solver
 from .units import MESH_TARGET_SIZE_DEFAULT_MM
@@ -39,17 +45,22 @@ class GeometryStage:
     """Result of the geometry stage."""
 
     can: CanShell
-    tool: ToolShape
+    tool: ToolShape | None
     floor: ToolShape
     support: ToolShape | None = None
     step_path: Path | None = None
+    extra_tools: list[ToolShape] = field(default_factory=list)
+    box: BoxCan | None = None
+    """The prismatic can (kind box_can); ``can`` is then its sizing proxy."""
 
     def summary(self) -> dict[str, Any]:
         """Flat dictionary for reports."""
         return {
             **self.can.summary(),
-            "tool": self.tool.summary(),
+            "tool": self.tool.summary() if self.tool else None,
             "support": self.support.summary() if self.support else None,
+            "extra_tools": [t.summary() for t in self.extra_tools],
+            "box": self.box.summary() if self.box else None,
             "step_path": str(self.step_path) if self.step_path else None,
         }
 
@@ -107,22 +118,61 @@ def build_geometry(case: CaseConfig, *, can_override: CanShell | None = None) ->
     Raises:
         GeometryError: If the case geometry is invalid.
     """
+    box: BoxCan | None = None
+    if case.geometry.kind == "box_can" and can_override is None:
+        vent = None
+        if case.geometry.vent is not None:
+            raw = dict(case.geometry.vent)
+            vent = VentSpec(
+                length=raw["length"],
+                width=raw["width"],
+                band=raw.get("band", 0.8),
+                score_thickness=raw.get("score_thickness", 0.05),
+            )
+        box = BoxCan(
+            width=case.geometry.width or 0.0,
+            depth=case.geometry.depth or 0.0,
+            height=case.geometry.height,
+            thickness=case.geometry.thickness,
+            closed_bottom=case.geometry.closed_bottom,
+            closed_top=case.geometry.closed_top,
+            vent=vent,
+        )
     can = can_override or make_can(
-        case.geometry.radius,
+        # For a box can this is the tool/floor sizing proxy: footprint
+        # half-diagonal as the radius, so plates clear the corners.
+        math.hypot(box.width, box.depth) / 2.0 if box else case.geometry.radius,
         case.geometry.height,
         case.geometry.thickness,
         closed_bottom=case.geometry.closed_bottom,
         closed_top=case.geometry.closed_top,
     )
-    tool = make_tool(
-        can,
-        case.loading.tool,
-        case.loading.direction,
-        gap=case.loading.tool_gap,
-        size=case.loading.tool_size,
-        indenter_radius=case.loading.indenter_radius,
-        step_path=str(case.loading.step_path) if case.loading.step_path else None,
+    tool = (
+        None
+        if case.loading.tool == "none"
+        else make_tool(
+            can,
+            case.loading.tool,
+            case.loading.direction,
+            gap=case.loading.tool_gap,
+            size=case.loading.tool_size,
+            indenter_radius=case.loading.indenter_radius,
+            step_path=str(case.loading.step_path) if case.loading.step_path else None,
+            height_frac=case.loading.height_frac,
+        )
     )
+    extra_tools = [
+        make_tool(
+            can,
+            extra.tool,
+            extra.direction,
+            gap=extra.tool_gap,
+            size=extra.tool_size,
+            indenter_radius=extra.indenter_radius,
+            height_frac=extra.height_frac,
+        )
+        for extra in case.loading.extra_tools
+    ]
     floor = make_tool(
         can,
         "platen",
@@ -143,6 +193,7 @@ def build_geometry(case: CaseConfig, *, can_override: CanShell | None = None) ->
             opposite,
             gap=INITIAL_CONTACT_CLEARANCE,
             size=case.loading.support_size or case.loading.tool_size,
+            height_frac=case.loading.height_frac,
         )
     return GeometryStage(
         can=can,
@@ -150,6 +201,8 @@ def build_geometry(case: CaseConfig, *, can_override: CanShell | None = None) ->
         floor=floor,
         support=support,
         step_path=case.geometry.step_path,
+        extra_tools=extra_tools,
+        box=box,
     )
 
 
@@ -219,6 +272,19 @@ def build_meshes(
         geometry.tool = seated.tool
         geometry.floor = seated.floor
         geometry.support = seated.support
+        geometry.extra_tools = seated.extra_tools
+    elif geometry.box is not None:
+        can_mesh = mesh_box_can(
+            geometry.box,
+            target_size=target,
+            min_size=case.mesh.min_size,
+            max_size=case.mesh.max_size,
+            recombine=case.mesh.recombine,
+            curvature_points=case.mesh.curvature_points,
+            out_path=outdir / "can.msh",
+            enforce=enforce_gate,
+            name="CAN",
+        )
     else:
         can_mesh = mesh_parametric_can(
             geometry.can,
@@ -240,14 +306,24 @@ def build_meshes(
         out_path=outdir / "floor.msh",
         name="FLOOR",
     )
-    tool_mesh = mesh_tool(
-        geometry.tool,
-        can_height=geometry.can.height,
-        target_size=rigid_target,
-        out_path=outdir / "ref_tool.msh",
-        name="REF_TOOL",
-    )
-    meshes = {"can": can_mesh, "floor": floor_mesh, "tool": tool_mesh}
+    meshes = {"can": can_mesh, "floor": floor_mesh}
+    if geometry.tool is not None:
+        meshes["tool"] = mesh_tool(
+            geometry.tool,
+            can_height=geometry.can.height,
+            target_size=rigid_target,
+            out_path=outdir / "ref_tool.msh",
+            name="REF_TOOL",
+        )
+    for index, shape in enumerate(geometry.extra_tools):
+        name = f"tool{index + 2}"
+        meshes[name] = mesh_tool(
+            shape,
+            can_height=geometry.can.height,
+            target_size=rigid_target,
+            out_path=outdir / f"{name}.msh",
+            name=name.upper(),
+        )
     if geometry.support is not None:
         meshes["support"] = mesh_tool(
             geometry.support,
@@ -345,9 +421,12 @@ def run_pipeline(
         case,
         material,
         can_mesh=result.meshes["can"].mesh,
-        tool_mesh=result.meshes["tool"].mesh,
+        tool_mesh=result.meshes["tool"].mesh if "tool" in result.meshes else None,
         floor_mesh=result.meshes["floor"].mesh,
         support_mesh=result.meshes["support"].mesh if "support" in result.meshes else None,
+        extra_tool_meshes=[
+            result.meshes[f"tool{i + 2}"].mesh for i in range(len(case.loading.extra_tools))
+        ],
         outdir=run_dir / "deck",
         solver_version_tag=_solver_tag(solver_cfg),
     )
@@ -425,9 +504,17 @@ def _post_process(
     out["th_conversion"] = conversion.to_dict()
 
     frame = read_th_csv(conversion.outputs[0])
-    curve = extract_force_displacement(frame)
-    metrics = compute_metrics(curve)
-    out["metrics"] = metrics.to_dict()
+    has_tool = any(p.role == "tool" for p in result.deck.parts)
+    curve = metrics = None
+    if has_tool:
+        curve = extract_force_displacement(frame)
+        metrics = compute_metrics(curve)
+        out["metrics"] = metrics.to_dict()
+    else:
+        result.notices.append(
+            "Pressure-driven case: no tool force-displacement curve; see the "
+            "time-history energies and the animation for the response."
+        )
 
     engine_log = result.run.engine_log if result.run else None
     # The energy error is computed from the time-history balance (all tracked
@@ -439,17 +526,18 @@ def _post_process(
     )
     out["energy"] = energy.to_dict()
 
-    curve_csv = result.run_dir / "force_displacement.csv"
-    curve.to_csv(curve_csv, index=False)
-    png = plot_force_displacement(
-        curve,
-        result.run_dir / "force_displacement.png",
-        metrics=metrics,
-        title_text=f"{result.case.name} - {result.case.load_case}",
-        unverified=not result.material.is_verified,
-    )
-    out["curve_csv"] = str(curve_csv)
-    out["curve_png"] = str(png)
+    if curve is not None:
+        curve_csv = result.run_dir / "force_displacement.csv"
+        curve.to_csv(curve_csv, index=False)
+        png = plot_force_displacement(
+            curve,
+            result.run_dir / "force_displacement.png",
+            metrics=metrics,
+            title_text=f"{result.case.name} - {result.case.load_case}",
+            unverified=not result.material.is_verified,
+        )
+        out["curve_csv"] = str(curve_csv)
+        out["curve_png"] = str(png)
 
     if found["animation"] and not skip_render:
         anim = convert_animation(
