@@ -1,20 +1,20 @@
-# LC-4 - 2170 battery can: beading then crimping (two-stage forming demo).
+# LC-4 - 2170 battery can: rotary beading then crimping (two-stage forming).
 #
-# Stage 0 (beading): four small cylinder rollers press radially inward near
-# the top of the can, forming the circumferential bead groove segments. The
-# full rotary process is axisymmetric, so simultaneous radial rollers
-# approximate the finished groove without modelling the spinning pass.
+# Stage 0 (rotary beading): a torus-rim roller ORBITS the can axis while
+# feeding radially inward - the real process kinematics - leaving a
+# continuous circumferential groove around the neck (cf. the bead visible on
+# production 2170 cells). The feed completes over the first revolution and
+# the remaining quarter-turn irons the groove at constant depth.
 # Stage 1 (crimping, simplified): an axial platen presses the open rim down
-# so the neck folds at the groove - the "press over the bead" step. The real
-# crimp with cap and gasket needs those parts modelled; this run captures
-# the can-side deformation only.
+# so the neck folds at the groove. The real crimp with cap and gasket needs
+# those parts modelled; this run captures the can-side deformation only.
 
 name: lc4_2170_bead_crimp
 load_case: LC-3
 description: >-
-  2170 battery can (R10.5 x H70 x t0.3, closed bottom, steel): stage-0
-  four-roller beading near the rim, stage-1 axial press folding the neck at
-  the groove.
+  2170 battery can (R10.5 x H70 x t0.3, closed bottom, Ni-plated can steel):
+  stage-0 rotary beading (orbiting torus roller, 1.25 revolutions) near the
+  rim, stage-1 axial press folding the neck at the groove.
 
 geometry:
   kind: parametric_can
@@ -25,7 +25,7 @@ geometry:
   closed_top: false
 
 material:
-  key: steel_a36            # trend-only proxy for nickel-plated can steel
+  key: ni_plated_steel_can  # literature card (Hilumin-class); trend-grade
 
 mesh:
   target_size: 0.6      # 0.5 recombines a sliver on the bottom cap (SICN 0.03)
@@ -43,15 +43,14 @@ loading:
   tool_size: 30.0
   stage: 1
   clamp_can_base: true      # the chuck grips the base during both stages
-  extra_tools:              # stage-0 bead rollers, 90 degrees apart
-    - {tool: cylinder, direction: [ 1.0,  0.0, 0.0], stroke: 2.0, velocity: 1.5,
-       tool_gap: 0.5, indenter_radius: 1.5, tool_size: 12.0, height_frac: 0.914, stage: 0}
-    - {tool: cylinder, direction: [-1.0,  0.0, 0.0], stroke: 2.0, velocity: 1.5,
-       tool_gap: 0.5, indenter_radius: 1.5, tool_size: 12.0, height_frac: 0.914, stage: 0}
-    - {tool: cylinder, direction: [ 0.0,  1.0, 0.0], stroke: 2.0, velocity: 1.5,
-       tool_gap: 0.5, indenter_radius: 1.5, tool_size: 12.0, height_frac: 0.914, stage: 0}
-    - {tool: cylinder, direction: [ 0.0, -1.0, 0.0], stroke: 2.0, velocity: 1.5,
-       tool_gap: 0.5, indenter_radius: 1.5, tool_size: 12.0, height_frac: 0.914, stage: 0}
+  extra_tools:
+    # Stage-0 rotary beading roller: torus rim (outer dia 11 mm, rim r 1.5),
+    # orbiting at 10 m/s tangential, feeding 2.0 mm (0.5 gap + 1.5 groove)
+    # over the first revolution.
+    - {tool: bead_roller, motion: orbit, direction: [1.0, 0.0, 0.0],
+       stroke: 2.0, velocity: 10.0, orbit_revs: 1.25, feed_revs: 1.0,
+       tool_gap: 0.5, indenter_radius: 1.5, tool_size: 11.0,
+       height_frac: 0.914, stage: 0}
 
 contact:
   friction: 0.15
@@ -62,7 +61,7 @@ solver:
   config: configs/solver.yaml
   threads: 4
   end_time: auto
-  animation_frames: 30
+  animation_frames: 40
   time_history_points: 500
   stop_on_energy_error: true
   stop_on_negative_volume: true

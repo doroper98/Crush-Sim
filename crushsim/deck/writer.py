@@ -140,6 +140,17 @@ class DriveDefinition:
     zero velocity) until every stage-0 stroke has finished. ``end_time`` and
     the tables below stay in local (window) time; the writer shifts them.
     """
+    orbit_start_radius: float = 0.0
+    """Orbit motion: initial radius of the tool centre about the can axis [mm].
+
+    ``orbit_revs > 0`` switches this drive to rotary (beading) kinematics:
+    the tool centre circles the Z axis through (0, 0), feeding radially
+    inward by ``stroke`` over ``orbit_feed_revs`` revolutions and holding
+    depth for the remainder. ``velocity_mm_s`` is the tangential speed of
+    the tool centre; ``direction`` gives the starting azimuth.
+    """
+    orbit_revs: float = 0.0
+    orbit_feed_revs: float = 0.0
     points: int = 201
     """Number of points in the displacement-vs-time function.
 
@@ -156,17 +167,66 @@ class DriveDefinition:
         return max(0.0, min(0.99, self.ramp_fraction)) * self.end_time
 
     @property
+    def is_orbit(self) -> bool:
+        """Whether this drive uses rotary (orbit) kinematics."""
+        return self.orbit_revs > 0.0
+
+    @property
     def end_time(self) -> float:
         """Engine end time [s] that delivers exactly ``stroke``.
 
         The cosine ease-in loses ``v * t_ramp / 2`` of travel relative to a
         step start, so the end time is stretched to compensate; the function
-        table then ends exactly on the requested stroke with no jump.
+        table then ends exactly on the requested stroke with no jump. An
+        orbit drive's end time covers ``orbit_revs`` revolutions at the
+        tangential speed (the same ease-in stretches the first revolution).
         """
         if self.velocity_mm_s <= 0.0:
             raise DeckError(f"Drive velocity must be > 0 mm/s, got {self.velocity_mm_s!r}")
         fraction = max(0.0, min(0.99, self.ramp_fraction))
+        if self.is_orbit:
+            path = 2.0 * math.pi * self.orbit_start_radius * self.orbit_revs
+            return (path / self.velocity_mm_s) / (1.0 - 0.5 * fraction)
         return (self.stroke / self.velocity_mm_s) / (1.0 - 0.5 * fraction)
+
+    def _orbit_angle(self, t: float) -> float:
+        """Swept angle [rad] at local time ``t``: cosine ease-in, then constant."""
+        t_end = self.end_time
+        ramp = self.ramp_time
+        omega = 2.0 * math.pi * self.orbit_revs / (t_end - 0.5 * ramp)
+        if ramp > 0.0 and t < ramp:
+            return omega * (t - (ramp / math.pi) * math.sin(math.pi * t / ramp)) / 2.0
+        return omega * (t - ramp / 2.0) if ramp > 0.0 else omega * t
+
+    def orbit_positions(self, t: float) -> tuple[float, float]:
+        """Tool-centre (x, y) at local time ``t`` for the orbit drive."""
+        theta0 = math.atan2(-self.direction[1], -self.direction[0])
+        theta = self._orbit_angle(t)
+        feed_angle = 2.0 * math.pi * max(self.orbit_feed_revs, 1e-9)
+        radius = self.orbit_start_radius - self.stroke * min(1.0, theta / feed_angle)
+        return (
+            radius * math.cos(theta0 + theta),
+            radius * math.sin(theta0 + theta),
+        )
+
+    def orbit_velocity_tables(self) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+        """(vx, vy) vs local time for the orbit drive (central differences).
+
+        Sampled densely (>= 160 points per revolution) so the piecewise-linear
+        /IMPVEL functions trace the circle, not a polygon.
+        """
+        t_end = self.end_time
+        n = max(3, int(max(self.points, 160 * self.orbit_revs)))
+        dt = t_end / (n - 1)
+        xs, ys = zip(*(self.orbit_positions(i * dt) for i in range(n)))
+        vx: list[tuple[float, float]] = []
+        vy: list[tuple[float, float]] = []
+        for i in range(n):
+            lo, hi = max(0, i - 1), min(n - 1, i + 1)
+            span = (hi - lo) * dt
+            vx.append((i * dt, (xs[hi] - xs[lo]) / span))
+            vy.append((i * dt, (ys[hi] - ys[lo]) / span))
+        return vx, vy
 
     def table(self) -> list[tuple[float, float]]:
         """Displacement-vs-time points: cosine ease-in, then constant velocity.
@@ -232,6 +292,24 @@ class DriveDefinition:
             out.append((local_end + 1.0e-9, 0.0))
             out.append((t_total, 0.0))
         return out
+
+
+def _pad_table(
+    table: list[tuple[float, float]], t_start: float, t_total: float
+) -> list[tuple[float, float]]:
+    """Shift a local-time velocity table by ``t_start`` and zero-hold outside it."""
+    pts = [(t_start + t, v) for t, v in table]
+    out: list[tuple[float, float]] = []
+    if t_start > 0.0:
+        out.append((0.0, 0.0))
+        if pts[0][1] != 0.0:
+            out.append((t_start - 1.0e-9, 0.0))
+    out += pts
+    local_end = pts[-1][0]
+    if t_total > local_end + 1.0e-12:
+        out.append((local_end + 1.0e-9, 0.0))
+        out.append((t_total, 0.0))
+    return out
 
 
 @dataclass(slots=True)
@@ -652,6 +730,42 @@ class RadiossDeckWriter:
                     RULER,
                 ]
 
+            if drive.is_orbit:
+                # Rotary beading: the tool centre orbits the can axis, so X
+                # and Y stay free and each gets its own velocity function.
+                vx, vy = drive.orbit_velocity_tables()
+                if multi:
+                    vx = _pad_table(vx, drive.t_start, self.end_time)
+                    vy = _pad_table(vy, drive.t_start, self.end_time)
+                funct_y = 30 + k
+                lines += [
+                    f"/GRNOD/NODE/{grnod_id}",
+                    title(f"{prefix}_MASTER"),
+                    i10(tool.rbody_master_node),
+                    f"/BCS/{bcs_id}",
+                    title(f"{prefix}_GUIDE"),
+                    "#  Tra rot   skew_ID  grnod_ID",
+                    s10("001 111") + i10(0) + i10(grnod_id),
+                ]
+                for fid, comp, table in ((funct_id, "X", vx), (funct_y, "Y", vy)):
+                    lines += [
+                        RULER,
+                        f"/FUNCT/{fid}",
+                        title(f"{prefix}_ORBIT_V{comp}"),
+                        "#                  X                   Y",
+                    ]
+                    for t, v in table:
+                        lines.append(reals((t, v)))
+                    lines += [
+                        f"/IMPVEL/{fid}",
+                        title(f"{prefix}_ORBIT_{comp}"),
+                        "#funct_IDT       Dir   skew_ID sensor_ID  grnod_ID  frame_ID",
+                        i10(fid) + s10(comp) + i10(0) + i10(0) + i10(grnod_id) + i10(0),
+                        "#            Scale_x             Scale_y              Tstart               Tstop",
+                        reals((0.0, 1.0, 0.0, self.end_time)),
+                    ]
+                continue
+
             # Free DOF: translation along the drive axis only; all rotations fixed.
             trans_code = "".join("0" if _AXIS_NAMES[i] == axis else "1" for i in range(3))
             lines += [
@@ -1008,15 +1122,32 @@ def build_deck(
         if tool_mesh is not None
         else None
     )
-    extra_drives = [
-        DriveDefinition(
-            direction=t.direction,
-            stroke=t.stroke,
-            velocity_mm_s=m_per_s_to_mm_per_s(t.velocity_m_s),
-            ramp_fraction=t.ramp_fraction,
-        )
-        for t in extras
-    ]
+    extra_drives = []
+    for t in extras:
+        if t.motion == "orbit":
+            if case.geometry.kind != "parametric_can":
+                raise DeckError("orbit motion needs a parametric can (known axis and radius)")
+            outer = (t.tool_size or 1.5 * 2.0 * case.geometry.radius) * 0.5
+            extra_drives.append(
+                DriveDefinition(
+                    direction=t.direction,
+                    stroke=t.stroke,
+                    velocity_mm_s=m_per_s_to_mm_per_s(t.velocity_m_s),
+                    ramp_fraction=t.ramp_fraction,
+                    orbit_start_radius=case.geometry.radius + t.tool_gap + outer,
+                    orbit_revs=t.orbit_revs,
+                    orbit_feed_revs=t.feed_revs,
+                )
+            )
+        else:
+            extra_drives.append(
+                DriveDefinition(
+                    direction=t.direction,
+                    stroke=t.stroke,
+                    velocity_mm_s=m_per_s_to_mm_per_s(t.velocity_m_s),
+                    ramp_fraction=t.ramp_fraction,
+                )
+            )
     # Stage the strokes: each stage's window opens when the previous stage's
     # longest stroke has finished; tools hold still outside their window.
     if drive is not None:

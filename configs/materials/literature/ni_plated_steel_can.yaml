@@ -1,0 +1,22 @@
+# Nickel-plated deep-drawing steel for cylindrical cell cans (Hilumin-class,
+# DC04/SPCE base). Literature-sourced typical values - NOT calibrated against
+# a measured can: tensile data for Ni-plated diffusion-annealed strip spans
+# sigma_y 220-320 MPa / UTS 340-420 MPa depending on temper; mid-range taken.
+# Sources: DIN EN 10139 (DC04 temper ranges), Tata Steel Hilumin datasheet
+# figures as commonly cited for 18650/21700 can stock.
+name: Ni-plated can steel (Hilumin-class, literature)
+E: 205000.0
+nu: 0.28
+rho: 7.87e-09
+sigma_y: 280.0
+uts: 380.0
+n: 0.18
+t_default: 0.3
+verified: false
+verification: literature
+source: literature-typical (DC04/Hilumin strip data)
+unit_system: mm-s-tonne-N-MPa
+notes: >-
+  Trend-grade card for battery-can forming studies. Replace with a calibrated
+  card (tensile test of actual can stock) before quantitative burst or
+  forming-force predictions.

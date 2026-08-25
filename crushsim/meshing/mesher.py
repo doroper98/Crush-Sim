@@ -504,6 +504,26 @@ def _build_tool_surfaces(
         surfaces = [
             tag for dim, tag in gmsh.model.getBoundary([(3, pipe)], oriented=False) if dim == 2
         ]
+    elif tool.kind == "bead_roller":
+        # Beading roller: a torus with a vertical axis (parallel to the can
+        # axis). The rounded rim (minor radius = tool.radius) forms the
+        # groove profile; tool.size is the roller's outer diameter. As with
+        # every builder, the nearest feature - the outer rim - sits at the
+        # tool origin.
+        r_minor = tool.radius if tool.radius > 0.0 else tool.size * 0.15
+        r_major = tool.size * 0.5 - r_minor
+        if r_major <= 0.0:
+            raise MeshingError(
+                f"bead_roller size {tool.size} mm too small for rim radius {r_minor} mm"
+            )
+        centre = origin - d * (r_major + r_minor)
+        torus = occ.addTorus(
+            float(centre[0]), float(centre[1]), float(centre[2]), r_major, r_minor
+        )
+        occ.synchronize()
+        surfaces = [
+            tag for dim, tag in gmsh.model.getBoundary([(3, torus)], oriented=False) if dim == 2
+        ]
     else:
         raise MeshingError(
             f"Tool kind {tool.kind!r} has no parametric builder; "

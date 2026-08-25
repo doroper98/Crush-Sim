@@ -17,7 +17,7 @@ from typing import Literal
 from ..errors import GeometryError
 from ..units import UNIT_SYSTEM
 
-ToolKind = Literal["platen", "jig_plane", "v_block", "indenter", "cylinder", "step"]
+ToolKind = Literal["platen", "jig_plane", "v_block", "indenter", "cylinder", "bead_roller", "step"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,6 +256,6 @@ def make_tool(
         origin=origin,
         direction=unit,
         size=tool_size,
-        radius=indenter_radius if kind in ("indenter", "cylinder") else 0.0,
+        radius=indenter_radius if kind in ("indenter", "cylinder", "bead_roller") else 0.0,
         step_path=step_path,
     )

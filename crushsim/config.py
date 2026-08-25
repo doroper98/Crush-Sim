@@ -221,6 +221,7 @@ def find_material_card(key: str, search_roots: list[Path] | None = None) -> Path
     """
     roots = search_roots or [
         Path("configs/materials/verified"),
+        Path("configs/materials/literature"),
         Path("configs/materials/harvested"),
     ]
     for root in roots:
@@ -286,7 +287,9 @@ class ExtraToolConfig:
     followed by a stage-1 axial die.
     """
 
-    tool: Literal["platen", "jig_plane", "v_block", "indenter", "cylinder"] = "platen"
+    tool: Literal["platen", "jig_plane", "v_block", "indenter", "cylinder", "bead_roller"] = (
+        "platen"
+    )
     direction: tuple[float, float, float] = (0.0, 0.0, -1.0)
     stroke: float = 10.0
     velocity_m_s: float = DRIVE_VELOCITY_DEFAULT_M_S
@@ -298,6 +301,15 @@ class ExtraToolConfig:
     """Axial position of a radial tool: fraction of the can height."""
     stage: int = 0
     """Motion stage; each stage starts when the previous one's strokes end."""
+    motion: Literal["linear", "orbit"] = "linear"
+    """``orbit``: the tool circles the can axis while feeding radially inward
+    (rotary beading). ``stroke`` is the total radial feed, ``velocity`` the
+    tangential speed of the tool centre [m/s]."""
+    orbit_revs: float = 1.25
+    """Total revolutions around the can axis (orbit motion)."""
+    feed_revs: float = 1.0
+    """Revolutions over which the radial feed completes; the remainder of the
+    orbit irons the groove at constant depth."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -442,7 +454,7 @@ def _direction(value: Any, source: Path | str) -> tuple[float, float, float]:
     return (vec[0] / norm, vec[1] / norm, vec[2] / norm)
 
 
-_EXTRA_TOOL_KINDS = ("platen", "jig_plane", "v_block", "indenter", "cylinder")
+_EXTRA_TOOL_KINDS = ("platen", "jig_plane", "v_block", "indenter", "cylinder", "bead_roller")
 
 
 def _extra_tool(raw: Any, index: int, source: Path | str) -> ExtraToolConfig:
@@ -472,7 +484,14 @@ def _extra_tool(raw: Any, index: int, source: Path | str) -> ExtraToolConfig:
         ),
         height_frac=_as_float(raw.get("height_frac", 0.5), f"{key}.height_frac", source),
         stage=int(raw.get("stage", 0)),
+        motion=str(raw.get("motion", "linear")),  # type: ignore[arg-type]
+        orbit_revs=_as_float(raw.get("orbit_revs", 1.25), f"{key}.orbit_revs", source),
+        feed_revs=_as_float(raw.get("feed_revs", 1.0), f"{key}.feed_revs", source),
     )
+    if tool.motion not in ("linear", "orbit"):
+        raise ConfigError(f"{key}.motion in {source} must be 'linear' or 'orbit'")
+    if tool.motion == "orbit" and not 0.0 < tool.feed_revs <= tool.orbit_revs:
+        raise ConfigError(f"{key}.feed_revs in {source} must be in (0, orbit_revs]")
     if tool.stroke <= 0.0:
         raise ConfigError(f"{key}.stroke in {source} must be > 0")
     if tool.stage < 0:
