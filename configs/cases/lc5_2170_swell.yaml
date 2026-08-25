@@ -48,7 +48,7 @@ solver:
   end_time: auto
   animation_frames: 30
   time_history_points: 500
-  stop_on_energy_error: true
+  stop_on_energy_error: false  # element deletion removes IE from the balance at burst
   stop_on_negative_volume: true
 
 output:

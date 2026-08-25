@@ -687,9 +687,10 @@ class RadiossDeckWriter:
         """/PLOAD - uniform internal pressure on the can surface (surf 3).
 
         The can mesh must be oriented outward (ShellMesh.orient_outward);
-        Radioss applies a positive pressure *against* the segment normal, so
-        the scale is negative to inflate. Idel=1 stops the load on deleted
-        (failed) elements - pressure escapes through a burst vent.
+        the pinned engine applies a positive pressure *along* the segment
+        normal (validated on the lc5 swell case: a negative scale imploded
+        the can), so the scale is positive to inflate. Idel=1 stops the load
+        on deleted (failed) elements - pressure escapes through a burst vent.
         """
         if self.pressure is None:
             return []
@@ -712,7 +713,7 @@ class RadiossDeckWriter:
             "/PLOAD/1",
             title("CAN_INTERNAL_PRESSURE"),
             "#  surf_ID  functIDT sensor_ID    Ipinch      Idel            Ascale_x            Fscale_y",
-            i10(3) + i10(9) + i10(0) + i10(0) + i10(1) + " " * 10 + reals((1.0, -1.0)),
+            i10(3) + i10(9) + i10(0) + i10(0) + i10(1) + " " * 10 + reals((1.0, 1.0)),
         ]
         return lines
 
