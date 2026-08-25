@@ -1,0 +1,61 @@
+# LC-2 variant: a horizontal pipe driven to the cylindrical can's axis.
+#
+# The cylindrical can export (D49.8 x H95 mm) stands upright; a long
+# horizontal cylinder (pipe roller, R8 x L150) drives along +Y into the wall
+# at 50% of the can height, cradled from behind by a V-block. The stroke is
+# sized so the PIPE'S CENTRE AXIS reaches the CAN'S CENTRE AXIS:
+#   stroke = R_can (24.9) + tool_gap (0.5) + R_pipe (8) = 33.4 mm.
+
+name: lc2_cylin_pipe
+load_case: LC-2
+description: >-
+  Deep pipe crush of the cylindrical can export: an R8 x L150 rigid pipe
+  drives into the wall at mid-height until its axis reaches the can axis.
+
+geometry:
+  kind: step
+  step_path: examples/step/cylin_can.stp
+  thickness: 0.3        # mm; shell thickness assigned to the imported skin
+  radius: 24.9          # nominal only: the mesh is auto-seated on the floor
+  height: 95.0
+
+material:
+  key: aluminum_3003
+
+mesh:
+  target_size: 1.5
+  min_size: 0.4
+  max_size: 3.0
+  recombine: true
+  curvature_points: 10
+
+loading:
+  tool: cylinder
+  direction: [0.0, 1.0, 0.0]
+  stroke: 33.4                  # pipe axis reaches the can axis
+  velocity: 2.0
+  ramp_fraction: 0.1
+  tool_gap: 0.5
+  tool_size: 150.0              # pipe length
+  indenter_radius: 8.0          # pipe radius
+  support: v_block              # cradles the cylinder so it cannot roll away
+  support_size: 160.0
+
+contact:
+  friction: 0.15
+  gap_scale: 0.8
+  stiffness_scale: 1.0
+
+solver:
+  config: configs/solver.yaml
+  threads: 8
+  end_time: auto
+  animation_frames: 25
+  time_history_points: 500
+  stop_on_energy_error: true
+  stop_on_negative_volume: true
+
+output:
+  dir: runs/lc2_cylin_pipe
+  render: true
+  report: true
