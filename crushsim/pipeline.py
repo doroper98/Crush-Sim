@@ -459,15 +459,39 @@ def _post_process(
             solver_config=solver_config,
         )
         out["anim_conversion"] = anim.to_dict()
-        render = render_sequence(
-            anim.outputs,
-            result.run_dir / "anim",
-            strict=False,
-            curve=curve,
-            rigid_part_ids=[p.part_id for p in result.deck.parts if p.rigid],
-        )
-        out["render"] = render.to_dict()
+        # The render runs in a subprocess: VTK's clip filter intermittently
+        # aborts natively (free(): invalid pointer) on the first render of a
+        # freshly converted sequence, which no Python except can catch - in
+        # process it killed the whole post/report stage. A crashed render is
+        # retried once (the second pass reliably succeeds), and a still-failed
+        # render degrades to a note instead of losing the report.
+        out["render"] = _render_in_subprocess(result.run_dir)
     return out
+
+
+def _render_in_subprocess(run_dir: Path) -> dict[str, Any]:
+    """Run ``csim render --rundir`` isolated from native VTK crashes."""
+    import subprocess  # noqa: PLC0415
+    import sys  # noqa: PLC0415
+
+    command = [sys.executable, "-m", "crushsim", "render", "--rundir", str(run_dir)]
+    for attempt in (1, 2):
+        proc = subprocess.run(command, capture_output=True, text=True, check=False)
+        if proc.returncode == 0:
+            anim = run_dir / "anim"
+            return {
+                "videos": {p.stem: str(p) for p in sorted(anim.glob("*.mp4"))},
+                "gifs": {p.stem: str(p) for p in sorted(anim.glob("*.gif"))},
+                "stills": {p.stem: str(p) for p in sorted(anim.glob("*_last.png"))},
+                "attempts": attempt,
+            }
+    return {
+        "skipped_reason": (
+            f"render subprocess failed twice (exit {proc.returncode}); "
+            "re-run 'csim render --rundir' manually"
+        ),
+        "attempts": 2,
+    }
 
 
 def _write_report(result: PipelineResult) -> Path:

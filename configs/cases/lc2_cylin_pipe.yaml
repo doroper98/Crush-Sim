@@ -38,8 +38,8 @@ loading:
   tool_gap: 0.5
   tool_size: 150.0              # pipe length
   indenter_radius: 8.0          # pipe radius
-  support: v_block
-  clamp_can_base: true         # fixture grips the base; can cannot tip/slide              # cradles the cylinder so it cannot roll away
+  support: jig_plane            # FLAT wall opposite the pipe (user spec)
+  clamp_can_base: true          # fixture grips the base; can cannot tip/slide
   support_size: 160.0
 
 contact:
