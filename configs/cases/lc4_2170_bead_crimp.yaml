@@ -47,10 +47,17 @@ loading:
     # Stage-0 rotary beading roller: torus rim (outer dia 11 mm, rim r 1.5),
     # orbiting at 10 m/s tangential, feeding 2.0 mm (0.5 gap + 1.5 groove)
     # over the first revolution.
-    # Feed completes in 0.75 rev, then one FULL revolution irons at constant
-    # depth - a partial ironing pass leaves the early azimuths shallow
-    # (measured: groove depth varied 8.4-10.8 mm radius with 0.25 rev).
+    # TWO rollers 180 degrees apart, orbiting together - like the production
+    # machines. A single roller's unbalanced side load ovalises the free rim
+    # and the groove depth follows it around (measured: 2.1 mm spread); the
+    # opposed pair cancels the net radial force and each azimuth is ironed
+    # twice per revolution. Feed completes in 0.75 rev, then a full
+    # revolution irons at constant depth.
     - {tool: bead_roller, motion: orbit, direction: [1.0, 0.0, 0.0],
+       stroke: 2.0, velocity: 10.0, orbit_revs: 1.75, feed_revs: 0.75,
+       tool_gap: 0.5, indenter_radius: 1.5, tool_size: 11.0,
+       height_frac: 0.914, stage: 0}
+    - {tool: bead_roller, motion: orbit, direction: [-1.0, 0.0, 0.0],
        stroke: 2.0, velocity: 10.0, orbit_revs: 1.75, feed_revs: 0.75,
        tool_gap: 0.5, indenter_radius: 1.5, tool_size: 11.0,
        height_frac: 0.914, stage: 0}
