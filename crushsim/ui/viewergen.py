@@ -101,8 +101,16 @@ def generate_viewer(
     title: str,
     note: str = "",
     out_path: str | Path | None = None,
+    max_frames: int | None = None,
+    include_plastic: bool = True,
 ) -> Path:
     """Build the standalone viewer for ``run_dir`` and return its path.
+
+    ``max_frames`` subsamples the frame sequence evenly (first and last kept)
+    and ``include_plastic=False`` drops the plastic-strain field - both are
+    size levers for very fine meshes, where the full page can exceed what a
+    browser (or an artifact host) will take. The slider still interpolates
+    between the frames that remain.
 
     Raises:
         PostProcessError: If the run has no VTK sequence or curve.
@@ -115,6 +123,9 @@ def generate_viewer(
         raise PostProcessError(
             f"No VTK frames in {run / 'vtk'} - run the pipeline (or csim render) first."
         )
+    if max_frames is not None and 2 <= max_frames < len(files):
+        keep = np.unique(np.linspace(0, len(files) - 1, max_frames).round().astype(int))
+        files = [files[i] for i in keep]
     curve_csv = run / "force_displacement.csv"
     if not curve_csv.is_file():
         raise PostProcessError(
@@ -131,11 +142,12 @@ def generate_viewer(
         von_mises.append(
             np.asarray(mesh.cell_data["2DELEM_Von_Mises"], dtype=np.float32)[source]
         )
-        plastic.append(
-            np.asarray(mesh.cell_data["2DELEM_Plastic_Strain"], dtype=np.float32)[
-                source
-            ]
-        )
+        if include_plastic:
+            plastic.append(
+                np.asarray(mesh.cell_data["2DELEM_Plastic_Strain"], dtype=np.float32)[
+                    source
+                ]
+            )
         stamp = None
         for key in mesh.field_data.keys():
             if "time" in key.lower():

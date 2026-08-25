@@ -180,7 +180,8 @@ const b64u8 = s => Uint8Array.from(atob(s), c=>c.charCodeAt(0));
 const quads = D.quads_dtype==="u2" ? b64u16(D.quads) : new Uint32Array(Uint8Array.from(atob(D.quads),c=>c.charCodeAt(0)).buffer);
 const part = b64u8(D.part);
 const NF = D.meta.frames, NQ = part.length;
-const pos = D.pos.map(b64f), vm = D.vm.map(b64f), ps = D.ps.map(b64f);
+const pos = D.pos.map(b64f), vm = D.vm.map(b64f), ps = (D.ps||[]).map(b64f);
+if(!ps.length){const o=document.querySelector('option[value="ps"]'); if(o)o.remove();}
 document.getElementById("caseLabel").textContent = D.meta.case + " · " + D.meta.elements + " elems · " + NF + " frames";
 
 let vmMax=0, psMax=0;
@@ -252,7 +253,7 @@ function frameLerp(){
 }
 function scalarAt(q){
   const {i,j,a}=frameLerp();
-  const arr = state.colorMode==="vm"?vm:ps;
+  const arr = (state.colorMode==="ps"&&ps.length)?ps:vm;
   return arr[i][q]*(1-a)+arr[j][q]*a;
 }
 const smax=()=> state.colorMode==="vm"?vmMax:Math.max(psMax,1e-9);
