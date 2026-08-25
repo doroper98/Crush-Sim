@@ -209,7 +209,6 @@ def build_meshes(
             max_size=case.mesh.max_size,
             recombine=case.mesh.recombine,
             curvature_points=case.mesh.curvature_points,
-            imperfection_mm=case.mesh.imperfection_mm,
             out_path=outdir / "can.msh",
             enforce=enforce_gate,
             name="CAN",
