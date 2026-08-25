@@ -770,17 +770,20 @@ def _seed_imperfection(mesh: ShellMesh, can: CanShell, amplitude: float) -> None
     imperfection triggers the same physical mode on every mesh, which is what
     lets the peak converge; real cans carry far larger forming imperfections.
 
-    The field mixes a low and a mid circumferential wave over a half-sine
-    axial envelope; the exact shape matters less than it being identical
-    across the sweep. Modifies ``mesh.nodes`` in place.
+    The axial content is set by the fold wavelength ``~4*sqrt(R*t)`` and is
+    non-zero at the can ends - the first buckle forms at the loaded rim, so
+    an envelope vanishing there (the first attempt used a half-sine) leaves
+    the peak untouched (measured: 943 vs 940 N). A light circumferential
+    modulation breaks the axial symmetry. Modifies ``mesh.nodes`` in place.
     """
     xyz = mesh.nodes
     r = np.hypot(xyz[:, 0], xyz[:, 1])
     theta = np.arctan2(xyz[:, 1], xyz[:, 0])
     z = xyz[:, 2]
-    envelope = np.sin(np.pi * np.clip(z / max(can.height, 1e-9), 0.0, 1.0))
-    wave = 0.6 * np.cos(4.0 * theta) + 0.4 * np.cos(7.0 * theta + 0.7)
-    dr = amplitude * envelope * wave
+    wavelength = max(4.0 * math.sqrt(max(can.radius * can.thickness, 1e-12)), 1e-6)
+    axial = np.cos(2.0 * np.pi * z / wavelength)
+    axial_slow = np.cos(2.0 * np.pi * z / (3.0 * wavelength))
+    dr = amplitude * (0.7 * axial + 0.3 * np.cos(4.0 * theta + 0.5) * axial_slow)
     scale = np.where(r > 1e-9, (r + dr) / np.maximum(r, 1e-9), 1.0)
     xyz[:, 0] *= scale
     xyz[:, 1] *= scale
