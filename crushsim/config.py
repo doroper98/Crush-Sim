@@ -304,6 +304,13 @@ class LoadingConfig:
     """
     support_size: float | None = None
     """Characteristic support size [mm]; defaults like ``tool_size``."""
+    clamp_can_base: bool = False
+    """Fix the can's base node ring (all six DOF).
+
+    A standing can pressed laterally at mid height has nothing holding it
+    down in a gravity-free quasi-static model - it tips over the support and
+    slides instead of crushing. Real fixtures grip the base; this models
+    that grip."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -445,6 +452,7 @@ def load_case(path: str | Path) -> CaseConfig:
         support_size=None
         if load_raw.get("support_size") is None
         else _as_float(load_raw["support_size"], "loading.support_size", p),
+        clamp_can_base=bool(load_raw.get("clamp_can_base", False)),
     )
     if loading.support is not None and loading.support not in ("jig_plane", "v_block"):
         raise ConfigError(
