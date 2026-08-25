@@ -302,3 +302,27 @@ def test_mesh_result_serialises(coarse_can_mesh) -> None:
     assert payload["gate"]["passed"] is True
     assert payload["mesh"]["elements"] == coarse_can_mesh.mesh.n_elements
     assert payload["quality"]["min_sicn"] >= MESH_MIN_SICN
+
+
+def test_orient_outward_flips_inward_shells():
+    import numpy as np
+
+    from crushsim.meshing.mesh_data import ShellMesh
+
+    # A unit square face above the origin, wound so its normal points DOWN
+    # (toward the centre below) - orient_outward must flip it upward.
+    mesh = ShellMesh(
+        name="patch",
+        node_ids=np.array([1, 2, 3, 4]),
+        nodes=np.array([[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]], dtype=float),
+        quads=np.array([[1, 4, 3, 2]]),
+        tris=np.zeros((0, 3), dtype=int),
+    )
+    flipped = mesh.orient_outward((0.5, 0.5, 0.0))
+    assert flipped == 1
+    pts = mesh.nodes
+    quad = [int(n) - 1 for n in mesh.quads[0]]
+    normal = np.cross(pts[quad[1]] - pts[quad[0]], pts[quad[2]] - pts[quad[0]])
+    assert normal[2] > 0
+    # Already-outward meshes are untouched.
+    assert mesh.orient_outward((0.5, 0.5, 0.0)) == 0

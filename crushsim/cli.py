@@ -244,7 +244,7 @@ def deck(
             case,
             case.material(),
             can_mesh=meshes["can"].mesh,
-            tool_mesh=meshes["tool"].mesh,
+            tool_mesh=meshes["tool"].mesh if "tool" in meshes else None,
             floor_mesh=meshes["floor"].mesh,
             support_mesh=meshes["support"].mesh if "support" in meshes else None,
             extra_tool_meshes=[

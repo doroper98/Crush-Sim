@@ -1,0 +1,57 @@
+# LC-5 - internal-pressure swelling / burst of a sealed 2170 can (vent track).
+#
+# Tool-less case: a uniform internal pressure ramps up on the closed can
+# (/PLOAD on the outward-oriented shell), the walls bulge plastically, and
+# elements past the failure strain are deleted (the unscored-wall burst).
+# This validates the pressure infrastructure; the prismatic (Honda) cell with
+# a welded cap and a scored vent patch builds on it - see issue #24.
+
+name: lc5_2170_swell
+load_case: LC-3
+description: >-
+  Sealed 2170 can (R10.5 x H70 x t0.3, steel proxy, both ends closed) under
+  a uniform internal pressure ramp to 10 MPa: plastic swelling, then wall
+  failure at 35% plastic strain.
+
+geometry:
+  kind: parametric_can
+  radius: 10.5
+  height: 70.0
+  thickness: 0.3
+  closed_bottom: true
+  closed_top: true
+
+material:
+  key: steel_a36            # trend-only proxy for nickel-plated can steel
+  eps_p_max: 0.35           # LAW2 failure strain -> element deletion (burst)
+
+mesh:
+  target_size: 0.6          # 0.5 recombines a sliver on the caps (SICN 0.03)
+  recombine: true
+  curvature_points: 12
+
+loading:
+  tool: none                # pressure-driven; no rigid tool
+  clamp_can_base: true
+
+pressure:
+  peak: 10.0                # MPa - unscored wall bursts near P*t/R ~ UTS
+  rise: 2.0e-3              # s
+  hold: 1.0e-3              # s
+
+contact:
+  friction: 0.15
+
+solver:
+  config: configs/solver.yaml
+  threads: 4
+  end_time: auto
+  animation_frames: 30
+  time_history_points: 500
+  stop_on_energy_error: true
+  stop_on_negative_volume: true
+
+output:
+  dir: runs/lc5_2170_swell
+  render: true
+  report: true

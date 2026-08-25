@@ -39,7 +39,7 @@ class GeometryStage:
     """Result of the geometry stage."""
 
     can: CanShell
-    tool: ToolShape
+    tool: ToolShape | None
     floor: ToolShape
     support: ToolShape | None = None
     step_path: Path | None = None
@@ -49,7 +49,7 @@ class GeometryStage:
         """Flat dictionary for reports."""
         return {
             **self.can.summary(),
-            "tool": self.tool.summary(),
+            "tool": self.tool.summary() if self.tool else None,
             "support": self.support.summary() if self.support else None,
             "extra_tools": [t.summary() for t in self.extra_tools],
             "step_path": str(self.step_path) if self.step_path else None,
@@ -116,15 +116,19 @@ def build_geometry(case: CaseConfig, *, can_override: CanShell | None = None) ->
         closed_bottom=case.geometry.closed_bottom,
         closed_top=case.geometry.closed_top,
     )
-    tool = make_tool(
-        can,
-        case.loading.tool,
-        case.loading.direction,
-        gap=case.loading.tool_gap,
-        size=case.loading.tool_size,
-        indenter_radius=case.loading.indenter_radius,
-        step_path=str(case.loading.step_path) if case.loading.step_path else None,
-        height_frac=case.loading.height_frac,
+    tool = (
+        None
+        if case.loading.tool == "none"
+        else make_tool(
+            can,
+            case.loading.tool,
+            case.loading.direction,
+            gap=case.loading.tool_gap,
+            size=case.loading.tool_size,
+            indenter_radius=case.loading.indenter_radius,
+            step_path=str(case.loading.step_path) if case.loading.step_path else None,
+            height_frac=case.loading.height_frac,
+        )
     )
     extra_tools = [
         make_tool(
@@ -257,14 +261,15 @@ def build_meshes(
         out_path=outdir / "floor.msh",
         name="FLOOR",
     )
-    tool_mesh = mesh_tool(
-        geometry.tool,
-        can_height=geometry.can.height,
-        target_size=rigid_target,
-        out_path=outdir / "ref_tool.msh",
-        name="REF_TOOL",
-    )
-    meshes = {"can": can_mesh, "floor": floor_mesh, "tool": tool_mesh}
+    meshes = {"can": can_mesh, "floor": floor_mesh}
+    if geometry.tool is not None:
+        meshes["tool"] = mesh_tool(
+            geometry.tool,
+            can_height=geometry.can.height,
+            target_size=rigid_target,
+            out_path=outdir / "ref_tool.msh",
+            name="REF_TOOL",
+        )
     for index, shape in enumerate(geometry.extra_tools):
         name = f"tool{index + 2}"
         meshes[name] = mesh_tool(
@@ -371,7 +376,7 @@ def run_pipeline(
         case,
         material,
         can_mesh=result.meshes["can"].mesh,
-        tool_mesh=result.meshes["tool"].mesh,
+        tool_mesh=result.meshes["tool"].mesh if "tool" in result.meshes else None,
         floor_mesh=result.meshes["floor"].mesh,
         support_mesh=result.meshes["support"].mesh if "support" in result.meshes else None,
         extra_tool_meshes=[
@@ -454,9 +459,17 @@ def _post_process(
     out["th_conversion"] = conversion.to_dict()
 
     frame = read_th_csv(conversion.outputs[0])
-    curve = extract_force_displacement(frame)
-    metrics = compute_metrics(curve)
-    out["metrics"] = metrics.to_dict()
+    has_tool = any(p.role == "tool" for p in result.deck.parts)
+    curve = metrics = None
+    if has_tool:
+        curve = extract_force_displacement(frame)
+        metrics = compute_metrics(curve)
+        out["metrics"] = metrics.to_dict()
+    else:
+        result.notices.append(
+            "Pressure-driven case: no tool force-displacement curve; see the "
+            "time-history energies and the animation for the response."
+        )
 
     engine_log = result.run.engine_log if result.run else None
     # The energy error is computed from the time-history balance (all tracked
@@ -468,17 +481,18 @@ def _post_process(
     )
     out["energy"] = energy.to_dict()
 
-    curve_csv = result.run_dir / "force_displacement.csv"
-    curve.to_csv(curve_csv, index=False)
-    png = plot_force_displacement(
-        curve,
-        result.run_dir / "force_displacement.png",
-        metrics=metrics,
-        title_text=f"{result.case.name} - {result.case.load_case}",
-        unverified=not result.material.is_verified,
-    )
-    out["curve_csv"] = str(curve_csv)
-    out["curve_png"] = str(png)
+    if curve is not None:
+        curve_csv = result.run_dir / "force_displacement.csv"
+        curve.to_csv(curve_csv, index=False)
+        png = plot_force_displacement(
+            curve,
+            result.run_dir / "force_displacement.png",
+            metrics=metrics,
+            title_text=f"{result.case.name} - {result.case.load_case}",
+            unverified=not result.material.is_verified,
+        )
+        out["curve_csv"] = str(curve_csv)
+        out["curve_png"] = str(png)
 
     if found["animation"] and not skip_render:
         anim = convert_animation(

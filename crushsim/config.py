@@ -304,7 +304,10 @@ class ExtraToolConfig:
 class LoadingConfig:
     """Reference-tool drive definition (spec §5.3)."""
 
-    tool: Literal["platen", "jig_plane", "v_block", "indenter", "cylinder", "step"] = "platen"
+    tool: Literal["platen", "jig_plane", "v_block", "indenter", "cylinder", "step", "none"] = (
+        "platen"
+    )
+    """Main driven tool; ``none`` for tool-less cases (internal pressure only)."""
     direction: tuple[float, float, float] = (0.0, 0.0, -1.0)
     stroke: float = 40.0
     """Total imposed displacement magnitude [mm]."""
@@ -342,6 +345,23 @@ class LoadingConfig:
     """Motion stage of the main tool (see :class:`ExtraToolConfig`)."""
     extra_tools: tuple[ExtraToolConfig, ...] = ()
     """Additional driven rigid tools (multi-tool processes)."""
+
+
+@dataclass(frozen=True, slots=True)
+class PressureConfig:
+    """Uniform internal pressure on the can (vent burst / swelling track).
+
+    ``peak == 0`` disables the load. The pressure ramps linearly from zero to
+    ``peak`` over ``rise`` seconds and is then held for ``hold`` seconds; a
+    tool-less case's engine end time is ``rise + hold``.
+    """
+
+    peak: float = 0.0
+    """Peak internal pressure [MPa]."""
+    rise: float = 1.0e-3
+    """Linear ramp duration [s]."""
+    hold: float = 0.5e-3
+    """Hold duration at peak [s]."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -391,6 +411,9 @@ class CaseConfig:
     mesh: MeshConfig = field(default_factory=MeshConfig)
     loading: LoadingConfig = field(default_factory=LoadingConfig)
     contact: ContactConfig = field(default_factory=ContactConfig)
+    pressure: PressureConfig = field(default_factory=PressureConfig)
+    eps_p_max: float | None = None
+    """Failure plastic strain (LAW2 EPS_p_max -> element deletion); None disables."""
     solver: SolverRunConfig = field(default_factory=SolverRunConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
@@ -530,11 +553,13 @@ def load_case(path: str | Path) -> CaseConfig:
             _extra_tool(raw, index, p) for index, raw in enumerate(load_raw.get("extra_tools") or [])
         ),
     )
-    _tools = ("platen", "jig_plane", "v_block", "indenter", "cylinder", "step")
+    _tools = ("platen", "jig_plane", "v_block", "indenter", "cylinder", "step", "none")
     if loading.tool not in _tools:
         raise ConfigError(
             f"loading.tool in {p} must be one of {', '.join(_tools)}, got {loading.tool!r}"
         )
+    if loading.tool == "none" and loading.extra_tools:
+        raise ConfigError(f"loading.extra_tools in {p} need a main tool (loading.tool != 'none')")
     if loading.support is not None and loading.support not in ("jig_plane", "v_block"):
         raise ConfigError(
             f"loading.support in {p} must be 'jig_plane' or 'v_block', got {loading.support!r}"
@@ -550,6 +575,21 @@ def load_case(path: str | Path) -> CaseConfig:
         gap_scale=_as_float(contact_raw.get("gap_scale", 0.8), "contact.gap_scale", p),
         stiffness_scale=_as_float(contact_raw.get("stiffness_scale", 1.0), "contact.stiffness_scale", p),
     )
+
+    pressure_raw = dict(data.get("pressure") or {})
+    pressure = PressureConfig(
+        peak=_as_float(pressure_raw.get("peak", 0.0), "pressure.peak", p),
+        rise=_as_float(pressure_raw.get("rise", 1.0e-3), "pressure.rise", p),
+        hold=_as_float(pressure_raw.get("hold", 0.5e-3), "pressure.hold", p),
+    )
+    if pressure.peak < 0.0:
+        raise ConfigError(f"pressure.peak in {p} must be >= 0")
+    if pressure.peak > 0.0 and pressure.rise <= 0.0:
+        raise ConfigError(f"pressure.rise in {p} must be > 0 when pressure.peak is set")
+    if loading.tool == "none" and pressure.peak <= 0.0:
+        raise ConfigError(
+            f"loading.tool 'none' in {p} needs an internal pressure load (pressure.peak > 0)"
+        )
 
     solver_raw = dict(data.get("solver") or {})
     solver = SolverRunConfig(
@@ -577,6 +617,11 @@ def load_case(path: str | Path) -> CaseConfig:
     else:
         material_key = str(mat_raw.get("key", "aluminum_3003"))
         material_path = _resolve(mat_raw.get("card"), Path("."))
+    eps_p_max = None
+    if isinstance(mat_raw, dict) and mat_raw.get("eps_p_max") is not None:
+        eps_p_max = _as_float(mat_raw["eps_p_max"], "material.eps_p_max", p)
+        if eps_p_max <= 0.0:
+            raise ConfigError(f"material.eps_p_max in {p} must be > 0")
 
     return CaseConfig(
         name=name,
@@ -589,6 +634,8 @@ def load_case(path: str | Path) -> CaseConfig:
         mesh=mesh,
         loading=loading,
         contact=contact,
+        pressure=pressure,
+        eps_p_max=eps_p_max,
         solver=solver,
         output=output,
         raw=data,

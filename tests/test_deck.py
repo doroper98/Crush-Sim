@@ -476,3 +476,50 @@ def test_multi_tool_end_time_covers_both_stages(
         direction=(0.0, 0.0, -1.0), stroke=4.0, velocity_mm_s=1000.0, ramp_fraction=0.1
     ).end_time
     assert writer.end_time == pytest.approx(stage0 + stage1)
+
+
+# ---------------------------------------------------------------------------
+# Internal pressure (vent burst track) and tool-less decks
+# ---------------------------------------------------------------------------
+
+
+def test_pressure_only_deck(material_card, can_mesh_fixture, floor_mesh_fixture) -> None:
+    writer = RadiossDeckWriter(
+        run_name="swell",
+        parts=[
+            DeckPart(name="CAN", mesh=can_mesh_fixture, thickness=0.1, role="deformable", material=material_card),
+            DeckPart(name="FLOOR", mesh=floor_mesh_fixture, thickness=2.0, role="floor"),
+        ],
+        drive=None,
+        material=material_card,
+        pressure=(10.0, 2.0e-3, 1.0e-3),
+        eps_p_max=0.35,
+    )
+    assert writer.end_time == pytest.approx(3.0e-3)
+    text = writer.starter_text()
+    for keyword in ("/PLOAD/1", "/FUNCT/9", "CAN_INTERNAL_PRESSURE", "CAN_PRESSURE_RAMP"):
+        assert keyword in text, keyword
+    # No tool: no imposed velocity, no tool contact interface, no /TH/INTER.
+    for absent in ("/IMPVEL", "TOOL_CONTACT", "/TH/INTER", "/SURF/PART/1"):
+        assert absent not in text, absent
+    # The failure strain lands in the LAW2 EPS_p_max slot (the a/b/n card).
+    law2 = text.split("/MAT/LAW2/1")[1]
+    abn_line = law2.splitlines()[law2.splitlines().index(
+        "#                  a                   b                   n"
+        "           EPS_p_max           SIG_max0") + 1]
+    assert "0.35" in abn_line
+
+
+def test_deck_without_drive_or_pressure_is_rejected(
+    material_card, can_mesh_fixture, floor_mesh_fixture
+) -> None:
+    with pytest.raises(DeckError, match="pressure"):
+        RadiossDeckWriter(
+            run_name="empty",
+            parts=[
+                DeckPart(name="CAN", mesh=can_mesh_fixture, thickness=0.1, role="deformable", material=material_card),
+                DeckPart(name="FLOOR", mesh=floor_mesh_fixture, thickness=2.0, role="floor"),
+            ],
+            drive=None,
+            material=material_card,
+        )

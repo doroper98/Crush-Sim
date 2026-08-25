@@ -242,7 +242,7 @@ class DeckResult:
     starter_path: Path
     engine_path: Path
     parts: list[DeckPart]
-    drive: DriveDefinition
+    drive: DriveDefinition | None
     end_time: float
     node_count: int
     element_count: int
@@ -257,9 +257,9 @@ class DeckResult:
             "engine": str(self.engine_path),
             "parts": [p.summary() for p in self.parts],
             "end_time_s": self.end_time,
-            "stroke_mm": self.drive.stroke,
-            "velocity_mm_s": self.drive.velocity_mm_s,
-            "direction": list(self.drive.direction),
+            "stroke_mm": self.drive.stroke if self.drive else None,
+            "velocity_mm_s": self.drive.velocity_mm_s if self.drive else None,
+            "direction": list(self.drive.direction) if self.drive else None,
             "nodes": self.node_count,
             "elements": self.element_count,
             "material": self.material.key,
@@ -282,7 +282,7 @@ class RadiossDeckWriter:
         *,
         run_name: str,
         parts: list[DeckPart],
-        drive: DriveDefinition,
+        drive: DriveDefinition | None,
         material: MaterialCard,
         friction: float = CONTACT_FRICTION_DEFAULT,
         gap_scale: float = 0.8,
@@ -295,6 +295,8 @@ class RadiossDeckWriter:
         solver_version_tag: str = "unpinned",
         clamp_can_base: bool = False,
         extra_drives: list[DriveDefinition] | None = None,
+        pressure: tuple[float, float, float] | None = None,
+        eps_p_max: float | None = None,
     ) -> None:
         if not parts:
             raise DeckError("A deck needs at least one part")
@@ -302,11 +304,16 @@ class RadiossDeckWriter:
         if "deformable" not in roles:
             raise DeckError("A deck needs at least one deformable part (the can)")
         self.extra_drives = list(extra_drives or [])
-        if roles.count("tool") != 1 + len(self.extra_drives):
+        n_drives = (1 if drive is not None else 0) + len(self.extra_drives)
+        if drive is None and self.extra_drives:
+            raise DeckError("extra_drives need a main drive")
+        if roles.count("tool") != n_drives:
             raise DeckError(
                 f"A deck needs one driven part per drive: {roles.count('tool')} tool "
-                f"part(s) vs {1 + len(self.extra_drives)} drive(s)"
+                f"part(s) vs {n_drives} drive(s)"
             )
+        if drive is None and pressure is None:
+            raise DeckError("A deck needs a driven tool or an internal pressure load")
         self.run_name = run_name
         self.parts = parts
         self.drive = drive
@@ -316,15 +323,16 @@ class RadiossDeckWriter:
         self.stiffness_scale = float(stiffness_scale)
         self.animation_frames = max(1, int(animation_frames))
         self.time_history_points = max(1, int(time_history_points))
-        self.end_time = (
-            float(end_time)
-            if end_time
-            else max(d.t_start + d.end_time for d in [drive, *self.extra_drives])
-        )
+        drive_ends = [d.t_start + d.end_time for d in ([drive] if drive else []) + self.extra_drives]
+        if pressure is not None:
+            drive_ends.append(pressure[1] + pressure[2])
+        self.end_time = float(end_time) if end_time else max(drive_ends)
         self.load_case = load_case
         self.description = description
         self.solver_version_tag = solver_version_tag
         self.clamp_can_base = bool(clamp_can_base)
+        self.pressure = pressure
+        self.eps_p_max = eps_p_max
         self._assign_ids()
 
     # -- id assignment ------------------------------------------------------
@@ -485,7 +493,7 @@ class RadiossDeckWriter:
                 reals((card.E, card.nu)),
                 "#                  a                   b                   n"
                 "           EPS_p_max           SIG_max0",
-                reals((card.law2.A, card.law2.B, card.law2.n, 0.0, 0.0)),
+                reals((card.law2.A, card.law2.B, card.law2.n, self.eps_p_max or 0.0, 0.0)),
                 "#                  c           EPS_DOT_0       ICC   Fsmooth"
                 "               F_cut               Chard",
                 reals((0.0, 0.0)) + i10(1) + i10(0) + reals((0.0, 0.0)),
@@ -515,11 +523,12 @@ class RadiossDeckWriter:
         # Separate main surfaces per contact partner so /TH/INTER can report
         # the tool-side reaction force on its own (the crush-force curve).
         tools = [p for p in self.parts if p.role == "tool"]
-        lines.append("/SURF/PART/1")
-        lines.append(title("TOOL_SURFACE"))
-        # Interface 1 reports the crush-force curve (/TH/INTER), so it carries
-        # the REF_TOOL alone; extra driven tools contact through surface 4.
-        lines.append(i10(tools[0].part_id))
+        if tools:
+            lines.append("/SURF/PART/1")
+            lines.append(title("TOOL_SURFACE"))
+            # Interface 1 reports the crush-force curve (/TH/INTER), so it
+            # carries the REF_TOOL alone; extra tools contact via surface 4.
+            lines.append(i10(tools[0].part_id))
         if len(tools) > 1:
             lines.append("/SURF/PART/4")
             lines.append(title("EXTRA_TOOL_SURFACE"))
@@ -609,6 +618,8 @@ class RadiossDeckWriter:
         BCS 10+k, funct/impvel k+1).
         """
         tools = [p for p in self.parts if p.role == "tool"]
+        if not tools:
+            return []
         drives = [self.drive, *self.extra_drives]
         multi = len(tools) > 1
         lines: list[str] = []
@@ -672,6 +683,39 @@ class RadiossDeckWriter:
             ]
         return lines
 
+    def _block_pressure(self) -> list[str]:
+        """/PLOAD - uniform internal pressure on the can surface (surf 3).
+
+        The can mesh must be oriented outward (ShellMesh.orient_outward);
+        Radioss applies a positive pressure *against* the segment normal, so
+        the scale is negative to inflate. Idel=1 stops the load on deleted
+        (failed) elements - pressure escapes through a burst vent.
+        """
+        if self.pressure is None:
+            return []
+        peak, rise, hold = self.pressure
+        pts = [(0.0, 0.0), (rise, peak)]
+        if hold > 0.0:
+            pts.append((rise + hold, peak))
+        if self.end_time > rise + hold + 1.0e-12:
+            pts.append((self.end_time, peak))
+        lines = [
+            RULER,
+            "/FUNCT/9",
+            title("CAN_PRESSURE_RAMP"),
+            "#                  X                   Y",
+        ]
+        for t, v in pts:
+            lines.append(reals((t, v)))
+        lines += [
+            RULER,
+            "/PLOAD/1",
+            title("CAN_INTERNAL_PRESSURE"),
+            "#  surf_ID  functIDT sensor_ID    Ipinch      Idel            Ascale_x            Fscale_y",
+            i10(3) + i10(9) + i10(0) + i10(0) + i10(1) + " " * 10 + reals((1.0, -1.0)),
+        ]
+        return lines
+
     def _block_contact(self) -> list[str]:
         """/INTER/TYPE7 x3 - tool, fixed rigids, and can self-contact.
 
@@ -679,8 +723,8 @@ class RadiossDeckWriter:
         crush-force curve directly.
         """
         lines: list[str] = []
-        pairs = [
-            (1, "TOOL_CONTACT", 1),
+        has_tools = any(p.role == "tool" for p in self.parts)
+        pairs = ([(1, "TOOL_CONTACT", 1)] if has_tools else []) + [
             (2, "FIXED_CONTACT", 2),
             (3, "SELF_CONTACT", 3),
         ]
@@ -749,17 +793,18 @@ class RadiossDeckWriter:
             i10(p.rbody_master_node) + i10(0) + f"{p.name}_MASTER"
             for p in rigid_parts
         ]
-        lines += [
-            RULER,
-            "/TH/INTER/4",
-            title("TOOL_CONTACT_FORCE"),
-            # Valid interface variables are FN*/FT* (hm_read_thgrou.F VARIN);
-            # FX/FY/FZ are rigid-body variables and are rejected here.
-            "#      var       var       var       var       var       var",
-            "FNX       FNY       FNZ       FTX       FTY       FTZ",
-            "#      Obj",
-            i10(1),
-        ]
+        if any(p.role == "tool" for p in self.parts):
+            lines += [
+                RULER,
+                "/TH/INTER/4",
+                title("TOOL_CONTACT_FORCE"),
+                # Valid interface variables are FN*/FT* (hm_read_thgrou.F
+                # VARIN); FX/FY/FZ are rigid-body variables, rejected here.
+                "#      var       var       var       var       var       var",
+                "FNX       FNY       FNZ       FTX       FTY       FTZ",
+                "#      Obj",
+                i10(1),
+            ]
         lines += [
             RULER,
             "/TH/PART/2",
@@ -803,6 +848,7 @@ class RadiossDeckWriter:
         if self.clamp_can_base:
             lines += self._block_can_base_clamp()
         lines += self._block_tool_drive()
+        lines += self._block_pressure()
         lines += self._block_contact()
         lines += self._block_time_history()
         lines += [RULER, "/END"]
@@ -875,7 +921,7 @@ def build_deck(
     material: MaterialCard,
     *,
     can_mesh: ShellMesh,
-    tool_mesh: ShellMesh,
+    tool_mesh: ShellMesh | None = None,
     floor_mesh: ShellMesh | None = None,
     support_mesh: ShellMesh | None = None,
     extra_tool_meshes: list[ShellMesh] | None = None,
@@ -925,14 +971,15 @@ def build_deck(
                 role="floor",
             )
         )
-    parts.append(
-        DeckPart(
-            name="REF_TOOL",
-            mesh=tool_mesh,
-            thickness=RIGID_SHELL_THICKNESS,
-            role="tool",
+    if tool_mesh is not None:
+        parts.append(
+            DeckPart(
+                name="REF_TOOL",
+                mesh=tool_mesh,
+                thickness=RIGID_SHELL_THICKNESS,
+                role="tool",
+            )
         )
-    )
     extras = list(case.loading.extra_tools)
     extra_meshes = list(extra_tool_meshes or [])
     if len(extras) != len(extra_meshes):
@@ -950,11 +997,15 @@ def build_deck(
             )
         )
 
-    drive = DriveDefinition(
-        direction=case.loading.direction,
-        stroke=case.loading.stroke,
-        velocity_mm_s=m_per_s_to_mm_per_s(case.loading.velocity_m_s),
-        ramp_fraction=case.loading.ramp_fraction,
+    drive = (
+        DriveDefinition(
+            direction=case.loading.direction,
+            stroke=case.loading.stroke,
+            velocity_mm_s=m_per_s_to_mm_per_s(case.loading.velocity_m_s),
+            ramp_fraction=case.loading.ramp_fraction,
+        )
+        if tool_mesh is not None
+        else None
     )
     extra_drives = [
         DriveDefinition(
@@ -967,18 +1018,26 @@ def build_deck(
     ]
     # Stage the strokes: each stage's window opens when the previous stage's
     # longest stroke has finished; tools hold still outside their window.
-    stage_of = [case.loading.stage, *(t.stage for t in extras)]
-    all_drives = [drive, *extra_drives]
-    durations: dict[int, float] = {}
-    for stage, d in zip(stage_of, all_drives):
-        durations[stage] = max(durations.get(stage, 0.0), d.end_time)
-    stage_starts: dict[int, float] = {}
-    clock = 0.0
-    for stage in sorted(durations):
-        stage_starts[stage] = clock
-        clock += durations[stage]
-    for stage, d in zip(stage_of, all_drives):
-        d.t_start = stage_starts[stage]
+    if drive is not None:
+        stage_of = [case.loading.stage, *(t.stage for t in extras)]
+        all_drives = [drive, *extra_drives]
+        durations: dict[int, float] = {}
+        for stage, d in zip(stage_of, all_drives):
+            durations[stage] = max(durations.get(stage, 0.0), d.end_time)
+        stage_starts: dict[int, float] = {}
+        clock = 0.0
+        for stage in sorted(durations):
+            stage_starts[stage] = clock
+            clock += durations[stage]
+        for stage, d in zip(stage_of, all_drives):
+            d.t_start = stage_starts[stage]
+
+    pressure = None
+    if case.pressure.peak > 0.0:
+        pressure = (case.pressure.peak, case.pressure.rise, case.pressure.hold)
+        # /PLOAD acts along element normals: a consistent outward orientation
+        # is what makes the internal pressure inflate the can everywhere.
+        can_mesh.orient_outward()
 
     writer = RadiossDeckWriter(
         run_name=run_name or case.name,
@@ -996,5 +1055,7 @@ def build_deck(
         description=case.description,
         solver_version_tag=solver_version_tag,
         extra_drives=extra_drives,
+        pressure=pressure,
+        eps_p_max=case.eps_p_max,
     )
     return writer.write(outdir)

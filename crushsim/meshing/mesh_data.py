@@ -126,6 +126,27 @@ class ShellMesh:
         self.metadata["seated_offset_mm"] = [round(c, 6) for c in offset]
         return offset
 
+    def orient_outward(self, centre: tuple[float, float, float] | None = None) -> int:
+        """Flip shells so every element normal points away from ``centre``.
+
+        Internal-pressure loads (/PLOAD) act along the element normal, so a
+        closed can must present a consistent outward orientation - Gmsh's OCC
+        surfaces carry arbitrary per-face orientations. Valid for convex
+        closed shells (cylindrical or box cans); returns the flip count.
+        ``centre`` defaults to the mesh centroid.
+        """
+        c = np.asarray(centre if centre is not None else self.nodes.mean(axis=0), dtype=float)
+        index = self.node_index()
+        flipped = 0
+        for block in (self.quads, self.tris):
+            for element in block:
+                pts = self.nodes[[index[int(n)] for n in element]]
+                normal = np.cross(pts[1] - pts[0], pts[2] - pts[0])
+                if float(np.dot(normal, pts.mean(axis=0) - c)) < 0.0:
+                    element[:] = element[::-1]
+                    flipped += 1
+        return flipped
+
     def renumber(self, node_offset: int) -> "ShellMesh":
         """Return a copy whose node ids start at ``node_offset + 1``.
 
