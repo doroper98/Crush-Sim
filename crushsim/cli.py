@@ -608,6 +608,42 @@ def run_all(
 
 
 # ---------------------------------------------------------------------------
+# export-step (issue #26): deformed shape at any frame -> STEP
+# ---------------------------------------------------------------------------
+
+
+@app.command(name="export-step")
+def export_step(
+    rundir: Annotated[Path, typer.Option("--rundir", help="Completed run directory")],
+    frame: Annotated[
+        Optional[int],
+        typer.Option("--frame", help="Frame index (negative counts from the end; default last)"),
+    ] = None,
+    time_s: Annotated[
+        Optional[float], typer.Option("--time", help="Pick the frame nearest this time [s]")
+    ] = None,
+    part: Annotated[
+        str, typer.Option("--part", help="'can' (default), 'all', or a deck part name")
+    ] = "can",
+    output: Annotated[Optional[Path], typer.Option("--output", "-o", help="Output .stp")] = None,
+) -> None:
+    """Export the deformed shape at a frame as STEP (faceted shell, AP214).
+
+    Reads the run's converted VTK sequence; needs the 'cad' extra (OCP).
+    """
+    from .post.export_step import export_deformed_step
+
+    try:
+        path = export_deformed_step(
+            rundir, frame=frame, time_s=time_s, part=part, out_path=output
+        )
+    except CrushSimError as exc:
+        _fail(exc)
+        return
+    typer.secho(f"STEP: {path}", fg=typer.colors.GREEN)
+
+
+# ---------------------------------------------------------------------------
 # ui (FR-11, Phase 3)
 # ---------------------------------------------------------------------------
 

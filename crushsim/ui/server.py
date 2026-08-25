@@ -243,6 +243,20 @@ def create_app(root: str | Path = ".") -> FastAPI:
                 raise HTTPException(409, f"viewer generation failed: {exc}") from exc
         return FileResponse(target, media_type="text/html")
 
+    @app.get("/api/runs/{name}/step")
+    def run_step(name: str, frame: int = -1, part: str = "can") -> FileResponse:
+        """Deformed-shape STEP export (issue #26); generated once, then cached."""
+        run_dir = _run_dir_or_404(name)
+        from ..post.export_step import export_deformed_step  # noqa: PLC0415 - pulls OCP
+
+        try:
+            target = export_deformed_step(run_dir, frame=frame, part=part)
+        except Exception as exc:  # noqa: BLE001 - surfaced as an HTTP error
+            raise HTTPException(409, f"STEP export failed: {exc}") from exc
+        return FileResponse(
+            target, media_type="application/step", filename=target.name
+        )
+
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
         return (_STATIC / "index.html").read_text(encoding="utf-8")

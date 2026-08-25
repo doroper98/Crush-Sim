@@ -197,6 +197,7 @@ async function loadRuns(){
       <td><div class="actions">
         ${r.report?`<a href="/runs/${r.name}/report.html" target="_blank">리포트</a>`:""}
         <a href="/api/runs/${r.name}/viewer" target="_blank">3D 뷰어</a>
+        <a href="/api/runs/${r.name}/step" title="최종 프레임 변형 형상 STP (다른 프레임: csim export-step --frame N)">변형 STP</a>
         <a href="/runs/${r.name}/force_displacement.csv" target="_blank">CSV</a>
       </div></td>`;
     tbody.appendChild(tr);
