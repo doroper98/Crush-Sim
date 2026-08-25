@@ -760,6 +760,33 @@ def _mesh_with_gate(
     return last
 
 
+def _seed_imperfection(mesh: ShellMesh, can: CanShell, amplitude: float) -> None:
+    """Perturb the wall nodes radially with a deterministic multi-mode field.
+
+    A geometrically perfect cylinder's first buckling peak is pathologically
+    mesh-sensitive (imperfection sensitivity): every refinement finds a higher
+    buckling mode and the peak keeps dropping - measured on the B-3 sweep as
+    1258 -> 940 -> 834 N across 2.0/1.0/0.5 mm. Seeding a small deterministic
+    imperfection triggers the same physical mode on every mesh, which is what
+    lets the peak converge; real cans carry far larger forming imperfections.
+
+    The field mixes a low and a mid circumferential wave over a half-sine
+    axial envelope; the exact shape matters less than it being identical
+    across the sweep. Modifies ``mesh.nodes`` in place.
+    """
+    xyz = mesh.nodes
+    r = np.hypot(xyz[:, 0], xyz[:, 1])
+    theta = np.arctan2(xyz[:, 1], xyz[:, 0])
+    z = xyz[:, 2]
+    envelope = np.sin(np.pi * np.clip(z / max(can.height, 1e-9), 0.0, 1.0))
+    wave = 0.6 * np.cos(4.0 * theta) + 0.4 * np.cos(7.0 * theta + 0.7)
+    dr = amplitude * envelope * wave
+    scale = np.where(r > 1e-9, (r + dr) / np.maximum(r, 1e-9), 1.0)
+    xyz[:, 0] *= scale
+    xyz[:, 1] *= scale
+    mesh.metadata["imperfection_mm"] = float(amplitude)
+
+
 def mesh_parametric_can(
     can: CanShell,
     *,
@@ -768,6 +795,7 @@ def mesh_parametric_can(
     max_size: float | None = None,
     recombine: bool = True,
     curvature_points: int = 12,
+    imperfection_mm: float = 0.0,
     out_path: str | Path | None = None,
     max_attempts: int = MESH_REMESH_MAX_ATTEMPTS,
     enforce: bool = True,
@@ -782,6 +810,8 @@ def mesh_parametric_can(
         max_size: Upper mesh-size bound [mm]; defaults to ``1.5 * target_size``.
         recombine: Recombine triangles into quads.
         curvature_points: Elements per 2*pi of curvature.
+        imperfection_mm: Radial imperfection amplitude seeded into the wall
+            after meshing (see :func:`_seed_imperfection`); 0 disables it.
         out_path: Optional ``.msh`` output path.
         max_attempts: Automatic remesh attempts on gate failure.
         enforce: Raise :class:`~crushsim.errors.GateFailure` when the gate fails.
@@ -803,7 +833,7 @@ def mesh_parametric_can(
         with contextlib.suppress(Exception):
             gmsh.model.mesh.removeDuplicateNodes()
 
-    return _mesh_with_gate(
+    result = _mesh_with_gate(
         build,
         name=name,
         source=(
@@ -819,6 +849,11 @@ def mesh_parametric_can(
         max_attempts=max_attempts,
         enforce=enforce,
     )
+    if imperfection_mm > 0.0:
+        # Seeded after gating: the sub-element-size perturbation (~0.5x wall
+        # thickness against millimetre elements) does not move the metrics.
+        _seed_imperfection(result.mesh, can, float(imperfection_mm))
+    return result
 
 
 def mesh_step_surfaces(
