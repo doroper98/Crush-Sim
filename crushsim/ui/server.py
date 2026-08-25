@@ -319,6 +319,37 @@ def create_app(root: str | Path = ".") -> FastAPI:
             target, media_type="application/step", filename=target.name
         )
 
+    _GRAPH_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_\-]*\.json")
+    graphs_dir = base / "configs" / "graphs"
+
+    @app.get("/api/graphs")
+    def list_graphs() -> list[str]:
+        if not graphs_dir.is_dir():
+            return []
+        return sorted(p.name for p in graphs_dir.glob("*.json"))
+
+    @app.get("/api/graphs/{name}")
+    def get_graph(name: str) -> dict[str, Any]:
+        if not _GRAPH_NAME.fullmatch(name) or not (graphs_dir / name).is_file():
+            raise HTTPException(404, f"graph not found: {name}")
+        try:
+            data = json.loads((graphs_dir / name).read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise HTTPException(409, f"unparseable graph: {exc}") from exc
+        return data
+
+    @app.put("/api/graphs/{name}")
+    def save_graph(name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if not _GRAPH_NAME.fullmatch(name):
+            raise HTTPException(404, f"bad graph name: {name}")
+        if "nodes" not in payload or "edges" not in payload:
+            raise HTTPException(422, "a graph needs 'nodes' and 'edges'")
+        graphs_dir.mkdir(parents=True, exist_ok=True)
+        (graphs_dir / name).write_text(
+            json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8"
+        )
+        return {"saved": name}
+
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
         return (_STATIC / "index.html").read_text(encoding="utf-8")

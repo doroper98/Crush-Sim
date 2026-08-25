@@ -191,3 +191,17 @@ def test_canonical_parts_identifies_roles_by_behaviour() -> None:
     assert set(canon[part == 20]) == {2}  # FLOOR
     assert set(canon[part == 30]) == {3}  # TOOL
     assert set(canon[part == 40]) == {4}  # SUPPORT
+
+
+def test_graph_save_and_load_roundtrip(client: TestClient) -> None:
+    graph = {
+        "nodes": [{"id": "n1", "type": "geometry", "x": 10, "y": 10, "params": {}}],
+        "edges": [],
+    }
+    assert client.put("/api/graphs/demo.json", json=graph).status_code == 200
+    assert "demo.json" in client.get("/api/graphs").json()
+    loaded = client.get("/api/graphs/demo.json").json()
+    assert loaded["nodes"][0]["id"] == "n1"
+    # Name policy and shape validation.
+    assert client.put("/api/graphs/..%2Fevil.json", json=graph).status_code == 404
+    assert client.put("/api/graphs/bad.json", json={"nodes": []}).status_code == 422
