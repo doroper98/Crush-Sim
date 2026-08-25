@@ -48,17 +48,18 @@ loading:
     # orbiting at 10 m/s tangential, feeding 2.0 mm (0.5 gap + 1.5 groove)
     # over the first revolution.
     # TWO rollers 180 degrees apart, orbiting together - like the production
-    # machines. A single roller's unbalanced side load ovalises the free rim
-    # and the groove depth follows it around (measured: 2.1 mm spread); the
-    # opposed pair cancels the net radial force and each azimuth is ironed
-    # twice per revolution. Feed completes in 0.75 rev, then a full
-    # revolution irons at constant depth.
+    # machines - cancelling the net radial force (a single roller ovalised
+    # the free rim, 2.1 mm groove spread). The feed is spread over TWO
+    # revolutions (1 mm/rev, spin-forming style): completing it in under a
+    # revolution froze a plastic ovalisation into the section that a
+    # constant-depth ironing pass could not erase (still 2.0 mm spread).
+    # A final full revolution irons at constant depth.
     - {tool: bead_roller, motion: orbit, direction: [1.0, 0.0, 0.0],
-       stroke: 2.0, velocity: 10.0, orbit_revs: 1.75, feed_revs: 0.75,
+       stroke: 2.0, velocity: 10.0, orbit_revs: 3.0, feed_revs: 2.0,
        tool_gap: 0.5, indenter_radius: 1.5, tool_size: 11.0,
        height_frac: 0.914, stage: 0}
     - {tool: bead_roller, motion: orbit, direction: [-1.0, 0.0, 0.0],
-       stroke: 2.0, velocity: 10.0, orbit_revs: 1.75, feed_revs: 0.75,
+       stroke: 2.0, velocity: 10.0, orbit_revs: 3.0, feed_revs: 2.0,
        tool_gap: 0.5, indenter_radius: 1.5, tool_size: 11.0,
        height_frac: 0.914, stage: 0}
 
