@@ -365,3 +365,30 @@ def test_resume_mesh_and_quality(tmp_path):
     assert stats["min_sicn"] == pytest.approx(1.0)  # a perfect square
     assert stats["min_edge_length"] == pytest.approx(10.0)
     assert stats["max_aspect_ratio"] == pytest.approx(1.0)
+
+
+def test_box_can_scored_vent_mesh_gate():
+    from crushsim.geometry.parametric import BoxCan, VentSpec
+    from crushsim.meshing.mesher import mesh_box_can
+
+    box = BoxCan(
+        width=40.0, height=30.0, depth=10.0, thickness=0.4,
+        vent=VentSpec(length=8.0, width=4.0, band=1.0, score_thickness=0.05),
+    )
+    result = mesh_box_can(box, target_size=1.0, enforce=False, name="box", max_attempts=1)
+    mesh = result.mesh
+    assert result.gate.passed, result.gate.to_dict()
+    thk = mesh.element_thickness
+    assert thk is not None
+    scored = int((thk < 0.4).sum())
+    assert scored > 0
+    assert mesh.metadata["vent_scored_elements"] == scored
+    # The scored band sits on the cap only.
+    index = mesh.node_index()
+    order = 0
+    for block in (mesh.quads, mesh.tris):
+        for element in block:
+            if thk[order] < 0.4:
+                z = mesh.nodes[[index[int(n)] for n in element]][:, 2].mean()
+                assert abs(z - box.height) < 1e-3
+            order += 1
