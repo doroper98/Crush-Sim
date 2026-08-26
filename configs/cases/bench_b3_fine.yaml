@@ -9,7 +9,7 @@
 name: bench_b3_fine
 load_case: LC-1
 description: >-
-  B-3 benchmark, fine mesh (0.35 mm): axial crush of the reference can
+  B-3 benchmark, fine mesh (0.4 mm): axial crush of the reference can
   shell (R33 x H115 x t0.1) by a rigid platen, displacement controlled.
 
 geometry:
@@ -24,7 +24,7 @@ material:
   key: aluminum_3003
 
 mesh:
-  target_size: 0.35
+  target_size: 0.4
   recombine: true
   imperfection_mm: 0.2    # 2x wall thickness: B-3 needed deeper imperfection-dominated response
   curvature_points: 28
