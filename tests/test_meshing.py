@@ -326,3 +326,42 @@ def test_orient_outward_flips_inward_shells():
     assert normal[2] > 0
     # Already-outward meshes are untouched.
     assert mesh.orient_outward((0.5, 0.5, 0.0)) == 0
+
+
+def test_resume_mesh_and_quality(tmp_path):
+    import json
+
+    import numpy as np
+    import pyvista as pv
+
+    from crushsim.meshing.resume import load_resume_mesh, quality_of_mesh
+
+    # Source run: one frame, a deformable quad (part 1) + a rigid tri (part 9).
+    points = np.array(
+        [[0, 0, 2], [10, 0, 2], [10, 10, 2], [0, 10, 2], [30, 0, 0], [40, 0, 0], [40, 10, 0]],
+        dtype=float,
+    )
+    cells = np.array([4, 0, 1, 2, 3, 3, 4, 5, 6])
+    grid = pv.UnstructuredGrid(cells, np.array([9, 5], dtype=np.uint8), points)
+    grid.cell_data["PART_ID"] = np.array([1, 9])
+    run = tmp_path / "src_run"
+    (run / "vtk").mkdir(parents=True)
+    grid.save(run / "vtk" / "f_A001.vtk")
+    (run / "pipeline_summary.json").write_text(
+        json.dumps({"deck": {"parts": [
+            {"name": "CAN", "part_id": 1, "role": "deformable", "thickness_mm": 0.3},
+            {"name": "REF_TOOL", "part_id": 9, "role": "tool", "thickness_mm": 0.5},
+        ]}}),
+        encoding="utf-8",
+    )
+
+    mesh, thickness = load_resume_mesh(run, frame=-1)
+    assert thickness == 0.3
+    # Only the deformable part survives, nodes compacted to 1..4.
+    assert mesh.n_quads == 1 and mesh.n_tris == 0 and mesh.n_nodes == 4
+    assert mesh.nodes[:, 2].max() == 2.0
+
+    stats = quality_of_mesh(mesh)
+    assert stats["min_sicn"] == pytest.approx(1.0)  # a perfect square
+    assert stats["min_edge_length"] == pytest.approx(10.0)
+    assert stats["max_aspect_ratio"] == pytest.approx(1.0)

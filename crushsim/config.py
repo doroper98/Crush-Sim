@@ -241,7 +241,7 @@ def find_material_card(key: str, search_roots: list[Path] | None = None) -> Path
 class GeometryConfig:
     """Can geometry: either code-generated (Phase 1) or a STEP file (Phase 2)."""
 
-    kind: Literal["parametric_can", "box_can", "step"] = "parametric_can"
+    kind: Literal["parametric_can", "box_can", "step", "resume"] = "parametric_can"
     radius: float = 33.0
     """Outer radius [mm] (parametric_can only)."""
     height: float = 115.0
@@ -258,6 +258,10 @@ class GeometryConfig:
     """Scored vent on the box_can cap: {length, width, band, score_thickness}."""
     step_path: Path | None = None
     """Path to the STEP file when ``kind == 'step'``."""
+    resume_run: Path | None = None
+    """Prior run directory whose deformed shape becomes this can (kind resume)."""
+    resume_frame: int = -1
+    """Frame index into the source run's animation; negative counts from the end."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -307,6 +311,8 @@ class ExtraToolConfig:
     """Axial position of a radial tool: fraction of the can height."""
     stage: int = 0
     """Motion stage; each stage starts when the previous one's strokes end."""
+    retract: float = 0.0
+    """Pull-back travel [mm] after the stroke (springback); linear motion only."""
     motion: Literal["linear", "orbit"] = "linear"
     """``orbit``: the tool circles the can axis while feeding radially inward
     (rotary beading). ``stroke`` is the total radial feed, ``velocity`` the
@@ -361,6 +367,9 @@ class LoadingConfig:
     """Axial position of a radial main tool: fraction of the can height."""
     stage: int = 0
     """Motion stage of the main tool (see :class:`ExtraToolConfig`)."""
+    retract: float = 0.0
+    """Pull-back travel [mm] after the stroke: releases contact so the shell
+    springs back elastically and the curve closes (springback, FR/#18)."""
     motion: Literal["linear", "orbit"] = "linear"
     """``orbit``: the main tool circles the can axis (see ExtraToolConfig)."""
     orbit_revs: float = 1.25
@@ -494,6 +503,7 @@ def _extra_tool(raw: Any, index: int, source: Path | str) -> ExtraToolConfig:
         ),
         height_frac=_as_float(raw.get("height_frac", 0.5), f"{key}.height_frac", source),
         stage=int(raw.get("stage", 0)),
+        retract=_as_float(raw.get("retract", 0.0), f"{key}.retract", source),
         motion=str(raw.get("motion", "linear")),  # type: ignore[arg-type]
         orbit_revs=_as_float(raw.get("orbit_revs", 1.25), f"{key}.orbit_revs", source),
         feed_revs=_as_float(raw.get("feed_revs", 1.0), f"{key}.feed_revs", source),
@@ -527,9 +537,10 @@ def load_case(path: str | Path) -> CaseConfig:
 
     geo_raw = dict(data.get("geometry") or {})
     kind = str(geo_raw.get("kind", "parametric_can"))
-    if kind not in ("parametric_can", "box_can", "step"):
+    if kind not in ("parametric_can", "box_can", "step", "resume"):
         raise ConfigError(
-            f"geometry.kind in {p} must be 'parametric_can', 'box_can' or 'step', got {kind!r}"
+            f"geometry.kind in {p} must be 'parametric_can', 'box_can', 'step' or "
+            f"'resume', got {kind!r}"
         )
     step_path_raw = geo_raw.get("step_path") or geo_raw.get("path")
     if kind == "step" and not step_path_raw:
@@ -550,7 +561,11 @@ def load_case(path: str | Path) -> CaseConfig:
             for key, value in dict(geo_raw["vent"]).items()
         },
         step_path=_resolve(step_path_raw, base),
+        resume_run=_resolve(geo_raw.get("resume_run"), base),
+        resume_frame=int(geo_raw.get("resume_frame", -1)),
     )
+    if kind == "resume" and geometry.resume_run is None:
+        raise ConfigError(f"geometry.kind resume in {p} needs geometry.resume_run")
     if geometry.radius <= 0 or geometry.height <= 0 or geometry.thickness <= 0:
         raise ConfigError(f"geometry radius/height/thickness in {p} must all be > 0")
     if geometry.kind == "box_can":
@@ -598,6 +613,7 @@ def load_case(path: str | Path) -> CaseConfig:
         clamp_can_base=bool(load_raw.get("clamp_can_base", False)),
         height_frac=_as_float(load_raw.get("height_frac", 0.5), "loading.height_frac", p),
         stage=int(load_raw.get("stage", 0)),
+        retract=_as_float(load_raw.get("retract", 0.0), "loading.retract", p),
         motion=str(load_raw.get("motion", "linear")),  # type: ignore[arg-type]
         orbit_revs=_as_float(load_raw.get("orbit_revs", 1.25), "loading.orbit_revs", p),
         feed_revs=_as_float(load_raw.get("feed_revs", 1.0), "loading.feed_revs", p),

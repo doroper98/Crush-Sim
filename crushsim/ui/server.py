@@ -354,6 +354,7 @@ def create_app(root: str | Path = ".") -> FastAPI:
     def index() -> str:
         return (_STATIC / "index.html").read_text(encoding="utf-8")
 
+    app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
     app.mount(
         "/runs", StaticFiles(directory=str(runs_dir), check_dir=False), name="runs"
     )
