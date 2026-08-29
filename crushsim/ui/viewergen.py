@@ -99,6 +99,33 @@ def _canonical_parts(
     return np.vectorize(remap.__getitem__)(part).astype(np.uint8)
 
 
+def _parts_from_summary(summary: dict, part: np.ndarray) -> np.ndarray | None:
+    """Role-based part remap from pipeline_summary deck parts, if they cover
+    every solver part id in the frames. Beats the behaviour heuristic when
+    available: a flying vent foil would otherwise be classified as a TOOL.
+
+    Viewer ids: 1=CAN 2=FLOOR 3=TOOL 4=SUPPORT 5=VENT (foil membrane).
+    """
+    rows = (summary.get("deck") or {}).get("parts") or []
+    remap: dict[int, int] = {}
+    for row in rows:
+        pid = row.get("part_id")
+        if pid is None:
+            return None
+        name, role = str(row.get("name", "")), row.get("role")
+        if role == "deformable":
+            remap[int(pid)] = 5 if "MEMBRANE" in name or "VENT" in name else 1
+        elif name == "FLOOR":
+            remap[int(pid)] = 2
+        elif role == "floor":  # fixed supports
+            remap[int(pid)] = 4
+        else:
+            remap[int(pid)] = 3
+    if not remap or any(int(p) not in remap for p in np.unique(part)):
+        return None
+    return np.vectorize(remap.__getitem__)(part).astype(np.uint8)
+
+
 def _pressure_curve(run: Path, summary: dict) -> dict | None:
     """P(t) polyline for pressure-driven runs, from the starter's ramp FUNCT.
 
@@ -267,10 +294,6 @@ def generate_viewer(
     if times[0] is None:
         times = [float(i) for i in range(len(files))]
 
-    part_canon = _canonical_parts(quads, part, positions[0], positions[-1])
-
-    import pandas as pd  # noqa: PLC0415
-
     summary: dict = {}
     summary_path = run / "pipeline_summary.json"
     if summary_path.is_file():
@@ -278,6 +301,12 @@ def generate_viewer(
             summary = json.loads(summary_path.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001 - a broken summary must not block the viewer
             summary = {}
+
+    part_canon = _parts_from_summary(summary, part)
+    if part_canon is None:
+        part_canon = _canonical_parts(quads, part, positions[0], positions[-1])
+
+    import pandas as pd  # noqa: PLC0415
 
     curve_payload: dict | None = None
     if curve_csv.is_file():
@@ -307,7 +336,7 @@ def generate_viewer(
             "nodes": n_points,
             "frames": len(files),
             "end_time_s": times[-1],
-            "parts": {"1": "CAN", "2": "FLOOR", "3": "TOOL", "4": "SUPPORT"},
+            "parts": {"1": "CAN", "2": "FLOOR", "3": "TOOL", "4": "SUPPORT", "5": "VENT"},
             "dims": _dims_lines(summary),
         },
         "quads": _b64(quads.astype(index_type)),
