@@ -389,6 +389,7 @@ class RadiossDeckWriter:
         description: str = "",
         solver_version_tag: str = "unpinned",
         clamp_can_base: bool = False,
+        brace_walls: bool = False,
         extra_drives: list[DriveDefinition] | None = None,
         pressure: tuple[float, float, float] | None = None,
         eps_p_max: float | None = None,
@@ -426,6 +427,7 @@ class RadiossDeckWriter:
         self.description = description
         self.solver_version_tag = solver_version_tag
         self.clamp_can_base = bool(clamp_can_base)
+        self.brace_walls = bool(brace_walls)
         self.pressure = pressure
         self.eps_p_max = eps_p_max
         self._assign_ids()
@@ -715,6 +717,38 @@ class RadiossDeckWriter:
         ]
         return lines
 
+    def _block_wall_brace(self) -> list[str]:
+        """Lock Y translation of the can's two extreme-Y faces (module bracing).
+
+        On a prismatic (box) can the large flat faces are normal to Y. Empty
+        and unsupported they balloon under internal pressure and tear near
+        the cap rim before the scored cap vent activates; in the cell the
+        jelly roll and the module end plates hold them nearly flat. Only the
+        face-normal translation is fixed - in-plane motion and all rotations
+        stay free, so the cap, the narrow walls, and the vent flap are
+        unaffected.
+        """
+        can = next(p for p in self.parts if p.role == "deformable")
+        y = np.asarray(can.mesh.nodes, dtype=float)[:, 1]
+        y_max = float(np.abs(y).max())
+        if y_max < 1e-6:
+            return []
+        face_ids = [
+            int(n) for n, yy in zip(can.mesh.node_ids, y) if abs(abs(yy) - y_max) <= 0.1
+        ]
+        if not face_ids:
+            return []
+        lines = [RULER, "/GRNOD/NODE/97", title("CAN_LARGE_FACES")]
+        for i in range(0, len(face_ids), 10):
+            lines.append("".join(i10(n) for n in face_ids[i : i + 10]))
+        lines += [
+            "/BCS/6",
+            title("WALL_BRACE"),
+            "#  Tra rot   skew_ID  grnod_ID",
+            s10("010 000") + i10(0) + i10(97),
+        ]
+        return lines
+
     def _block_tool_drive(self) -> list[str]:
         """Driven tools: constrain every DOF but each drive axis, impose velocity.
 
@@ -990,6 +1024,8 @@ class RadiossDeckWriter:
                 lines += self._block_fixed_bcs(part, bcs_id)
         if self.clamp_can_base:
             lines += self._block_can_base_clamp()
+        if self.brace_walls:
+            lines += self._block_wall_brace()
         lines += self._block_tool_drive()
         lines += self._block_pressure()
         lines += self._block_contact()
@@ -1213,6 +1249,7 @@ def build_deck(
         material=material,
         friction=case.contact.friction,
         clamp_can_base=case.loading.clamp_can_base,
+        brace_walls=case.loading.brace_walls,
         gap_scale=case.contact.gap_scale,
         stiffness_scale=case.contact.stiffness_scale,
         animation_frames=case.solver.animation_frames,

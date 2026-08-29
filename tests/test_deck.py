@@ -510,6 +510,38 @@ def test_pressure_only_deck(material_card, can_mesh_fixture, floor_mesh_fixture)
     assert "0.35" in abn_line
 
 
+def test_wall_brace_block(material_card, can_mesh_fixture, floor_mesh_fixture) -> None:
+    writer = RadiossDeckWriter(
+        run_name="braced",
+        parts=[
+            DeckPart(name="CAN", mesh=can_mesh_fixture, thickness=0.1, role="deformable", material=material_card),
+            DeckPart(name="FLOOR", mesh=floor_mesh_fixture, thickness=2.0, role="floor"),
+        ],
+        drive=None,
+        material=material_card,
+        pressure=(10.0, 2.0e-3, 1.0e-3),
+        brace_walls=True,
+    )
+    text = writer.starter_text()
+    assert "/GRNOD/NODE/97" in text
+    assert "CAN_LARGE_FACES" in text
+    assert "/BCS/6" in text
+    # Y translation only: in-plane motion and all rotations stay free.
+    assert "   010 000" in text.split("WALL_BRACE")[1].splitlines()[2]
+    # Off by default.
+    writer2 = RadiossDeckWriter(
+        run_name="free",
+        parts=[
+            DeckPart(name="CAN", mesh=can_mesh_fixture, thickness=0.1, role="deformable", material=material_card),
+            DeckPart(name="FLOOR", mesh=floor_mesh_fixture, thickness=2.0, role="floor"),
+        ],
+        drive=None,
+        material=material_card,
+        pressure=(10.0, 2.0e-3, 1.0e-3),
+    )
+    assert "WALL_BRACE" not in writer2.starter_text()
+
+
 def test_deck_without_drive_or_pressure_is_rejected(
     material_card, can_mesh_fixture, floor_mesh_fixture
 ) -> None:

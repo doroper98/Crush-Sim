@@ -363,6 +363,15 @@ class LoadingConfig:
     down in a gravity-free quasi-static model - it tips over the support and
     slides instead of crushing. Real fixtures grip the base; this models
     that grip."""
+    brace_walls: bool = False
+    """Constrain the face-normal translation of the box can's two large faces.
+
+    An empty free-standing prismatic can balloons its wide flat walls under
+    internal pressure and tears them near the cap rim before the scored cap
+    vent activates (measured: wall rupture at 1.2 MPa vs score opening from
+    2.4 MPa on LC-6 v1). In the real cell the jelly roll fills the can and
+    module end plates press on those faces, so they barely bow; this models
+    that support as a Y-translation lock on the two large-face node sets."""
     height_frac: float = 0.5
     """Axial position of a radial main tool: fraction of the can height."""
     stage: int = 0
@@ -611,6 +620,7 @@ def load_case(path: str | Path) -> CaseConfig:
         if load_raw.get("support_size") is None
         else _as_float(load_raw["support_size"], "loading.support_size", p),
         clamp_can_base=bool(load_raw.get("clamp_can_base", False)),
+        brace_walls=bool(load_raw.get("brace_walls", False)),
         height_frac=_as_float(load_raw.get("height_frac", 0.5), "loading.height_frac", p),
         stage=int(load_raw.get("stage", 0)),
         retract=_as_float(load_raw.get("retract", 0.0), "loading.retract", p),
@@ -632,6 +642,11 @@ def load_case(path: str | Path) -> CaseConfig:
         raise ConfigError(f"loading.motion in {p} must be 'linear' or 'orbit'")
     if loading.tool == "none" and loading.extra_tools:
         raise ConfigError(f"loading.extra_tools in {p} need a main tool (loading.tool != 'none')")
+    if loading.brace_walls and geometry.kind != "box_can":
+        raise ConfigError(
+            f"loading.brace_walls in {p} only applies to geometry.kind: box_can "
+            f"(got {geometry.kind!r}) - it locks the large flat faces of a prismatic can"
+        )
     _supports = ("jig_plane", "v_block", "bead_arbor")
     if loading.support is not None and loading.support not in _supports:
         raise ConfigError(
