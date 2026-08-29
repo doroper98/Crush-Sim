@@ -75,6 +75,11 @@ button.on{background:var(--ink); color:var(--bg); border-color:transparent}
 .grp{display:flex; gap:6px; flex-wrap:wrap}
 .frameno{font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--muted); width:74px; flex:none; text-align:right}
 .chart{width:100%; height:150px; display:block}
+table.dims{width:100%; border-collapse:collapse; font-size:11.5px}
+table.dims td{padding:3px 0; border-bottom:1px solid var(--line); vertical-align:top}
+table.dims td:first-child{color:var(--muted); padding-right:8px; white-space:nowrap}
+table.dims td:last-child{text-align:right; font-family:'IBM Plex Mono',monospace}
+table.dims tr:last-child td{border-bottom:none}
 .note{font-size:11.5px; color:var(--muted); margin-top:8px}
 select{
   font:inherit; font-size:12.5px; color:var(--ink); background:var(--chip);
@@ -160,9 +165,13 @@ select{
       </div>
     </div>
     <div class="sec">
-      <h2>하중 – 변위</h2>
+      <h2 id="chartTitle">하중 – 변위</h2>
       <canvas class="chart" id="chart"></canvas>
       <p class="note" id="chartNote"></p>
+    </div>
+    <div class="sec" id="dimsSec" hidden>
+      <h2>주요 치수</h2>
+      <table class="dims" id="dimsTable"></table>
     </div>
     <div class="sec">
       <p class="note">Phase 3 결과 판독 화면 프로토타입 — __NOTE__ 구동됩니다. 프레임 사이는 선형 보간.</p>
@@ -475,16 +484,20 @@ function updateCbar(){
   $("cbarMin").textContent="0";
 }
 
-// curve mapping: time -> displacement/force (absent on pressure-driven runs)
+// curve mapping: time -> (x,y). kind "force": x=displacement, y=force.
+// kind "pressure": x=time[ms], y=internal pressure[MPa]. Optional marks:
+// [{t,label}] vertical annotations (e.g. first rupture).
 const HASCURVE=!!(D.curve&&D.curve.t&&D.curve.t.length);
-const CT=HASCURVE?D.curve.t:[0], CD=HASCURVE?D.curve.d:[0], CF=HASCURVE?D.curve.f:[0];
+const CT=HASCURVE?D.curve.t:[0], CX=HASCURVE?D.curve.x:[0], CY=HASCURVE?D.curve.y:[0];
+const CKIND=HASCURVE?(D.curve.kind||"force"):"", CMARKS=(HASCURVE&&D.curve.marks)||[];
+const XUNIT=HASCURVE?(D.curve.xunit||""):"", YUNIT=HASCURVE?(D.curve.yunit||""):"";
 function curveAt(time){
-  if(time<=CT[0])return[CD[0],CF[0]];
+  if(time<=CT[0])return[CX[0],CY[0]];
   for(let i=1;i<CT.length;i++) if(CT[i]>=time){
     const a=(time-CT[i-1])/(CT[i]-CT[i-1]||1e-12);
-    return [CD[i-1]+(CD[i]-CD[i-1])*a, CF[i-1]+(CF[i]-CF[i-1])*a];
+    return [CX[i-1]+(CX[i]-CX[i-1])*a, CY[i-1]+(CY[i]-CY[i-1])*a];
   }
-  return [CD[CD.length-1],CF[CF.length-1]];
+  return [CX[CX.length-1],CY[CY.length-1]];
 }
 function simTime(){
   const {i,a}=frameLerp();
@@ -493,14 +506,37 @@ function simTime(){
 function updateReadout(){
   const t=simTime();
   if(!HASCURVE){$("readout").innerHTML=`t <b>${(t*1000).toFixed(2)} ms</b>`;return;}
-  const [d,f]=curveAt(t);
-  $("readout").innerHTML=`t <b>${(t*1000).toFixed(2)} ms</b> &nbsp; d <b>${d.toFixed(2)} mm</b> &nbsp; F <b>${f.toFixed(1)} N</b>`;
+  const [x,y]=curveAt(t);
+  if(CKIND==="pressure")
+    $("readout").innerHTML=`t <b>${(t*1000).toFixed(2)} ms</b> &nbsp; P <b>${y.toFixed(2)} MPa</b>`;
+  else
+    $("readout").innerHTML=`t <b>${(t*1000).toFixed(2)} ms</b> &nbsp; d <b>${x.toFixed(2)} mm</b> &nbsp; F <b>${y.toFixed(1)} N</b>`;
 }
 // chart
 const chart=$("chart"),ctx=chart.getContext("2d");
-const fMax=Math.max(...CF), dMax=Math.max(...CD);
-if(HASCURVE){$("chartNote").textContent=`피크 ${fMax.toFixed(0)} N @ ${CD[CF.indexOf(fMax)].toFixed(1)} mm`;}
-else{$("chartNote").textContent="압력 구동 해석 — 하중-변위 곡선 없음";const c=$("chart");if(c)c.style.display="none";}
+const yMax=Math.max(...CY), xMax=Math.max(...CX);
+if(HASCURVE){
+  if(CKIND==="pressure"){
+    $("chartTitle").textContent=(D.curve.ylabel||"내압")+" – "+(D.curve.xlabel||"시간");
+    const mark=CMARKS.length?CMARKS[0]:null;
+    $("chartNote").textContent=mark
+      ? `${mark.label} t=${(mark.t*1000).toFixed(2)} ms · P=${(curveAt(mark.t)[1]).toFixed(2)} MPa`
+      : `피크 ${yMax.toFixed(2)} MPa`;
+  }else{
+    $("chartNote").textContent=`피크 ${yMax.toFixed(0)} N @ ${CX[CY.indexOf(yMax)].toFixed(1)} mm`;
+  }
+}else{$("chartNote").textContent="곡선 데이터 없음";const c=$("chart");if(c)c.style.display="none";}
+// key dimensions panel
+(function(){
+  const rows=(D.meta.dims||[]);
+  if(!rows.length)return;
+  const tab=$("dimsTable");
+  for(const [k,v] of rows){
+    const tr=document.createElement("tr"), a=document.createElement("td"), b=document.createElement("td");
+    a.textContent=k; b.textContent=v; tr.append(a,b); tab.append(tr);
+  }
+  $("dimsSec").hidden=false;
+})();
 function drawChart(){
   if(!HASCURVE)return;
   const w=chart.clientWidth*devicePixelRatio,h=chart.clientHeight*devicePixelRatio;
@@ -509,22 +545,29 @@ function drawChart(){
   const line=cs.getPropertyValue("--line").trim(),ink=cs.getPropertyValue("--ink").trim(),
         acc=cs.getPropertyValue("--accent").trim(),muted=cs.getPropertyValue("--muted").trim();
   ctx.clearRect(0,0,w,h);
-  const px=d=>8*devicePixelRatio+(w-16*devicePixelRatio)*d/dMax;
-  const py=f=>h-14*devicePixelRatio-(h-24*devicePixelRatio)*f/fMax;
+  const px=x=>8*devicePixelRatio+(w-16*devicePixelRatio)*x/(xMax||1);
+  const py=y=>h-14*devicePixelRatio-(h-24*devicePixelRatio)*y/(yMax||1);
   ctx.strokeStyle=line;ctx.lineWidth=devicePixelRatio;
-  ctx.beginPath();ctx.moveTo(px(0),py(0));ctx.lineTo(px(dMax),py(0));ctx.stroke();
+  ctx.beginPath();ctx.moveTo(px(0),py(0));ctx.lineTo(px(xMax),py(0));ctx.stroke();
+  for(const mark of CMARKS){
+    const [mx]=curveAt(mark.t);
+    ctx.strokeStyle=muted;ctx.lineWidth=devicePixelRatio;ctx.setLineDash([4*devicePixelRatio,3*devicePixelRatio]);
+    ctx.beginPath();ctx.moveTo(px(mx),py(0));ctx.lineTo(px(mx),py(yMax));ctx.stroke();
+    ctx.setLineDash([]);
+  }
   ctx.strokeStyle=muted;ctx.lineWidth=1.2*devicePixelRatio;ctx.globalAlpha=0.55;
-  ctx.beginPath();for(let i=0;i<CD.length;i++){const X=px(CD[i]),Y=py(CF[i]);i?ctx.lineTo(X,Y):ctx.moveTo(X,Y);}ctx.stroke();
+  ctx.beginPath();for(let i=0;i<CX.length;i++){const X=px(CX[i]),Y=py(CY[i]);i?ctx.lineTo(X,Y):ctx.moveTo(X,Y);}ctx.stroke();
   ctx.globalAlpha=1;
   const t=simTime();
   ctx.strokeStyle=acc;ctx.lineWidth=2*devicePixelRatio;
   ctx.beginPath();let started=false;
-  for(let i=0;i<CD.length;i++){if(CT[i]>t)break;const X=px(CD[i]),Y=py(CF[i]);started?ctx.lineTo(X,Y):ctx.moveTo(X,Y);started=true;}
+  for(let i=0;i<CX.length;i++){if(CT[i]>t)break;const X=px(CX[i]),Y=py(CY[i]);started?ctx.lineTo(X,Y):ctx.moveTo(X,Y);started=true;}
   ctx.stroke();
-  const [d,f]=curveAt(t);
-  ctx.fillStyle=acc;ctx.beginPath();ctx.arc(px(d),py(f),4*devicePixelRatio,0,7);ctx.fill();
+  const [x,y]=curveAt(t);
+  ctx.fillStyle=acc;ctx.beginPath();ctx.arc(px(x),py(y),4*devicePixelRatio,0,7);ctx.fill();
   ctx.fillStyle=ink;ctx.font=`${10*devicePixelRatio}px IBM Plex Mono,monospace`;
-  ctx.fillText(`${f.toFixed(0)} N`,Math.min(px(d)+6*devicePixelRatio,w-52*devicePixelRatio),py(f)-6*devicePixelRatio);
+  const tag=CKIND==="pressure"?`${y.toFixed(2)}${YUNIT}`:`${y.toFixed(0)}${YUNIT}`;
+  ctx.fillText(tag,Math.min(px(x)+6*devicePixelRatio,w-64*devicePixelRatio),py(y)-6*devicePixelRatio);
 }
 
 let drawQueued=false;

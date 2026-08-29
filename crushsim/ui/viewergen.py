@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -98,6 +99,117 @@ def _canonical_parts(
     return np.vectorize(remap.__getitem__)(part).astype(np.uint8)
 
 
+def _pressure_curve(run: Path, summary: dict) -> dict | None:
+    """P(t) polyline for pressure-driven runs, from the starter's ramp FUNCT.
+
+    The deck is the source of truth (works for runs made before the summary
+    carried pressure data). Returns the viewer curve payload, with the first
+    shell-rupture time from the engine listing as a marker when one exists.
+    """
+    starter = (summary.get("deck") or {}).get("starter")
+    if not starter:
+        return None
+    path = Path(starter)
+    if not path.is_absolute():
+        path = run.parent.parent / starter if not path.exists() else path
+    if not path.is_file():
+        candidates = sorted((run / "deck").glob("*_0000.rad"))
+        if not candidates:
+            return None
+        path = candidates[0]
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    ts: list[float] = []
+    ps: list[float] = []
+    grab = 0
+    for ln in lines:
+        if ln.startswith("/FUNCT/") and grab == 0:
+            grab = 1
+            continue
+        if grab == 1:  # function title line
+            grab = 2 if ln.strip() == "CAN_PRESSURE_RAMP" else 0
+            continue
+        if grab == 2:
+            if ln.startswith("/"):
+                break
+            if ln.startswith("#"):
+                continue
+            try:
+                x, y = float(ln[:20]), float(ln[20:40])
+            except ValueError:
+                break
+            ts.append(x)
+            ps.append(y)
+    if len(ts) < 2:
+        return None
+    curve: dict[str, Any] = {
+        "kind": "pressure",
+        "t": ts,
+        "x": [t * 1000.0 for t in ts],
+        "y": ps,
+        "xlabel": "t [ms]",
+        "ylabel": "내압 P [MPa]",
+        "xunit": " ms",
+        "yunit": " MPa",
+    }
+    out_files = sorted((run / "deck").glob("*_0001.out"))
+    if out_files:
+        t_cur, t_first = 0.0, None
+        for ln in out_files[0].read_text(encoding="utf-8", errors="replace").splitlines():
+            m = _CYCLE_RE.match(ln)
+            if m:
+                try:
+                    t_cur = float(m.group(1))
+                except ValueError:
+                    pass
+            elif "RUPTURE OF SHELL" in ln:
+                t_first = t_cur
+                break
+        if t_first is not None:
+            curve["marks"] = [{"t": t_first, "label": "파단 개시"}]
+    return curve
+
+
+_CYCLE_RE = re.compile(r"\s*\d+\s+([0-9.E+-]+)\s+[0-9.E+-]+\s")
+
+
+def _dims_lines(summary: dict) -> list[list[str]]:
+    """[label, value] rows for the viewer's 주요 치수 panel."""
+    rows: list[list[str]] = []
+    geo = summary.get("geometry") or {}
+    box = geo.get("box") or {}
+
+    def g(src: dict, key: str) -> float | None:
+        v = src.get(key)
+        return None if v is None else float(v)
+
+    if box:
+        w, d, h = g(box, "width_mm"), g(box, "depth_mm"), g(box, "height_mm")
+        if w and d and h:
+            rows.append(["캔 (W×D×H)", f"{w:g} × {d:g} × {h:g} mm"])
+        if g(box, "thickness_mm"):
+            rows.append(["벽 두께", f"{box['thickness_mm']:g} mm"])
+        vent = box.get("vent") or {}
+        if vent:
+            if g(vent, "length_mm") and g(vent, "width_mm"):
+                rows.append(["벤트 (L×W)", f"{vent['length_mm']:g} × {vent['width_mm']:g} mm"])
+            if g(vent, "membrane_thickness_mm"):
+                rows.append(["멤브레인 두께", f"{vent['membrane_thickness_mm']:g} mm"])
+            if g(vent, "score_thickness_mm"):
+                rows.append(["스코어 잔여 두께", f"{vent['score_thickness_mm']:g} mm"])
+            if g(vent, "band_mm"):
+                rows.append(["스코어 밴드 폭", f"{vent['band_mm']:g} mm"])
+    elif geo:
+        if g(geo, "diameter_mm") and g(geo, "height_mm"):
+            rows.append(["캔 (Ø×H)", f"{geo['diameter_mm']:.1f} × {geo['height_mm']:g} mm"])
+        if g(geo, "thickness_mm"):
+            rows.append(["벽 두께", f"{geo['thickness_mm']:g} mm"])
+    for part in (summary.get("deck") or {}).get("parts") or []:
+        if part.get("role") == "deformable" and part.get("material"):
+            label = "재료" if part.get("name") in (None, "CAN") else f"재료 ({part['name']})"
+            rows.append([label, f"{part['material']} · t={part.get('thickness_mm', '?'):g} mm"])
+    return rows
+
+
 def generate_viewer(
     run_dir: str | Path,
     *,
@@ -159,7 +271,33 @@ def generate_viewer(
 
     import pandas as pd  # noqa: PLC0415
 
-    curve = pd.read_csv(curve_csv) if curve_csv.is_file() else None
+    summary: dict = {}
+    summary_path = run / "pipeline_summary.json"
+    if summary_path.is_file():
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 - a broken summary must not block the viewer
+            summary = {}
+
+    curve_payload: dict | None = None
+    if curve_csv.is_file():
+        curve = pd.read_csv(curve_csv)
+        curve_payload = {
+            "kind": "force",
+            "t": curve["time"].tolist(),
+            "x": curve["displacement"].tolist(),
+            "y": curve["force"].tolist(),
+            "xlabel": "변위 d [mm]",
+            "ylabel": "하중 F [N]",
+            "xunit": " mm",
+            "yunit": " N",
+        }
+    else:  # pressure-driven runs: P(t) from the deck's ramp function
+        try:
+            curve_payload = _pressure_curve(run, summary)
+        except Exception:  # noqa: BLE001 - the curve is an extra, never a blocker
+            curve_payload = None
+
     n_points = int(first_mesh.n_points)
     index_type: Any = np.uint16 if n_points < 65536 else np.uint32
     data = {
@@ -170,6 +308,7 @@ def generate_viewer(
             "frames": len(files),
             "end_time_s": times[-1],
             "parts": {"1": "CAN", "2": "FLOOR", "3": "TOOL", "4": "SUPPORT"},
+            "dims": _dims_lines(summary),
         },
         "quads": _b64(quads.astype(index_type)),
         "quads_dtype": "u2" if n_points < 65536 else "u4",
@@ -178,35 +317,25 @@ def generate_viewer(
         "pos": [_b64(p) for p in positions],
         "vm": [_b64(v) for v in von_mises],
         "ps": [_b64(p) for p in plastic],
-        "curve": None
-        if curve is None
-        else {
-            "t": curve["time"].tolist(),
-            "d": curve["displacement"].tolist(),
-            "f": curve["force"].tolist(),
-        },
+        "curve": curve_payload,
     }
 
     # The viewer draws the shell mid-surface, so the wall looks paper-thin;
     # state explicitly that the thickness is a solved property, not omitted.
     thickness_note = ""
-    summary_path = run / "pipeline_summary.json"
-    if summary_path.is_file():
-        try:
-            parts = (
-                json.loads(summary_path.read_text(encoding="utf-8")).get("deck") or {}
-            ).get("parts") or []
-            values = sorted(
-                {float(p["thickness_mm"]) for p in parts if p.get("role") == "deformable"}
+    try:
+        parts = (summary.get("deck") or {}).get("parts") or []
+        values = sorted(
+            {float(p["thickness_mm"]) for p in parts if p.get("role") == "deformable"}
+        )
+        if values:
+            shown = "/".join(f"{v:g}" for v in values)
+            thickness_note = (
+                f" · 쉘 중립면 표시 — 벽 두께 t={shown}mm는 쉘 물성으로 "
+                "강성(굽힘 ∝ t³)·질량·접촉에 반영됨"
             )
-            if values:
-                shown = "/".join(f"{v:g}" for v in values)
-                thickness_note = (
-                    f" · 쉘 중립면 표시 — 벽 두께 t={shown}mm는 쉘 물성으로 "
-                    "강성(굽힘 ∝ t³)·질량·접촉에 반영됨"
-                )
-        except Exception:  # noqa: BLE001 - a broken summary must not block the viewer
-            pass
+    except Exception:  # noqa: BLE001 - a broken summary must not block the viewer
+        pass
 
     html = _TEMPLATE.read_text(encoding="utf-8")
     html = html.replace("__TITLE__", title)
