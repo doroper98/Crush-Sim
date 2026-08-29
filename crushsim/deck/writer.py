@@ -96,6 +96,16 @@ class DeckPart:
     thickness: float
     role: PartRole
     material: MaterialCard | None = None
+    host: str | None = None
+    """Name of an earlier part whose node block this part shares.
+
+    A host part's mesh must carry the host mesh's FULL node array in the
+    same order; the writer then renumbers it with the host's offset and
+    skips its /NODE block, so shared boundary nodes are merged - the exact
+    model of a weld (e.g. the vent membrane foil welded into the cap).
+    """
+    eps_p_max: float | None = None
+    """Per-part failure strain override for the LAW2 EPS_p_max slot."""
     part_id: int = 0
     prop_id: int = 0
     mat_id: int = 0
@@ -442,11 +452,21 @@ class RadiossDeckWriter:
             part.part_id = index
             part.prop_id = index
             part.mat_id = index
-            part.node_offset = node_cursor
             part.element_offset = element_cursor
+            element_cursor += part.mesh.n_elements
+            if part.host is not None:
+                # Shared node block: same offset as the host, no new nodes.
+                # Identical node_ids ordering makes renumber() reproduce the
+                # host's mapping, so boundary nodes merge (welded).
+                host = next((p for p in self.parts if p.name == part.host), None)
+                if host is None or self.parts.index(host) >= self.parts.index(part):
+                    raise DeckError(f"Part {part.name} host {part.host!r} not found before it")
+                part.node_offset = host.node_offset
+                part.mesh = part.mesh.renumber(host.node_offset)
+                continue
+            part.node_offset = node_cursor
             part.mesh = part.mesh.renumber(node_cursor)
             node_cursor += part.mesh.n_nodes
-            element_cursor += part.mesh.n_elements
         # Rigid-body master nodes live after every meshed node.
         for part in self.parts:
             if part.rigid:
@@ -513,6 +533,8 @@ class RadiossDeckWriter:
     def _block_nodes(self) -> list[str]:
         lines = [RULER, "/NODE", "#  node_ID                   X                   Y                   Z"]
         for part in self.parts:
+            if part.host is not None:  # shares the host part's node block
+                continue
             lines.append(f"# part: {part.name}")
             for nid, (x, y, z) in zip(part.mesh.node_ids, part.mesh.nodes):
                 lines.append(i10(int(nid)) + reals((x, y, z)))
@@ -601,7 +623,13 @@ class RadiossDeckWriter:
                 reals((card.E, card.nu)),
                 "#                  a                   b                   n"
                 "           EPS_p_max           SIG_max0",
-                reals((card.law2.A, card.law2.B, card.law2.n, self.eps_p_max or 0.0, 0.0)),
+                reals((
+                    card.law2.A,
+                    card.law2.B,
+                    card.law2.n,
+                    (part.eps_p_max if part.eps_p_max is not None else self.eps_p_max) or 0.0,
+                    0.0,
+                )),
                 "#                  c           EPS_DOT_0       ICC   Fsmooth"
                 "               F_cut               Chard",
                 reals((0.0, 0.0)) + i10(1) + i10(0) + reals((0.0, 0.0)),
@@ -1104,6 +1132,10 @@ def build_deck(
     floor_mesh: ShellMesh | None = None,
     support_mesh: ShellMesh | None = None,
     extra_tool_meshes: list[ShellMesh] | None = None,
+    membrane_mesh: ShellMesh | None = None,
+    membrane_material: MaterialCard | None = None,
+    membrane_thickness: float | None = None,
+    membrane_eps_p_max: float | None = None,
     outdir: str | Path,
     run_name: str | None = None,
     solver_version_tag: str = "unpinned",
@@ -1132,6 +1164,22 @@ def build_deck(
             material=material,
         )
     ]
+    if membrane_mesh is not None:
+        # Foil vent welded into the cap: the membrane shares the CAN node
+        # block (host), so the stadium boundary nodes are merged - a weld.
+        if membrane_thickness is None:
+            raise DeckError("A vent membrane part needs its foil thickness")
+        parts.append(
+            DeckPart(
+                name="VENT_MEMBRANE",
+                mesh=membrane_mesh,
+                thickness=membrane_thickness,
+                role="deformable",
+                material=membrane_material or material,
+                host="CAN",
+                eps_p_max=membrane_eps_p_max,
+            )
+        )
     if floor_mesh is not None:
         parts.append(
             DeckPart(
@@ -1240,7 +1288,12 @@ def build_deck(
         pressure = (case.pressure.peak, case.pressure.rise, case.pressure.hold)
         # /PLOAD acts along element normals: a consistent outward orientation
         # is what makes the internal pressure inflate the can everywhere.
+        # The membrane sits in the cap plane, so its own centroid is useless
+        # as a reference - orient it from the can body's centre instead.
         can_mesh.orient_outward()
+        if membrane_mesh is not None:
+            centre = np.asarray(can_mesh.nodes, dtype=float).mean(axis=0)
+            membrane_mesh.orient_outward((float(centre[0]), float(centre[1]), float(centre[2])))
 
     writer = RadiossDeckWriter(
         run_name=run_name or case.name,

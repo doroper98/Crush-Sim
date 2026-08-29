@@ -177,23 +177,54 @@ class VentSpec:
     ``score_thickness`` instead of the cap thickness. When the score tears
     (failure strain + element deletion) the inner flap opens.
 
+    ``membrane_thickness`` switches the vent to the production construction
+    seen on real prismatic caps: the whole stadium is a separate thin foil
+    part (hand-pressably thin aluminium, welded to the thick cap along the
+    stadium outline as merged nodes) and the score pattern is engraved on
+    the foil. ``pattern`` then picks where the score runs:
+
+    - ``"perimeter"``: the stadium outline (legacy; the flap detaches and
+      ejects when it tears all round).
+    - ``"petal_x"``: an X of score lines crossing at the centre. The burst
+      starts at the crossing, tears run outward along the arms, and the
+      four petals fold back on the UNSCORED welded perimeter - the vent
+      opens without throwing a fragment, which is what the crossed coined
+      grooves on production caps are for.
+
     Attributes:
         length: Stadium overall length [mm] (along the cap's long axis).
         width: Stadium overall width [mm] (also the end-cap diameter).
         band: Score band width [mm].
         score_thickness: Residual thickness at the score [mm].
+        membrane_thickness: Foil thickness [mm]; None keeps the legacy
+            single-part scored-cap construction.
+        pattern: Score layout - "perimeter" or "petal_x".
     """
 
     length: float
     width: float
     band: float = 0.8
     score_thickness: float = 0.05
+    membrane_thickness: float | None = None
+    pattern: str = "perimeter"
 
     def __post_init__(self) -> None:
         if not 0.0 < self.width <= self.length:
             raise GeometryError(f"Vent needs 0 < width <= length, got {self.width}x{self.length}")
         if self.band <= 0.0 or self.score_thickness <= 0.0:
             raise GeometryError("Vent band and score_thickness must be > 0")
+        if self.pattern not in ("perimeter", "petal_x"):
+            raise GeometryError(f"Vent pattern must be 'perimeter' or 'petal_x', got {self.pattern!r}")
+        if self.membrane_thickness is not None:
+            if self.membrane_thickness <= 0.0:
+                raise GeometryError("Vent membrane_thickness must be > 0")
+            if self.score_thickness >= self.membrane_thickness:
+                raise GeometryError(
+                    "Vent score_thickness must be below membrane_thickness "
+                    f"(got {self.score_thickness} >= {self.membrane_thickness})"
+                )
+        elif self.pattern != "perimeter":
+            raise GeometryError("Vent pattern 'petal_x' needs membrane_thickness (foil vent)")
 
     def contains(self, x: float, y: float, grow: float = 0.0) -> bool:
         """Whether cap-local point (x, y) lies inside the stadium grown by ``grow``."""
@@ -202,6 +233,28 @@ class VentSpec:
         if abs(x) <= c:
             return abs(y) <= r
         return math.hypot(abs(x) - c, y) <= r
+
+    def petal_segments(self) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+        """The four score-line arms of the ``petal_x`` pattern, centre outward.
+
+        Each arm runs from the crossing at the origin to a point short of the
+        stadium boundary (85% of the straight half-length, 72% of the half
+        width), so the tears stop before the welded perimeter and the petals
+        keep their hinges.
+        """
+        ax = max(self.length / 2.0 - self.width / 2.0, self.width / 4.0) * 0.85
+        ay = self.width / 2.0 * 0.72
+        return [((0.0, 0.0), (sx * ax, sy * ay)) for sx in (-1.0, 1.0) for sy in (-1.0, 1.0)]
+
+    def score_distance(self, x: float, y: float) -> float:
+        """Distance of cap-local (x, y) to the nearest petal_x score line."""
+        best = math.inf
+        for (x0, y0), (x1, y1) in self.petal_segments():
+            dx, dy = x1 - x0, y1 - y0
+            length2 = dx * dx + dy * dy
+            t = 0.0 if length2 == 0.0 else max(0.0, min(1.0, ((x - x0) * dx + (y - y0) * dy) / length2))
+            best = min(best, math.hypot(x - (x0 + t * dx), y - (y0 + t * dy)))
+        return best
 
 
 @dataclass(frozen=True, slots=True)
@@ -264,6 +317,8 @@ class BoxCan:
                 "width_mm": self.vent.width,
                 "band_mm": self.vent.band,
                 "score_thickness_mm": self.vent.score_thickness,
+                "membrane_thickness_mm": self.vent.membrane_thickness,
+                "pattern": self.vent.pattern,
             },
             "unit_system": self.unit_system,
         }

@@ -998,7 +998,7 @@ def mesh_box_can(
         max_attempts=max_attempts,
         enforce=enforce,
     )
-    if box.vent is not None:
+    if box.vent is not None and box.vent.membrane_thickness is None:
         mesh = result.mesh
         vent = box.vent
         index = mesh.node_index()
@@ -1020,6 +1020,71 @@ def mesh_box_can(
             raise MeshingError("Vent score band caught no elements - check the vent size")
         mesh.metadata["vent_scored_elements"] = scored
     return result
+
+
+def split_vent_membrane(mesh: ShellMesh, box: BoxCan) -> tuple[ShellMesh, ShellMesh]:
+    """Split a box-can mesh into (can, vent membrane) sharing one node block.
+
+    The foil-vent construction: the stadium region of the cap (flap plus
+    score band, everything inside the outer fragment outline) becomes its
+    own part - thin foil, its own material - welded to the thick cap along
+    that outline. Both returned meshes keep the source mesh's FULL node
+    array and ids, so the deck writer can renumber them with the same
+    offset and the shared boundary nodes ARE the weld (a weld is exact as
+    merged nodes, like the box can's own cap).
+
+    The membrane carries per-element thickness: ``membrane_thickness``
+    everywhere, ``score_thickness`` on the score pattern - the ``petal_x``
+    arms (elements whose centroid lies within ``band/2`` of an arm), or the
+    legacy perimeter band.
+
+    Raises:
+        MeshingError: If the vent has no membrane_thickness, or the split
+            catches no membrane or no scored elements.
+    """
+    vent = box.vent
+    if vent is None or vent.membrane_thickness is None:
+        raise MeshingError("split_vent_membrane needs a vent with membrane_thickness")
+    index = mesh.node_index()
+    can_quads, can_tris, mem_quads, mem_tris, mem_thk = [], [], [], [], []
+    for block, keep_q in ((mesh.quads, True), (mesh.tris, False)):
+        for element in block:
+            pts = mesh.nodes[[index[int(n)] for n in element]]
+            cx, cy, cz = pts.mean(axis=0)
+            on_cap = abs(cz - box.height) < 1e-3
+            if on_cap and vent.contains(cx, cy, grow=vent.band):
+                (mem_quads if keep_q else mem_tris).append(element)
+                if vent.pattern == "petal_x":
+                    scored = vent.score_distance(cx, cy) <= vent.band / 2.0
+                else:  # perimeter score on the foil
+                    scored = not vent.contains(cx, cy, grow=-vent.band)
+                mem_thk.append(vent.score_thickness if scored else vent.membrane_thickness)
+            else:
+                (can_quads if keep_q else can_tris).append(element)
+    if not mem_quads and not mem_tris:
+        raise MeshingError("Vent membrane split caught no elements - check the vent size")
+    n_scored = sum(1 for t in mem_thk if t == vent.score_thickness)
+    if not n_scored:
+        raise MeshingError("Vent score pattern caught no elements - check band vs mesh size")
+    # mem_thk is already quads-first: the outer loop walks quads then tris.
+
+    def _mesh(name: str, quads: list, tris: list, thickness: list | None) -> ShellMesh:
+        return ShellMesh(
+            name=name,
+            node_ids=mesh.node_ids.copy(),
+            nodes=mesh.nodes.copy(),
+            quads=np.asarray(quads, dtype=np.int64).reshape(-1, 4),
+            tris=np.asarray(tris, dtype=np.int64).reshape(-1, 3),
+            element_thickness=None if thickness is None else np.asarray(thickness, dtype=float),
+            source=mesh.source,
+            metadata=dict(mesh.metadata),
+        )
+
+    can_mesh = _mesh(mesh.name, can_quads, can_tris, None)
+    membrane = _mesh("VENT_MEMBRANE", mem_quads, mem_tris, mem_thk)
+    membrane.metadata["vent_scored_elements"] = n_scored
+    membrane.metadata["vent_pattern"] = vent.pattern
+    return can_mesh, membrane
 
 
 def mesh_parametric_can(

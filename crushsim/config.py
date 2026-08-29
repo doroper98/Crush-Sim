@@ -566,7 +566,7 @@ def load_case(path: str | Path) -> CaseConfig:
         vent=None
         if geo_raw.get("vent") is None
         else {
-            key: _as_float(value, f"geometry.vent.{key}", p)
+            key: value if key in ("pattern", "material") else _as_float(value, f"geometry.vent.{key}", p)
             for key, value in dict(geo_raw["vent"]).items()
         },
         step_path=_resolve(step_path_raw, base),
@@ -581,12 +581,24 @@ def load_case(path: str | Path) -> CaseConfig:
         if geometry.width is None or geometry.depth is None:
             raise ConfigError(f"geometry.kind box_can in {p} needs geometry.width and geometry.depth")
         if geometry.vent is not None:
-            unknown = set(geometry.vent) - {"length", "width", "band", "score_thickness"}
+            unknown = set(geometry.vent) - {
+                "length", "width", "band", "score_thickness",
+                "membrane_thickness", "pattern", "material", "eps_p_max",
+            }
             if unknown:
                 raise ConfigError(f"geometry.vent in {p}: unknown key(s) {sorted(unknown)}")
             for required in ("length", "width"):
                 if required not in geometry.vent:
                     raise ConfigError(f"geometry.vent in {p} needs '{required}'")
+            pattern = geometry.vent.get("pattern", "perimeter")
+            if pattern not in ("perimeter", "petal_x"):
+                raise ConfigError(
+                    f"geometry.vent.pattern in {p} must be 'perimeter' or 'petal_x', got {pattern!r}"
+                )
+            if geometry.vent.get("material") is not None and not isinstance(
+                geometry.vent["material"], str
+            ):
+                raise ConfigError(f"geometry.vent.material in {p} must be a material key string")
 
     mesh_raw = dict(data.get("mesh") or {})
     mesh = MeshConfig(
