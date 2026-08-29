@@ -583,7 +583,7 @@ def load_case(path: str | Path) -> CaseConfig:
         if geometry.vent is not None:
             unknown = set(geometry.vent) - {
                 "length", "width", "band", "score_thickness",
-                "membrane_thickness", "pattern", "material", "eps_p_max",
+                "membrane_thickness", "pattern", "material", "eps_p_max", "arc_bulge",
             }
             if unknown:
                 raise ConfigError(f"geometry.vent in {p}: unknown key(s) {sorted(unknown)}")

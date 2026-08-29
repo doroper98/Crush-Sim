@@ -889,6 +889,7 @@ def _build_box_surfaces(gmsh: Any, box: BoxCan, target_size: float) -> None:
         faces.append(_add_plate(gmsh, np.array([0.0, 0.0, 0.0]), ez, ex, ey, a, b))
 
     band_faces: list[int] = []
+    score_curves: list[int] = []
     if box.closed_top and box.vent is not None:
         vent = box.vent
         pts_i, cur_i = _stadium_outline(occ, vent.length - vent.band, vent.width - vent.band, h)
@@ -901,6 +902,13 @@ def _build_box_surfaces(gmsh: Any, box: BoxCan, target_size: float) -> None:
             )
             band_faces.append(occ.addPlaneSurface([loop]))
         flap = occ.addPlaneSurface([occ.addCurveLoop(cur_i)])
+        # petal_x: imprint the score arcs into the flap, so mesh edges align
+        # with the engraved pattern and the tear follows the real geometry
+        # instead of a centroid-tagged jagged band.
+        if vent.pattern == "petal_x":
+            for arm in vent.petal_arms():
+                tags = [occ.addPoint(px, py, h) for px, py in arm]
+                score_curves.append(occ.addSpline(tags))
         # Cap remainder: rectangle with the outer stadium as a hole.
         c1 = occ.addPoint(a, b, h)
         c2 = occ.addPoint(-a, b, h)
@@ -916,8 +924,27 @@ def _build_box_surfaces(gmsh: Any, box: BoxCan, target_size: float) -> None:
     elif box.closed_top:
         faces.append(_add_plate(gmsh, np.array([0.0, 0.0, h]), ez, ex, ey, a, b))
 
-    occ.fragment([(2, faces[0])], [(2, f) for f in faces[1:]])
+    occ.fragment(
+        [(2, faces[0])],
+        [(2, f) for f in faces[1:]] + [(1, c) for c in score_curves],
+    )
     occ.synchronize()
+
+    # Refine along the imprinted score arcs so the score band resolves: every
+    # curve on the cap plane strictly inside the inner stadium is (a piece
+    # of) a score arc after retagging - identified geometrically, like the
+    # faces below.
+    if score_curves and box.vent is not None:
+        score_size = min(target_size, max(box.vent.band, 0.4))
+        for _dim, ctag in gmsh.model.getEntities(1):
+            bb = gmsh.model.getBoundingBox(1, ctag)
+            if abs(bb[2] - h) > 1e-3 or abs(bb[5] - h) > 1e-3:
+                continue
+            cx = (bb[0] + bb[3]) / 2.0
+            cy = (bb[1] + bb[4]) / 2.0
+            if box.vent.contains(cx, cy, grow=-box.vent.band):
+                points = gmsh.model.getBoundary([(1, ctag)], oriented=False, recursive=True)
+                gmsh.model.mesh.setSize(points, score_size)
 
     # All meshing constraints are applied AFTER the fragment (which retags
     # entities): faces are re-identified geometrically. Cap faces are told

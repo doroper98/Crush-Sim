@@ -306,6 +306,18 @@ def generate_viewer(
     if part_canon is None:
         part_canon = _canonical_parts(quads, part, positions[0], positions[-1])
 
+    # Score mask: the engraved grooves of a vent foil (its thinnest elements)
+    # render darker in part-colour mode, so the pattern the tear follows is
+    # visible before anything moves.
+    score_mask = np.zeros(quads.shape[0], dtype=np.uint8)
+    if "2DELEM_Thickness" in first_mesh.cell_data:
+        thickness0 = np.asarray(first_mesh.cell_data["2DELEM_Thickness"], dtype=float)[source]
+        vent_sel = part_canon == 5
+        if vent_sel.any():
+            t_lo, t_hi = thickness0[vent_sel].min(), thickness0[vent_sel].max()
+            if t_hi > t_lo * 1.5:
+                score_mask[vent_sel & (thickness0 < (t_lo + t_hi) / 2.0)] = 1
+
     import pandas as pd  # noqa: PLC0415
 
     curve_payload: dict | None = None
@@ -342,6 +354,7 @@ def generate_viewer(
         "quads": _b64(quads.astype(index_type)),
         "quads_dtype": "u2" if n_points < 65536 else "u4",
         "part": _b64(part_canon),
+        "score": _b64(score_mask) if score_mask.any() else None,
         "times": times,
         "pos": [_b64(p) for p in positions],
         "vm": [_b64(v) for v in von_mises],

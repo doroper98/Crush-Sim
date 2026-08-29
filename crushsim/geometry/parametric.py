@@ -207,6 +207,9 @@ class VentSpec:
     score_thickness: float = 0.05
     membrane_thickness: float | None = None
     pattern: str = "perimeter"
+    arc_bulge: float = 0.30
+    """petal_x arm curvature: control-point offset as a fraction of the chord
+    length (0 = straight arms). Auto-shrunk until the arc fits the flap."""
 
     def __post_init__(self) -> None:
         if not 0.0 < self.width <= self.length:
@@ -234,26 +237,60 @@ class VentSpec:
             return abs(y) <= r
         return math.hypot(abs(x) - c, y) <= r
 
-    def petal_segments(self) -> list[tuple[tuple[float, float], tuple[float, float]]]:
-        """The four score-line arms of the ``petal_x`` pattern, centre outward.
+    def petal_arms(self, samples: int = 15) -> list[list[tuple[float, float]]]:
+        """The four score arms of the ``petal_x`` pattern as sampled arcs.
 
         Each arm runs from the crossing at the origin to a point short of the
         stadium boundary (85% of the straight half-length, 72% of the half
-        width), so the tears stop before the welded perimeter and the petals
-        keep their hinges.
+        width) so the tears stop before the welded perimeter and the petals
+        keep their hinges. The arms bow away from the long axis (quadratic
+        arc, ``arc_bulge`` of the chord length), reproducing the crossed
+        coined grooves on production caps - two lens shapes meeting at the
+        centre. The bulge auto-shrinks until the whole arc stays inside the
+        inner stadium.
         """
         ax = max(self.length / 2.0 - self.width / 2.0, self.width / 4.0) * 0.85
-        ay = self.width / 2.0 * 0.72
-        return [((0.0, 0.0), (sx * ax, sy * ay)) for sx in (-1.0, 1.0) for sy in (-1.0, 1.0)]
+        # Tip height: clear the score band's inner outline by ~a band width,
+        # never below 30% of the half width on very narrow vents.
+        ay = max(self.width / 2.0 - 1.5 * self.band, 0.3 * self.width / 2.0)
+        arms: list[list[tuple[float, float]]] = []
+        for sx in (-1.0, 1.0):
+            for sy in (-1.0, 1.0):
+                tip = (sx * ax, sy * ay)
+                chord = math.hypot(*tip)
+                bulge = max(self.arc_bulge, 0.0) * chord
+                for _ in range(6):
+                    # Shrink until the whole arc clears the score band's inner
+                    # outline by about a band width - an arc grazing that
+                    # outline pinches sliver elements between the two curves
+                    # (measured: SICN 0.298 vs the 0.30 gate).
+                    control = (tip[0] / 2.0, tip[1] / 2.0 + sy * bulge)
+                    pts = []
+                    ok = True
+                    for i in range(samples):
+                        t = i / (samples - 1)
+                        px = (1 - t) ** 2 * 0.0 + 2 * (1 - t) * t * control[0] + t * t * tip[0]
+                        py = (1 - t) ** 2 * 0.0 + 2 * (1 - t) * t * control[1] + t * t * tip[1]
+                        pts.append((px, py))
+                        if t > 0.0 and not self.contains(px, py, grow=-3.0 * self.band):
+                            ok = False
+                    if ok or bulge <= 1e-6:
+                        break
+                    bulge *= 0.6
+                arms.append(pts)
+        return arms
 
     def score_distance(self, x: float, y: float) -> float:
-        """Distance of cap-local (x, y) to the nearest petal_x score line."""
+        """Distance of cap-local (x, y) to the nearest petal_x score arc."""
         best = math.inf
-        for (x0, y0), (x1, y1) in self.petal_segments():
-            dx, dy = x1 - x0, y1 - y0
-            length2 = dx * dx + dy * dy
-            t = 0.0 if length2 == 0.0 else max(0.0, min(1.0, ((x - x0) * dx + (y - y0) * dy) / length2))
-            best = min(best, math.hypot(x - (x0 + t * dx), y - (y0 + t * dy)))
+        for arm in self.petal_arms():
+            for (x0, y0), (x1, y1) in zip(arm, arm[1:]):
+                dx, dy = x1 - x0, y1 - y0
+                length2 = dx * dx + dy * dy
+                t = 0.0 if length2 == 0.0 else max(
+                    0.0, min(1.0, ((x - x0) * dx + (y - y0) * dy) / length2)
+                )
+                best = min(best, math.hypot(x - (x0 + t * dx), y - (y0 + t * dy)))
         return best
 
 

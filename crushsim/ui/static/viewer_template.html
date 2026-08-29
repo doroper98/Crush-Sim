@@ -190,6 +190,7 @@ const b64u8 = s => Uint8Array.from(atob(s), c=>c.charCodeAt(0));
 
 const quads = D.quads_dtype==="u2" ? b64u16(D.quads) : new Uint32Array(Uint8Array.from(atob(D.quads),c=>c.charCodeAt(0)).buffer);
 const part = b64u8(D.part);
+const score = D.score ? b64u8(D.score) : null; // 1 = engraved score groove element
 const NF = D.meta.frames, NQ = part.length;
 const pos = D.pos.map(b64f), vm = D.vm.map(b64f), ps = (D.ps||[]).map(b64f);
 if(!ps.length){const o=document.querySelector('option[value="ps"]'); if(o)o.remove();}
@@ -310,7 +311,10 @@ function rebuild(){
       let nx=uy*wz-uz*wy, ny=uz*wx-ux*wz, nz=ux*wy-uy*wx;
       const nl=Math.hypot(nx,ny,nz)||1; nx/=nl;ny/=nl;nz/=nl;
       let r,g,b2;
-      if(state.colorMode==="part"){ [r,g,b2]=partColor[pid]; }
+      if(state.colorMode==="part"){
+        [r,g,b2]=partColor[pid];
+        if(score&&score[q]){ r=0.52;g=0.30;b2=0.05; } // engraved score grooves
+      }
       else { [r,g,b2]=viridis(scalarAt(q)/smax()); }
       const alpha=state.opa[pid];
       for(const t3 of [0,1,2, 0,2,3]){

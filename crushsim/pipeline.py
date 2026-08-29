@@ -136,6 +136,7 @@ def build_geometry(case: CaseConfig, *, can_override: CanShell | None = None) ->
                 score_thickness=raw.get("score_thickness", 0.05),
                 membrane_thickness=raw.get("membrane_thickness"),
                 pattern=raw.get("pattern", "perimeter"),
+                arc_bulge=raw.get("arc_bulge", 0.30),
             )
         box = BoxCan(
             width=case.geometry.width or 0.0,
