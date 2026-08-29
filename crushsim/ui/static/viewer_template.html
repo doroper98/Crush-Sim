@@ -498,6 +498,12 @@ const HASCURVE=!!(D.curve&&D.curve.t&&D.curve.t.length);
 const CT=HASCURVE?D.curve.t:[0], CX=HASCURVE?D.curve.x:[0], CY=HASCURVE?D.curve.y:[0];
 const CKIND=HASCURVE?(D.curve.kind||"force"):"", CMARKS=(HASCURVE&&D.curve.marks)||[];
 const XUNIT=HASCURVE?(D.curve.xunit||""):"", YUNIT=HASCURVE?(D.curve.yunit||""):"";
+const CAREA=(HASCURVE&&D.curve.area)||null; // vent open-area overlay {t,y[%],label,total_mm2}
+function areaAt(time){ // stepped: the area jumps when an element deletes
+  if(!CAREA||time<=CAREA.t[0])return CAREA?CAREA.y[0]:0;
+  for(let i=1;i<CAREA.t.length;i++) if(CAREA.t[i]>time) return CAREA.y[i-1];
+  return CAREA.y[CAREA.y.length-1];
+}
 function curveAt(time){
   if(time<=CT[0])return[CX[0],CY[0]];
   for(let i=1;i<CT.length;i++) if(CT[i]>=time){
@@ -514,8 +520,14 @@ function updateReadout(){
   const t=simTime();
   if(!HASCURVE){$("readout").innerHTML=`t <b>${(t*1000).toFixed(2)} ms</b>`;return;}
   const [x,y]=curveAt(t);
-  if(CKIND==="pressure")
-    $("readout").innerHTML=`t <b>${(t*1000).toFixed(2)} ms</b> &nbsp; P <b>${y.toFixed(2)} MPa</b>`;
+  if(CKIND==="pressure"){
+    let extra="";
+    if(CAREA){
+      const pct=areaAt(t);
+      extra=` &nbsp; 개구 <b>${pct.toFixed(0)}%</b> (${(pct/100*CAREA.total_mm2).toFixed(0)} mm²)`;
+    }
+    $("readout").innerHTML=`t <b>${(t*1000).toFixed(2)} ms</b> &nbsp; P <b>${y.toFixed(2)} MPa</b>`+extra;
+  }
   else
     $("readout").innerHTML=`t <b>${(t*1000).toFixed(2)} ms</b> &nbsp; d <b>${x.toFixed(2)} mm</b> &nbsp; F <b>${y.toFixed(1)} N</b>`;
 }
@@ -525,9 +537,8 @@ const yMax=Math.max(...CY), xMax=Math.max(...CX);
 if(HASCURVE){
   if(CKIND==="pressure"){
     $("chartTitle").textContent=(D.curve.ylabel||"내압")+" – "+(D.curve.xlabel||"시간");
-    const mark=CMARKS.length?CMARKS[0]:null;
-    $("chartNote").textContent=mark
-      ? `${mark.label} t=${(mark.t*1000).toFixed(2)} ms · P=${(curveAt(mark.t)[1]).toFixed(2)} MPa`
+    $("chartNote").textContent=CMARKS.length
+      ? CMARKS.map(m=>`${m.label} P=${(curveAt(m.t)[1]).toFixed(2)} MPa (t=${(m.t*1000).toFixed(2)} ms)`).join(" · ")
       : `피크 ${yMax.toFixed(2)} MPa`;
   }else{
     $("chartNote").textContent=`피크 ${yMax.toFixed(0)} N @ ${CX[CY.indexOf(yMax)].toFixed(1)} mm`;
@@ -556,11 +567,33 @@ function drawChart(){
   const py=y=>h-14*devicePixelRatio-(h-24*devicePixelRatio)*y/(yMax||1);
   ctx.strokeStyle=line;ctx.lineWidth=devicePixelRatio;
   ctx.beginPath();ctx.moveTo(px(0),py(0));ctx.lineTo(px(xMax),py(0));ctx.stroke();
+  // open-area overlay: stepped teal line on its own 0-100% scale
+  if(CAREA){
+    const pa=f=>h-14*devicePixelRatio-(h-24*devicePixelRatio)*f/100.0;
+    ctx.strokeStyle="#1e8e8e";ctx.lineWidth=1.5*devicePixelRatio;ctx.globalAlpha=0.8;
+    ctx.beginPath();
+    let prevY=pa(CAREA.y[0]);ctx.moveTo(px(CAREA.t[0]*(CKIND==="pressure"?1000:1)),prevY);
+    for(let i=1;i<CAREA.t.length;i++){
+      const X=px(CAREA.t[i]*(CKIND==="pressure"?1000:1)),Y=pa(CAREA.y[i]);
+      ctx.lineTo(X,prevY);ctx.lineTo(X,Y);prevY=Y;
+    }
+    ctx.lineTo(px(xMax),prevY);ctx.stroke();ctx.globalAlpha=1;
+    ctx.fillStyle="#1e8e8e";ctx.font=`${9*devicePixelRatio}px IBM Plex Mono,monospace`;
+    ctx.fillText(CAREA.label||"open area",10*devicePixelRatio,pa(100)+10*devicePixelRatio);
+  }
+  let markFlip=false;
   for(const mark of CMARKS){
     const [mx]=curveAt(mark.t);
     ctx.strokeStyle=muted;ctx.lineWidth=devicePixelRatio;ctx.setLineDash([4*devicePixelRatio,3*devicePixelRatio]);
     ctx.beginPath();ctx.moveTo(px(mx),py(0));ctx.lineTo(px(mx),py(yMax));ctx.stroke();
     ctx.setLineDash([]);
+    if(mark.label){
+      ctx.fillStyle=ink;ctx.font=`${9*devicePixelRatio}px IBM Plex Mono,monospace`;
+      const tw=ctx.measureText(mark.label).width;
+      const tx=Math.min(Math.max(px(mx)-tw/2,2*devicePixelRatio),w-tw-2*devicePixelRatio);
+      ctx.fillText(mark.label,tx,py(yMax)+(markFlip?22:10)*devicePixelRatio);
+      markFlip=!markFlip;
+    }
   }
   ctx.strokeStyle=muted;ctx.lineWidth=1.2*devicePixelRatio;ctx.globalAlpha=0.55;
   ctx.beginPath();for(let i=0;i<CX.length;i++){const X=px(CX[i]),Y=py(CY[i]);i?ctx.lineTo(X,Y):ctx.moveTo(X,Y);}ctx.stroke();

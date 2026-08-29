@@ -178,6 +178,28 @@ def _pressure_curve(run: Path, summary: dict) -> dict | None:
         "xunit": " ms",
         "yunit": " MPa",
     }
+    # Vent milestones + open-area overlay for foil-vent runs; plain
+    # first-rupture marker otherwise.
+    metrics = None
+    try:
+        from ..post.vent_metrics import vent_metrics  # noqa: PLC0415
+
+        metrics = vent_metrics(run)
+    except Exception:  # noqa: BLE001 - metrics are an extra, never a blocker
+        metrics = None
+    if metrics is not None:
+        marks = [{"t": metrics["t_initiation_s"], "label": "파단 개시"}]
+        if metrics["t_opening_s"] is not None:
+            marks.append({"t": metrics["t_opening_s"], "label": "벤트 개방"})
+        curve["marks"] = marks
+        vent_area = metrics["vent_area_mm2"] or 1.0
+        curve["area"] = {
+            "t": [p[0] for p in metrics["area_curve"]],
+            "y": [100.0 * p[1] / vent_area for p in metrics["area_curve"]],
+            "label": "개구 면적 [% 벤트]",
+            "total_mm2": vent_area,
+        }
+        return curve
     out_files = sorted((run / "deck").glob("*_0001.out"))
     if out_files:
         t_cur, t_first = 0.0, None
