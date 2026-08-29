@@ -256,13 +256,14 @@ def test_b2_lateral_stiffness_matches_curved_beam_theory(b2_result: Path) -> Non
 
 @pytest.mark.bench
 def test_b3_peak_load_converges_with_mesh(b3_results: dict[str, Path]) -> None:
-    """B-3: peak load differs by <= 5% between the 0.5 and 0.35 mm meshes.
+    """B-3: peak load differs by <= 5% between the 0.5 and 0.4 mm meshes.
 
-    Spec §8 (v2.1.1) sweeps the same axial crush case at 1.0 / 0.5 / 0.35 mm;
+    Spec §8 (v2.1.1) sweeps the same axial crush case at 1.0 / 0.5 / 0.4 mm;
     the fine mesh is the reference and the medium mesh must land within 5% of
     it. The pair sits one level finer than the original 1.0/0.5 gate: the
     concertina fold wavelength 4*sqrt(R*t) ~ 7.3 mm needs >= 5 elements per
-    half-wave, which a 1.0 mm mesh cannot deliver (3.7) - its whole
+    half-wave, which a 1.0 mm mesh cannot deliver (3.7; 0.5 mm gives 7.3 and
+    0.4 mm 9.1) - its whole
     post-buckling response, not just the peak, stays unconverged (measured:
     mean crush load +33% vs the 0.5 mm mesh). The coarse point is reported
     for the trend but carries no tolerance.

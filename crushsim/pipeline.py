@@ -252,7 +252,58 @@ def build_meshes(
     target = case.mesh.target_size or MESH_TARGET_SIZE_DEFAULT_MM
     rigid_target = target * RIGID_MESH_SIZE_FACTOR
 
-    if case.geometry.kind == "step":
+    if case.geometry.kind == "resume":
+        from .meshing.mesher import MeshQuality, MeshResult  # noqa: PLC0415
+        from .meshing.gates import evaluate_mesh_gate  # noqa: PLC0415
+        from .meshing.resume import load_resume_mesh, quality_of_mesh  # noqa: PLC0415
+
+        mesh, source_thickness = load_resume_mesh(
+            case.geometry.resume_run, frame=case.geometry.resume_frame, name="CAN"
+        )
+        if abs(case.geometry.thickness - source_thickness) > 1e-9:
+            raise CrushSimError(
+                f"geometry.thickness {case.geometry.thickness} mm does not match the "
+                f"resume source's shell thickness {source_thickness} mm - set "
+                f"geometry.thickness: {source_thickness}"
+            )
+        mesh.seat_on_floor()
+        stats = quality_of_mesh(mesh)
+        gate = evaluate_mesh_gate(
+            min_sicn=stats["min_sicn"],
+            max_aspect_ratio=stats["max_aspect_ratio"],
+            min_edge_length=stats["min_edge_length"],
+            triangle_fraction=mesh.triangle_fraction,
+            non_manifold_edges=mesh.non_manifold_edge_count(),
+            info={
+                "source": mesh.source,
+                "note": "resume geometry: gate reported, never enforced - a "
+                "deformed shell's distortion is carried-over physics",
+            },
+        )
+        can_mesh = MeshResult(
+            mesh=mesh,
+            quality=MeshQuality(
+                min_sicn=stats["min_sicn"],
+                mean_sicn=stats["mean_sicn"],
+                max_aspect_ratio=stats["max_aspect_ratio"],
+                min_edge_length=stats["min_edge_length"],
+                max_edge_length=stats["max_edge_length"],
+                triangle_fraction=mesh.triangle_fraction,
+                n_elements=mesh.n_elements,
+                n_quads=mesh.n_quads,
+                n_tris=mesh.n_tris,
+            ),
+            gate=gate,
+            target_size=target,
+            attempts=1,
+        )
+        seated = build_geometry(case, can_override=_seated_can_proxy(mesh, case))
+        geometry.can = seated.can
+        geometry.tool = seated.tool
+        geometry.floor = seated.floor
+        geometry.support = seated.support
+        geometry.extra_tools = seated.extra_tools
+    elif case.geometry.kind == "step":
         if case.geometry.step_path is None:  # pragma: no cover - validated at load time
             raise CrushSimError("geometry.kind == 'step' requires geometry.step_path")
         can_mesh = mesh_step_surfaces(

@@ -523,3 +523,22 @@ def test_deck_without_drive_or_pressure_is_rejected(
             drive=None,
             material=material_card,
         )
+
+
+def test_retract_drive_reverses_and_returns() -> None:
+    # Springback (#18): forward to the stroke, then back by retract_mm.
+    drive = DriveDefinition(
+        direction=(0.0, 0.0, -1.0), stroke=10.0, velocity_mm_s=1000.0,
+        ramp_fraction=0.1, retract_mm=4.0,
+    )
+    table = drive.velocity_table()
+    times = [t for t, _ in table]
+    vels = [v for _, v in table]
+    assert min(vels) < 0.0  # the reverse segment exists
+    # Trapezoidal displacement integral: peaks at ~stroke, ends at stroke-retract.
+    disp, peak = 0.0, 0.0
+    for i in range(1, len(table)):
+        disp += 0.5 * (vels[i] + vels[i - 1]) * (times[i] - times[i - 1])
+        peak = max(peak, disp)
+    assert peak == pytest.approx(10.0, abs=0.15)
+    assert disp == pytest.approx(6.0, abs=0.15)

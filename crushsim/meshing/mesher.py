@@ -834,26 +834,35 @@ def _seed_imperfection(mesh: ShellMesh, can: CanShell, amplitude: float) -> None
 def _stadium_outline(
     occ: Any, length: float, width: float, z: float
 ) -> tuple[list[int], list[int]]:
-    """Stadium outline in the z-plane: (corner point tags, curve tags).
+    """Stadium outline in the z-plane: (junction point tags, curve tags).
 
-    Points are the four line/arc junctions at (+-c, +-r); curves are ordered
-    top line, left arc, bottom line, right arc, forming a closed loop.
+    Each 180-degree end cap is built as TWO 90-degree arcs through an
+    explicit apex point: a half-circle between two points about a centre is
+    ambiguous in the OCC kernel and the wrong pick self-intersects the
+    outline (measured: gmsh loops forever splitting 1D intersections).
+    Six junctions and six curves, in loop order: top line, upper-left arc,
+    lower-left arc, bottom line, lower-right arc, upper-right arc.
     """
     r = width / 2.0
     c = max(length / 2.0 - r, 1e-9)
     p1 = occ.addPoint(c, r, z)
     p2 = occ.addPoint(-c, r, z)
+    pml = occ.addPoint(-c - r, 0.0, z)
     p3 = occ.addPoint(-c, -r, z)
     p4 = occ.addPoint(c, -r, z)
+    pmr = occ.addPoint(c + r, 0.0, z)
     e1 = occ.addPoint(c, 0.0, z)
     e2 = occ.addPoint(-c, 0.0, z)
+    points = [p1, p2, pml, p3, p4, pmr]
     curves = [
         occ.addLine(p1, p2),
-        occ.addCircleArc(p2, e2, p3),
+        occ.addCircleArc(p2, e2, pml),
+        occ.addCircleArc(pml, e2, p3),
         occ.addLine(p3, p4),
-        occ.addCircleArc(p4, e1, p1),
+        occ.addCircleArc(p4, e1, pmr),
+        occ.addCircleArc(pmr, e1, p1),
     ]
-    return [p1, p2, p3, p4], curves
+    return points, curves
 
 
 def _build_box_surfaces(gmsh: Any, box: BoxCan, target_size: float) -> None:
@@ -885,10 +894,10 @@ def _build_box_surfaces(gmsh: Any, box: BoxCan, target_size: float) -> None:
         pts_i, cur_i = _stadium_outline(occ, vent.length - vent.band, vent.width - vent.band, h)
         pts_o, cur_o = _stadium_outline(occ, vent.length + vent.band, vent.width + vent.band, h)
         radials = [occ.addLine(pi, po) for pi, po in zip(pts_i, pts_o)]
-        # Four 4-sided band pieces: inner curve, radial, outer curve, radial.
-        for k in range(4):
+        # Six 4-sided band pieces: inner curve, radial, outer curve, radial.
+        for k in range(6):
             loop = occ.addCurveLoop(
-                [cur_i[k], radials[(k + 1) % 4], -cur_o[k], -radials[k]]
+                [cur_i[k], radials[(k + 1) % 6], -cur_o[k], -radials[k]]
             )
             band_faces.append(occ.addPlaneSurface([loop]))
         flap = occ.addPlaneSurface([occ.addCurveLoop(cur_i)])

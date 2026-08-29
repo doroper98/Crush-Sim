@@ -151,6 +151,14 @@ class DriveDefinition:
     """
     orbit_revs: float = 0.0
     orbit_feed_revs: float = 0.0
+    retract_mm: float = 0.0
+    """Pull-back travel [mm] after the stroke completes (springback, FR/#18).
+
+    The drive reverses at the same speed once the stroke is delivered, so
+    the tool releases contact and the shell recovers elastically; the
+    force-displacement curve then closes and the residual dent depth is the
+    permanent set. Ignored by orbit drives.
+    """
     points: int = 201
     """Number of points in the displacement-vs-time function.
 
@@ -187,7 +195,8 @@ class DriveDefinition:
         if self.is_orbit:
             path = 2.0 * math.pi * self.orbit_start_radius * self.orbit_revs
             return (path / self.velocity_mm_s) / (1.0 - 0.5 * fraction)
-        return (self.stroke / self.velocity_mm_s) / (1.0 - 0.5 * fraction)
+        travel = self.stroke + max(self.retract_mm, 0.0)
+        return (travel / self.velocity_mm_s) / (1.0 - 0.5 * fraction)
 
     def _orbit_angle(self, t: float) -> float:
         """Swept angle [rad] at local time ``t``: cosine ease-in, then constant."""
@@ -262,11 +271,19 @@ class DriveDefinition:
         t_end = self.end_time
         n = max(3, int(self.points))
         ramp = self.ramp_time
+        # Forward travel ends once the stroke is delivered; with a retract the
+        # drive then reverses at the same speed (the sign flip spans one table
+        # interval, ~0.5% of the duration, like the existing end stop).
+        t_forward = ramp / 2.0 + self.stroke / self.velocity_mm_s if ramp > 0.0 else (
+            self.stroke / self.velocity_mm_s
+        )
         pts: list[tuple[float, float]] = []
         for i in range(n):
             t = t_end * i / (n - 1)
             if ramp > 0.0 and t < ramp:
                 v = self.velocity_mm_s * (1.0 - math.cos(math.pi * t / ramp)) / 2.0
+            elif self.retract_mm > 0.0 and t > t_forward:
+                v = -self.velocity_mm_s
             else:
                 v = self.velocity_mm_s
             pts.append((t, v))
@@ -1130,6 +1147,7 @@ def build_deck(
             stroke=case.loading.stroke,
             velocity_mm_s=m_per_s_to_mm_per_s(case.loading.velocity_m_s),
             ramp_fraction=case.loading.ramp_fraction,
+            retract_mm=case.loading.retract,
         )
         if case.loading.motion == "orbit":
             if case.geometry.kind != "parametric_can":
@@ -1162,6 +1180,7 @@ def build_deck(
                     stroke=t.stroke,
                     velocity_mm_s=m_per_s_to_mm_per_s(t.velocity_m_s),
                     ramp_fraction=t.ramp_fraction,
+                    retract_mm=t.retract,
                 )
             )
     # Stage the strokes: each stage's window opens when the previous stage's
