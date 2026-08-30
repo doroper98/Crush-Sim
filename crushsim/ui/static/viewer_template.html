@@ -1,3 +1,5 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>__TITLE__</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <style>
@@ -26,7 +28,8 @@ body{
   font-family:'IBM Plex Sans KR',-apple-system,'Segoe UI',sans-serif;
   font-size:14px; line-height:1.45; overflow:hidden;
 }
-.app{display:flex; height:100vh}
+/* dvh follows the mobile browser's collapsing chrome; vh is the fallback. */
+.app{display:flex; height:100vh; height:100dvh}
 .stage{flex:1; position:relative; min-width:0}
 canvas#gl{position:absolute; inset:0; width:100%; height:100%; display:block; background:var(--viewport); touch-action:none; cursor:grab}
 canvas#gl.dragging{cursor:grabbing}
@@ -88,9 +91,35 @@ select{
 .parts .prow{display:grid; grid-template-columns:20px 56px 1fr 42px; align-items:center; gap:8px; margin-top:8px}
 .parts .prow:first-of-type{margin-top:0}
 .sw{width:12px; height:12px; border-radius:3px; border:1px solid var(--line)}
-@media (max-width:760px){
+.panelToggle{display:none}
+@media (max-width:760px), (pointer:coarse) and (max-width:1100px){
   .app{flex-direction:column}
-  .side{width:100%; height:46%; border-left:none; border-top:1px solid var(--line)}
+  .stage{flex:1 1 auto; min-height:0}
+  .side{
+    width:100%; flex:0 0 auto; max-height:52%;
+    border-left:none; border-top:1px solid var(--line);
+    padding-bottom:env(safe-area-inset-bottom);
+    -webkit-overflow-scrolling:touch;
+  }
+  .side.collapsed{max-height:0; padding:0; border-top:none; overflow:hidden}
+  /* Touch targets: the pointer-fine layout is too small for a finger. */
+  .sec{padding:12px 14px}
+  input[type=range]{height:22px; background:transparent}
+  input[type=range]::-webkit-slider-runnable-track{height:4px; border-radius:2px; background:var(--track)}
+  input[type=range]::-webkit-slider-thumb{margin-top:-9px; width:22px; height:22px}
+  input[type=checkbox]{width:20px; height:20px}
+  button{padding:8px 12px}
+  .parts .prow{grid-template-columns:24px 56px 1fr 42px}
+  .hud h1{font-size:13.5px; max-width:62vw}
+  .hud .case{display:none}
+  .cbar{right:10px}
+  .readout{left:10px; bottom:10px; font-size:11px; padding:6px 9px}
+  .panelToggle{
+    display:block; position:absolute; right:10px; top:10px; z-index:5;
+    background:color-mix(in srgb, var(--panel) 88%, transparent);
+    border:1px solid var(--line); border-radius:8px; padding:8px 12px;
+    backdrop-filter:blur(4px);
+  }
 }
 </style>
 
@@ -102,6 +131,7 @@ select{
       <div class="case" id="caseLabel"></div>
     </div>
     <div class="readout" id="readout"></div>
+    <button class="panelToggle" id="panelToggle" aria-expanded="true">패널 숨기기</button>
     <div class="cbar" id="cbar">
       <div class="ttl" id="cbarTitle"></div>
       <div class="ramp" id="cbarRamp"></div>
@@ -109,7 +139,7 @@ select{
       <div class="lab" style="margin-top:158px" id="cbarMin"></div>
     </div>
   </div>
-  <div class="side">
+  <div class="side" id="side">
     <div class="sec">
       <h2>시간 · 프레임</h2>
       <div class="timebar">
@@ -140,7 +170,7 @@ select{
           <option value="ps">소성 변형률</option>
         </select>
       </div>
-      <p class="note">드래그: 회전 · 휠: 줌 · Shift+드래그: 이동</p>
+      <p class="note" id="navHint">드래그: 회전 · 휠: 줌 · Shift+드래그: 이동</p>
     </div>
     <div class="sec parts">
       <h2>파트 · 투명도</h2>
@@ -356,8 +386,12 @@ function camera(){
   M=mul(RZ,M); M=mul(RX,M); M=mul(T(state.pan[0],state.pan[1],-state.dist),M);
   return M;
 }
+// A phone reports devicePixelRatio 3: rendering this many elements at 3x
+// costs ~9x the fill of 1x for no visible gain on a small screen, and it is
+// what makes a big model stutter there. Cap the backing store at 2x.
+const RENDER_DPR=Math.min(devicePixelRatio||1, 2);
 function draw(){
-  const w=canvas.clientWidth*devicePixelRatio, h=canvas.clientHeight*devicePixelRatio;
+  const w=Math.round(canvas.clientWidth*RENDER_DPR), h=Math.round(canvas.clientHeight*RENDER_DPR);
   if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;}
   gl.viewport(0,0,w,h);
   const cs=getComputedStyle(document.documentElement);
@@ -415,18 +449,58 @@ function draw(){
 }
 
 // ---------- interaction ----------
-let drag=null;
-canvas.addEventListener("pointerdown",e=>{drag={x:e.clientX,y:e.clientY,pan:e.shiftKey||e.button===2};canvas.setPointerCapture(e.pointerId);canvas.classList.add("dragging");});
+// Pointer events cover mouse, pen and touch alike. Two live pointers are a
+// pinch: their distance zooms and their midpoint pans, which is the only way
+// to zoom or pan on a touchscreen (there is no wheel and no shift key).
+const clampDist=d=>Math.max(diag*0.25,Math.min(diag*6,d));
+const pointers=new Map();
+let drag=null, pinch=null;
+function pinchState(){
+  const [a,b]=[...pointers.values()];
+  return {d:Math.hypot(a.x-b.x,a.y-b.y), cx:(a.x+b.x)/2, cy:(a.y+b.y)/2};
+}
+canvas.addEventListener("pointerdown",e=>{
+  pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  canvas.setPointerCapture(e.pointerId);
+  if(pointers.size===2){ drag=null; pinch=Object.assign(pinchState(),{dist:state.dist}); }
+  else if(pointers.size===1){
+    drag={x:e.clientX,y:e.clientY,pan:e.shiftKey||e.button===2};
+    canvas.classList.add("dragging");
+  }
+});
 canvas.addEventListener("pointermove",e=>{
+  if(!pointers.has(e.pointerId))return;
+  pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if(pinch&&pointers.size===2){
+    const now=pinchState();
+    state.dist=clampDist(pinch.dist*(pinch.d/Math.max(now.d,1e-6)));
+    const s=state.dist*0.0011;
+    state.pan[0]+=(now.cx-pinch.cx)*s; state.pan[1]-=(now.cy-pinch.cy)*s;
+    pinch.cx=now.cx; pinch.cy=now.cy; pinch.d=now.d; pinch.dist=state.dist;
+    requestDraw();
+    return;
+  }
   if(!drag)return;
   const dx=e.clientX-drag.x, dy=e.clientY-drag.y; drag.x=e.clientX;drag.y=e.clientY;
   if(drag.pan){const s=state.dist*0.0011; state.pan[0]+=dx*s; state.pan[1]-=dy*s;}
   else {state.rotZ+=dx*0.008; state.rotX+=dy*0.008; state.rotX=Math.max(-Math.PI,Math.min(0,state.rotX));}
   requestDraw();
 });
-canvas.addEventListener("pointerup",()=>{drag=null;canvas.classList.remove("dragging");});
-canvas.addEventListener("wheel",e=>{e.preventDefault();state.dist*=Math.exp(e.deltaY*0.0012);state.dist=Math.max(diag*0.25,Math.min(diag*6,state.dist));requestDraw();},{passive:false});
+function endPointer(e){
+  pointers.delete(e.pointerId);
+  if(pointers.size<2)pinch=null;
+  if(pointers.size===0){drag=null;canvas.classList.remove("dragging");}
+  else if(!pinch){ // one finger left after a pinch: keep orbiting from here
+    const [p]=[...pointers.values()];
+    drag={x:p.x,y:p.y,pan:false};
+  }
+}
+canvas.addEventListener("pointerup",endPointer);
+canvas.addEventListener("pointercancel",endPointer);
+canvas.addEventListener("wheel",e=>{e.preventDefault();state.dist=clampDist(state.dist*Math.exp(e.deltaY*0.0012));requestDraw();},{passive:false});
 canvas.addEventListener("contextmenu",e=>e.preventDefault());
+// iOS Safari still fires its own page zoom on a double tap over the canvas.
+canvas.addEventListener("dblclick",e=>e.preventDefault());
 
 // ---------- UI ----------
 const $=id=>document.getElementById(id);
@@ -612,7 +686,19 @@ function drawChart(){
 
 let drawQueued=false;
 function requestDraw(){if(drawQueued)return;drawQueued=true;requestAnimationFrame(()=>{drawQueued=false;draw();});}
+// Name the gestures the device actually has.
+if(matchMedia("(pointer:coarse)").matches)
+  $("navHint").textContent="한 손가락: 회전 · 두 손가락: 확대·이동";
+// The side panel eats screen on a phone; let it fold away for the model.
+$("panelToggle").addEventListener("click",e=>{
+  const hidden=$("side").classList.toggle("collapsed");
+  e.target.textContent=hidden?"패널 보기":"패널 숨기기";
+  e.target.setAttribute("aria-expanded",String(!hidden));
+  requestAnimationFrame(()=>{requestDraw();drawChart();});
+});
 addEventListener("resize",()=>{requestDraw();drawChart();});
+// Rotating a phone changes both viewport boxes; redraw once it has settled.
+addEventListener("orientationchange",()=>setTimeout(()=>{requestDraw();drawChart();},250));
 matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change",()=>{requestDraw();drawChart();});
 
 updateCbar(); setTime(0);
