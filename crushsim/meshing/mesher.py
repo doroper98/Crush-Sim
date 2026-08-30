@@ -889,6 +889,7 @@ def _build_box_surfaces(gmsh: Any, box: BoxCan, target_size: float) -> None:
         faces.append(_add_plate(gmsh, np.array([0.0, 0.0, 0.0]), ez, ex, ey, a, b))
 
     band_faces: list[int] = []
+    score_curves: list[int] = []
     if box.closed_top and box.vent is not None:
         vent = box.vent
         pts_i, cur_i = _stadium_outline(occ, vent.length - vent.band, vent.width - vent.band, h)
@@ -901,6 +902,13 @@ def _build_box_surfaces(gmsh: Any, box: BoxCan, target_size: float) -> None:
             )
             band_faces.append(occ.addPlaneSurface([loop]))
         flap = occ.addPlaneSurface([occ.addCurveLoop(cur_i)])
+        # petal_x: imprint the score arcs into the flap, so mesh edges align
+        # with the engraved pattern and the tear follows the real geometry
+        # instead of a centroid-tagged jagged band.
+        if vent.pattern == "petal_x":
+            for arm in vent.petal_arms():
+                tags = [occ.addPoint(px, py, h) for px, py in arm]
+                score_curves.append(occ.addSpline(tags))
         # Cap remainder: rectangle with the outer stadium as a hole.
         c1 = occ.addPoint(a, b, h)
         c2 = occ.addPoint(-a, b, h)
@@ -916,8 +924,27 @@ def _build_box_surfaces(gmsh: Any, box: BoxCan, target_size: float) -> None:
     elif box.closed_top:
         faces.append(_add_plate(gmsh, np.array([0.0, 0.0, h]), ez, ex, ey, a, b))
 
-    occ.fragment([(2, faces[0])], [(2, f) for f in faces[1:]])
+    occ.fragment(
+        [(2, faces[0])],
+        [(2, f) for f in faces[1:]] + [(1, c) for c in score_curves],
+    )
     occ.synchronize()
+
+    # Refine along the imprinted score arcs so the score band resolves: every
+    # curve on the cap plane strictly inside the inner stadium is (a piece
+    # of) a score arc after retagging - identified geometrically, like the
+    # faces below.
+    if score_curves and box.vent is not None:
+        score_size = min(target_size, max(box.vent.band, 0.4))
+        for _dim, ctag in gmsh.model.getEntities(1):
+            bb = gmsh.model.getBoundingBox(1, ctag)
+            if abs(bb[2] - h) > 1e-3 or abs(bb[5] - h) > 1e-3:
+                continue
+            cx = (bb[0] + bb[3]) / 2.0
+            cy = (bb[1] + bb[4]) / 2.0
+            if box.vent.contains(cx, cy, grow=-box.vent.band):
+                points = gmsh.model.getBoundary([(1, ctag)], oriented=False, recursive=True)
+                gmsh.model.mesh.setSize(points, score_size)
 
     # All meshing constraints are applied AFTER the fragment (which retags
     # entities): faces are re-identified geometrically. Cap faces are told
@@ -998,7 +1025,7 @@ def mesh_box_can(
         max_attempts=max_attempts,
         enforce=enforce,
     )
-    if box.vent is not None:
+    if box.vent is not None and box.vent.membrane_thickness is None:
         mesh = result.mesh
         vent = box.vent
         index = mesh.node_index()
@@ -1020,6 +1047,71 @@ def mesh_box_can(
             raise MeshingError("Vent score band caught no elements - check the vent size")
         mesh.metadata["vent_scored_elements"] = scored
     return result
+
+
+def split_vent_membrane(mesh: ShellMesh, box: BoxCan) -> tuple[ShellMesh, ShellMesh]:
+    """Split a box-can mesh into (can, vent membrane) sharing one node block.
+
+    The foil-vent construction: the stadium region of the cap (flap plus
+    score band, everything inside the outer fragment outline) becomes its
+    own part - thin foil, its own material - welded to the thick cap along
+    that outline. Both returned meshes keep the source mesh's FULL node
+    array and ids, so the deck writer can renumber them with the same
+    offset and the shared boundary nodes ARE the weld (a weld is exact as
+    merged nodes, like the box can's own cap).
+
+    The membrane carries per-element thickness: ``membrane_thickness``
+    everywhere, ``score_thickness`` on the score pattern - the ``petal_x``
+    arms (elements whose centroid lies within ``band/2`` of an arm), or the
+    legacy perimeter band.
+
+    Raises:
+        MeshingError: If the vent has no membrane_thickness, or the split
+            catches no membrane or no scored elements.
+    """
+    vent = box.vent
+    if vent is None or vent.membrane_thickness is None:
+        raise MeshingError("split_vent_membrane needs a vent with membrane_thickness")
+    index = mesh.node_index()
+    can_quads, can_tris, mem_quads, mem_tris, mem_thk = [], [], [], [], []
+    for block, keep_q in ((mesh.quads, True), (mesh.tris, False)):
+        for element in block:
+            pts = mesh.nodes[[index[int(n)] for n in element]]
+            cx, cy, cz = pts.mean(axis=0)
+            on_cap = abs(cz - box.height) < 1e-3
+            if on_cap and vent.contains(cx, cy, grow=vent.band):
+                (mem_quads if keep_q else mem_tris).append(element)
+                if vent.pattern == "petal_x":
+                    scored = vent.score_distance(cx, cy) <= vent.band / 2.0
+                else:  # perimeter score on the foil
+                    scored = not vent.contains(cx, cy, grow=-vent.band)
+                mem_thk.append(vent.score_thickness if scored else vent.membrane_thickness)
+            else:
+                (can_quads if keep_q else can_tris).append(element)
+    if not mem_quads and not mem_tris:
+        raise MeshingError("Vent membrane split caught no elements - check the vent size")
+    n_scored = sum(1 for t in mem_thk if t == vent.score_thickness)
+    if not n_scored:
+        raise MeshingError("Vent score pattern caught no elements - check band vs mesh size")
+    # mem_thk is already quads-first: the outer loop walks quads then tris.
+
+    def _mesh(name: str, quads: list, tris: list, thickness: list | None) -> ShellMesh:
+        return ShellMesh(
+            name=name,
+            node_ids=mesh.node_ids.copy(),
+            nodes=mesh.nodes.copy(),
+            quads=np.asarray(quads, dtype=np.int64).reshape(-1, 4),
+            tris=np.asarray(tris, dtype=np.int64).reshape(-1, 3),
+            element_thickness=None if thickness is None else np.asarray(thickness, dtype=float),
+            source=mesh.source,
+            metadata=dict(mesh.metadata),
+        )
+
+    can_mesh = _mesh(mesh.name, can_quads, can_tris, None)
+    membrane = _mesh("VENT_MEMBRANE", mem_quads, mem_tris, mem_thk)
+    membrane.metadata["vent_scored_elements"] = n_scored
+    membrane.metadata["vent_pattern"] = vent.pattern
+    return can_mesh, membrane
 
 
 def mesh_parametric_can(

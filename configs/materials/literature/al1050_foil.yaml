@@ -1,0 +1,25 @@
+# Soft (annealed, O-temper) commercially pure aluminium for prismatic-cell
+# vent membranes. The production vent is a hand-pressably thin coined foil
+# welded into the thick cap, with the burst score engraved on it; that part
+# is soft 1050/1060-class aluminium, not the cap alloy. Literature-sourced
+# typical values - NOT calibrated against a measured membrane: annealed
+# Al 1050-O tensile data spans sigma_y 28-40 MPa / UTS 65-95 MPa with
+# elongation 35-45%; mid-range taken. Sources: EN 573/485 property tables
+# and Aluminum Association Teal Sheets figures for 1050A-O sheet.
+name: Al 1050-O vent foil (literature)
+E: 69000.0
+nu: 0.33
+rho: 2.71e-09
+sigma_y: 34.0
+uts: 80.0
+n: 0.25
+t_default: 0.1
+verified: false
+verification: literature
+source: literature-typical (Al 1050-O sheet data)
+unit_system: mm-s-tonne-N-MPa
+notes: >-
+  Trend-grade card for vent-burst studies. The burst pressure of a scored
+  membrane scales directly with this card's flow stress; replace with a
+  calibrated card (tensile test of the actual foil) before quantitative
+  vent-opening predictions.

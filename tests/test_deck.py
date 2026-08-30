@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from crushsim.config import MaterialCard
@@ -508,6 +509,117 @@ def test_pressure_only_deck(material_card, can_mesh_fixture, floor_mesh_fixture)
         "#                  a                   b                   n"
         "           EPS_p_max           SIG_max0") + 1]
     assert "0.35" in abn_line
+
+
+def test_wall_brace_block(material_card, can_mesh_fixture, floor_mesh_fixture) -> None:
+    writer = RadiossDeckWriter(
+        run_name="braced",
+        parts=[
+            DeckPart(name="CAN", mesh=can_mesh_fixture, thickness=0.1, role="deformable", material=material_card),
+            DeckPart(name="FLOOR", mesh=floor_mesh_fixture, thickness=2.0, role="floor"),
+        ],
+        drive=None,
+        material=material_card,
+        pressure=(10.0, 2.0e-3, 1.0e-3),
+        brace_walls=True,
+    )
+    text = writer.starter_text()
+    assert "/GRNOD/NODE/97" in text
+    assert "CAN_LARGE_FACES" in text
+    assert "/BCS/6" in text
+    # Y translation only: in-plane motion and all rotations stay free.
+    assert "   010 000" in text.split("WALL_BRACE")[1].splitlines()[2]
+    # Off by default.
+    writer2 = RadiossDeckWriter(
+        run_name="free",
+        parts=[
+            DeckPart(name="CAN", mesh=can_mesh_fixture, thickness=0.1, role="deformable", material=material_card),
+            DeckPart(name="FLOOR", mesh=floor_mesh_fixture, thickness=2.0, role="floor"),
+        ],
+        drive=None,
+        material=material_card,
+        pressure=(10.0, 2.0e-3, 1.0e-3),
+    )
+    assert "WALL_BRACE" not in writer2.starter_text()
+
+
+def test_host_part_shares_node_block(material_card, can_mesh_fixture, floor_mesh_fixture) -> None:
+    """A membrane part with host='CAN' emits no /NODE block of its own and its
+    elements land on the host's node ids (merged nodes = weld)."""
+    import copy
+
+    can = can_mesh_fixture
+    # Membrane: same full node array, one of the can's quads as its element.
+    membrane = ShellMesh(
+        name="VENT_MEMBRANE",
+        node_ids=can.node_ids.copy(),
+        nodes=can.nodes.copy(),
+        quads=can.quads[:1].copy(),
+        tris=np.zeros((0, 3), dtype=np.int64),
+        element_thickness=np.array([0.05]),
+    )
+    can_only = ShellMesh(
+        name="CAN",
+        node_ids=can.node_ids.copy(),
+        nodes=can.nodes.copy(),
+        quads=can.quads[1:].copy(),
+        tris=np.zeros((0, 3), dtype=np.int64),
+    )
+    soft = copy.deepcopy(material_card)
+    writer = RadiossDeckWriter(
+        run_name="foil",
+        parts=[
+            DeckPart(name="CAN", mesh=can_only, thickness=0.4, role="deformable", material=material_card),
+            DeckPart(
+                name="VENT_MEMBRANE", mesh=membrane, thickness=0.1, role="deformable",
+                material=soft, host="CAN", eps_p_max=0.4,
+            ),
+            DeckPart(name="FLOOR", mesh=floor_mesh_fixture, thickness=2.0, role="floor"),
+        ],
+        drive=None,
+        material=material_card,
+        pressure=(10.0, 2.0e-3, 1.0e-3),
+        eps_p_max=0.35,
+    )
+    text = writer.starter_text()
+    # One node block: the membrane's nodes are the can's.
+    assert text.count("# part: CAN") == 1
+    assert "# part: VENT_MEMBRANE" not in text
+    node_ids = {
+        int(line[:10])
+        for line in text.split("/NODE")[1].split("/SHELL")[0].splitlines()
+        if line[:10].strip().isdigit()
+    }
+    membrane_block = text.split("/SHELL/2")[1].split("/PART")[0]
+    for line in membrane_block.splitlines():
+        if line[:10].strip().isdigit():
+            for col in range(1, 5):
+                assert int(line[col * 10 : (col + 1) * 10]) in node_ids
+    # Both deformables have their own PART/MAT; per-part failure strain lands.
+    assert "/PART/1" in text and "/PART/2" in text
+    law2_membrane = text.split("/MAT/LAW2/2")[1]
+    abn = law2_membrane.splitlines()[law2_membrane.splitlines().index(
+        "#                  a                   b                   n"
+        "           EPS_p_max           SIG_max0") + 1]
+    assert "0.4" in abn
+    # The pressure surface carries both deformable parts.
+    surf3 = text.split("/SURF/PART/3")[1].splitlines()[2]
+    assert i10(1) + i10(2) == surf3[:20]
+    # Host ordering is enforced.
+    with pytest.raises(DeckError, match="host"):
+        RadiossDeckWriter(
+            run_name="bad",
+            parts=[
+                DeckPart(
+                    name="VENT_MEMBRANE", mesh=copy.deepcopy(membrane), thickness=0.1,
+                    role="deformable", material=soft, host="CAN",
+                ),
+                DeckPart(name="CAN", mesh=copy.deepcopy(can_only), thickness=0.4, role="deformable", material=material_card),
+            ],
+            drive=None,
+            material=material_card,
+            pressure=(10.0, 2.0e-3, 1.0e-3),
+        )
 
 
 def test_deck_without_drive_or_pressure_is_rejected(

@@ -363,6 +363,15 @@ class LoadingConfig:
     down in a gravity-free quasi-static model - it tips over the support and
     slides instead of crushing. Real fixtures grip the base; this models
     that grip."""
+    brace_walls: bool = False
+    """Constrain the face-normal translation of the box can's two large faces.
+
+    An empty free-standing prismatic can balloons its wide flat walls under
+    internal pressure and tears them near the cap rim before the scored cap
+    vent activates (measured: wall rupture at 1.2 MPa vs score opening from
+    2.4 MPa on LC-6 v1). In the real cell the jelly roll fills the can and
+    module end plates press on those faces, so they barely bow; this models
+    that support as a Y-translation lock on the two large-face node sets."""
     height_frac: float = 0.5
     """Axial position of a radial main tool: fraction of the can height."""
     stage: int = 0
@@ -557,7 +566,7 @@ def load_case(path: str | Path) -> CaseConfig:
         vent=None
         if geo_raw.get("vent") is None
         else {
-            key: _as_float(value, f"geometry.vent.{key}", p)
+            key: value if key in ("pattern", "material") else _as_float(value, f"geometry.vent.{key}", p)
             for key, value in dict(geo_raw["vent"]).items()
         },
         step_path=_resolve(step_path_raw, base),
@@ -572,12 +581,29 @@ def load_case(path: str | Path) -> CaseConfig:
         if geometry.width is None or geometry.depth is None:
             raise ConfigError(f"geometry.kind box_can in {p} needs geometry.width and geometry.depth")
         if geometry.vent is not None:
-            unknown = set(geometry.vent) - {"length", "width", "band", "score_thickness"}
+            unknown = set(geometry.vent) - {
+                "length", "width", "band", "score_thickness",
+                "membrane_thickness", "pattern", "material", "eps_p_max", "arc_bulge",
+            }
             if unknown:
                 raise ConfigError(f"geometry.vent in {p}: unknown key(s) {sorted(unknown)}")
             for required in ("length", "width"):
                 if required not in geometry.vent:
                     raise ConfigError(f"geometry.vent in {p} needs '{required}'")
+            pattern = geometry.vent.get("pattern", "perimeter")
+            if pattern not in ("perimeter", "petal_x"):
+                raise ConfigError(
+                    f"geometry.vent.pattern in {p} must be 'perimeter' or 'petal_x', got {pattern!r}"
+                )
+            if geometry.vent.get("material") is not None and not isinstance(
+                geometry.vent["material"], str
+            ):
+                raise ConfigError(f"geometry.vent.material in {p} must be a material key string")
+            if geometry.vent.get("eps_p_max") is not None and geometry.vent["eps_p_max"] <= 0:
+                raise ConfigError(
+                    f"geometry.vent.eps_p_max in {p} must be > 0 - zero disables element "
+                    "deletion on the membrane, so the configured burst never happens"
+                )
 
     mesh_raw = dict(data.get("mesh") or {})
     mesh = MeshConfig(
@@ -611,6 +637,7 @@ def load_case(path: str | Path) -> CaseConfig:
         if load_raw.get("support_size") is None
         else _as_float(load_raw["support_size"], "loading.support_size", p),
         clamp_can_base=bool(load_raw.get("clamp_can_base", False)),
+        brace_walls=bool(load_raw.get("brace_walls", False)),
         height_frac=_as_float(load_raw.get("height_frac", 0.5), "loading.height_frac", p),
         stage=int(load_raw.get("stage", 0)),
         retract=_as_float(load_raw.get("retract", 0.0), "loading.retract", p),
@@ -632,6 +659,11 @@ def load_case(path: str | Path) -> CaseConfig:
         raise ConfigError(f"loading.motion in {p} must be 'linear' or 'orbit'")
     if loading.tool == "none" and loading.extra_tools:
         raise ConfigError(f"loading.extra_tools in {p} need a main tool (loading.tool != 'none')")
+    if loading.brace_walls and geometry.kind != "box_can":
+        raise ConfigError(
+            f"loading.brace_walls in {p} only applies to geometry.kind: box_can "
+            f"(got {geometry.kind!r}) - it locks the large flat faces of a prismatic can"
+        )
     _supports = ("jig_plane", "v_block", "bead_arbor")
     if loading.support is not None and loading.support not in _supports:
         raise ConfigError(

@@ -17,7 +17,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from .config import CaseConfig, MaterialCard, load_case
+from .config import (
+    CaseConfig,
+    MaterialCard,
+    find_material_card,
+    load_case,
+    load_material_card,
+)
 from .deck.writer import INITIAL_CONTACT_CLEARANCE, DeckResult, build_deck
 from .errors import CrushSimError, SolverError
 from .geometry.parametric import BoxCan, CanShell, ToolShape, VentSpec, make_can, make_tool
@@ -128,6 +134,9 @@ def build_geometry(case: CaseConfig, *, can_override: CanShell | None = None) ->
                 width=raw["width"],
                 band=raw.get("band", 0.8),
                 score_thickness=raw.get("score_thickness", 0.05),
+                membrane_thickness=raw.get("membrane_thickness"),
+                pattern=raw.get("pattern", "perimeter"),
+                arc_bulge=raw.get("arc_bulge", 0.30),
             )
         box = BoxCan(
             width=case.geometry.width or 0.0,
@@ -466,12 +475,48 @@ def run_pipeline(
         result.notices.append(note)
         emit(f"  {note}")
 
+    # Foil-vent construction: split the stadium region of the cap into its
+    # own membrane part (thin foil, own material) welded to the cap through
+    # the shared node block.
+    can_deck_mesh = result.meshes["can"].mesh
+    membrane_mesh = None
+    membrane_material = None
+    membrane_thickness = None
+    membrane_eps = None
+    vent_raw = case.geometry.vent or {}
+    if result.geometry.box is not None and vent_raw.get("membrane_thickness") is not None:
+        from .meshing.mesher import split_vent_membrane  # noqa: PLC0415
+
+        can_deck_mesh, membrane_mesh = split_vent_membrane(can_deck_mesh, result.geometry.box)
+        membrane_thickness = float(vent_raw["membrane_thickness"])
+        membrane_eps = (
+            None if vent_raw.get("eps_p_max") is None else float(vent_raw["eps_p_max"])
+        )
+        if vent_raw.get("material"):
+            membrane_material = load_material_card(
+                find_material_card(str(vent_raw["material"]), material_roots)
+            )
+            if not membrane_material.is_verified:
+                result.notices.append(
+                    f"UNVERIFIED MATERIAL (vent membrane): '{membrane_material.key}' has "
+                    f"verified: false (source: {membrane_material.source}). Results are trend-only."
+                )
+        emit(
+            f"  vent membrane: {membrane_mesh.n_elements} foil elements "
+            f"({membrane_mesh.metadata.get('vent_scored_elements', 0)} scored, "
+            f"pattern {membrane_mesh.metadata.get('vent_pattern')}), welded to the cap"
+        )
+
     emit(f"[3/{total}] deck")
     solver_cfg = Path(solver_config) if solver_config else case.solver.config
     result.deck = build_deck(
         case,
         material,
-        can_mesh=result.meshes["can"].mesh,
+        can_mesh=can_deck_mesh,
+        membrane_mesh=membrane_mesh,
+        membrane_material=membrane_material,
+        membrane_thickness=membrane_thickness,
+        membrane_eps_p_max=membrane_eps,
         tool_mesh=result.meshes["tool"].mesh if "tool" in result.meshes else None,
         floor_mesh=result.meshes["floor"].mesh,
         support_mesh=result.meshes["support"].mesh if "support" in result.meshes else None,

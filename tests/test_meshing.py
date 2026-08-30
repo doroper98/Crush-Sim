@@ -367,6 +367,48 @@ def test_resume_mesh_and_quality(tmp_path):
     assert stats["max_aspect_ratio"] == pytest.approx(1.0)
 
 
+def test_split_vent_membrane_petal_x():
+    from crushsim.geometry.parametric import BoxCan, VentSpec
+    from crushsim.meshing.mesher import mesh_box_can, split_vent_membrane
+
+    box = BoxCan(
+        width=40.0, height=30.0, depth=10.0, thickness=0.4,
+        vent=VentSpec(
+            length=8.0, width=4.0, band=1.0, score_thickness=0.03,
+            membrane_thickness=0.1, pattern="petal_x",
+        ),
+    )
+    result = mesh_box_can(box, target_size=1.0, enforce=False, name="box", max_attempts=1)
+    # Membrane mode: no thickness override on the unified mesh.
+    assert result.mesh.element_thickness is None
+    can_mesh, membrane = split_vent_membrane(result.mesh, box)
+    # Both halves keep the full shared node block (the weld).
+    assert np.array_equal(can_mesh.node_ids, result.mesh.node_ids)
+    assert np.array_equal(membrane.node_ids, result.mesh.node_ids)
+    assert can_mesh.n_elements + membrane.n_elements == result.mesh.n_elements
+    assert membrane.n_elements > 0
+    thk = membrane.element_thickness
+    assert thk is not None and set(np.round(thk, 3)) == {0.03, 0.1}
+    scored = int((thk == 0.03).sum())
+    assert membrane.metadata["vent_scored_elements"] == scored
+    # The scored X crosses the centre: an element at the origin is scored.
+    index = membrane.node_index()
+    centre_scored = False
+    order = 0
+    for block in (membrane.quads, membrane.tris):
+        for element in block:
+            pts = membrane.nodes[[index[int(n)] for n in element]]
+            cx, cy, _ = pts.mean(axis=0)
+            if abs(cx) < 1.0 and abs(cy) < 1.0 and thk[order] == 0.03:
+                centre_scored = True
+            order += 1
+    assert centre_scored
+    # The weld boundary nodes are used by BOTH parts (merged = welded).
+    can_used = set(np.unique(can_mesh.quads)) | set(np.unique(can_mesh.tris))
+    mem_used = set(np.unique(membrane.quads)) | set(np.unique(membrane.tris))
+    assert can_used & mem_used, "membrane must share its boundary nodes with the cap"
+
+
 def test_box_can_scored_vent_mesh_gate():
     from crushsim.geometry.parametric import BoxCan, VentSpec
     from crushsim.meshing.mesher import mesh_box_can

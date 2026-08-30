@@ -477,3 +477,28 @@ def test_export_deformed_step_roundtrip(tmp_path):
         assert bb[3] < 15.0  # floor tri at x=20 excluded
     finally:
         gmsh.finalize()
+
+
+def test_vent_metrics_parses_sh3n_thickness() -> None:
+    """/SH3N lines are 80 chars (3 node ids), /SHELL 90 - both must yield
+    their trailing thickness field (a scored triangle miscounted the score
+    set and made t_opening report early)."""
+    from crushsim.deck.format import f20, i10
+    from crushsim.post.vent_metrics import _element_areas
+
+    deck = "\n".join([
+        "/NODE",
+        i10(1) + f20(0.0) + f20(0.0) + f20(0.0),
+        i10(2) + f20(1.0) + f20(0.0) + f20(0.0),
+        i10(3) + f20(1.0) + f20(1.0) + f20(0.0),
+        i10(4) + f20(0.0) + f20(1.0) + f20(0.0),
+        "/SHELL/2",
+        i10(10) + i10(1) + i10(2) + i10(3) + i10(4) + f20(0.0) + f20(0.1),
+        "/SH3N/2",
+        i10(11) + i10(1) + i10(2) + i10(3) + f20(0.0) + f20(0.03),
+        "/END",
+    ])
+    areas, thickness = _element_areas(deck, 2)
+    assert set(areas) == {10, 11}
+    assert thickness[10] == 0.1
+    assert thickness[11] == 0.03

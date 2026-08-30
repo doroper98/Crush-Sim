@@ -259,3 +259,24 @@ def test_extra_tools_parse_and_validate(tmp_path: Path) -> None:
     payload["loading"]["extra_tools"][0]["tool"] = "banana"
     with pytest.raises(ConfigError, match="extra_tools"):
         load_case(_write(tmp_path / "bad.yaml", payload))
+
+
+def test_vent_eps_p_max_must_be_positive(tmp_path: Path) -> None:
+    payload = {
+        "name": "foil",
+        "load_case": "LC-3",
+        "geometry": {
+            "kind": "box_can", "width": 40.0, "depth": 10.0, "height": 30.0,
+            "thickness": 0.4, "closed_top": True,
+            "vent": {"length": 8.0, "width": 4.0, "membrane_thickness": 0.1,
+                     "score_thickness": 0.03, "pattern": "petal_x", "eps_p_max": 0.0},
+        },
+        "material": {"key": "aluminum_3003"},
+        "loading": {"tool": "none"},
+        "pressure": {"peak": 1.0},
+        "output": {"dir": "runs/foil"},
+    }
+    with pytest.raises(ConfigError, match="eps_p_max"):
+        load_case(_write(tmp_path / "foil.yaml", payload))
+    payload["geometry"]["vent"]["eps_p_max"] = 0.4
+    assert load_case(_write(tmp_path / "ok.yaml", payload)).geometry.vent["eps_p_max"] == 0.4

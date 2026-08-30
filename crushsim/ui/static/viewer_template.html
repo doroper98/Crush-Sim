@@ -75,6 +75,11 @@ button.on{background:var(--ink); color:var(--bg); border-color:transparent}
 .grp{display:flex; gap:6px; flex-wrap:wrap}
 .frameno{font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--muted); width:74px; flex:none; text-align:right}
 .chart{width:100%; height:150px; display:block}
+table.dims{width:100%; border-collapse:collapse; font-size:11.5px}
+table.dims td{padding:3px 0; border-bottom:1px solid var(--line); vertical-align:top}
+table.dims td:first-child{color:var(--muted); padding-right:8px; white-space:nowrap}
+table.dims td:last-child{text-align:right; font-family:'IBM Plex Mono',monospace}
+table.dims tr:last-child td{border-bottom:none}
 .note{font-size:11.5px; color:var(--muted); margin-top:8px}
 select{
   font:inherit; font-size:12.5px; color:var(--ink); background:var(--chip);
@@ -140,6 +145,7 @@ select{
     <div class="sec parts">
       <h2>파트 · 투명도</h2>
       <div class="prow"><input type="checkbox" id="v1" checked><span style="display:flex;gap:6px;align-items:center"><span class="sw" id="sw1"></span>캔</span><input type="range" id="o1" min="0" max="1" value="1" step="0.05"><span class="val" id="ov1">100%</span></div>
+      <div class="prow" id="prow5" hidden><input type="checkbox" id="v5" checked><span style="display:flex;gap:6px;align-items:center"><span class="sw" id="sw5"></span>벤트</span><input type="range" id="o5" min="0" max="1" value="1" step="0.05"><span class="val" id="ov5">100%</span></div>
       <div class="prow"><input type="checkbox" id="v3" checked><span style="display:flex;gap:6px;align-items:center"><span class="sw" id="sw3"></span>공구</span><input type="range" id="o3" min="0" max="1" value="0.6" step="0.05"><span class="val" id="ov3">60%</span></div>
       <div class="prow"><input type="checkbox" id="v2" checked><span style="display:flex;gap:6px;align-items:center"><span class="sw" id="sw2"></span>바닥</span><input type="range" id="o2" min="0" max="1" value="0.35" step="0.05"><span class="val" id="ov2">35%</span></div>
       <div class="prow"><input type="checkbox" id="v4" checked><span style="display:flex;gap:6px;align-items:center"><span class="sw" id="sw4"></span>지지대</span><input type="range" id="o4" min="0" max="1" value="0.35" step="0.05"><span class="val" id="ov4">35%</span></div>
@@ -160,9 +166,13 @@ select{
       </div>
     </div>
     <div class="sec">
-      <h2>하중 – 변위</h2>
+      <h2 id="chartTitle">하중 – 변위</h2>
       <canvas class="chart" id="chart"></canvas>
       <p class="note" id="chartNote"></p>
+    </div>
+    <div class="sec" id="dimsSec" hidden>
+      <h2>주요 치수</h2>
+      <table class="dims" id="dimsTable"></table>
     </div>
     <div class="sec">
       <p class="note">Phase 3 결과 판독 화면 프로토타입 — __NOTE__ 구동됩니다. 프레임 사이는 선형 보간.</p>
@@ -180,6 +190,7 @@ const b64u8 = s => Uint8Array.from(atob(s), c=>c.charCodeAt(0));
 
 const quads = D.quads_dtype==="u2" ? b64u16(D.quads) : new Uint32Array(Uint8Array.from(atob(D.quads),c=>c.charCodeAt(0)).buffer);
 const part = b64u8(D.part);
+const score = D.score ? b64u8(D.score) : null; // 1 = engraved score groove element
 const NF = D.meta.frames, NQ = part.length;
 const pos = D.pos.map(b64f), vm = D.vm.map(b64f), ps = (D.ps||[]).map(b64f);
 if(!ps.length){const o=document.querySelector('option[value="ps"]'); if(o)o.remove();}
@@ -224,7 +235,7 @@ const loc={aPos:gl.getAttribLocation(prog,"aPos"),aNrm:gl.getAttribLocation(prog
   uClipOn:gl.getUniformLocation(prog,"uClipOn"),uLight:gl.getUniformLocation(prog,"uLight")};
 
 // per-part expanded triangle buffers (rebuilt on frame/color change)
-const partIds=[1,2,3,4];
+const partIds=[1,2,3,4,5];
 const quadsByPart={};
 for(const pid of partIds){
   const idx=[]; for(let q=0;q<NQ;q++) if(part[q]===pid) idx.push(q);
@@ -241,10 +252,12 @@ function viridis(t){
   t=Math.min(1,Math.max(0,t)); const x=t*(c.length-1), i=Math.min(c.length-2,Math.floor(x)), f=x-i;
   return [ (c[i][0]+(c[i+1][0]-c[i][0])*f)/255, (c[i][1]+(c[i+1][1]-c[i][1])*f)/255, (c[i][2]+(c[i+1][2]-c[i][2])*f)/255 ];
 }
-const partColor={1:[0.78,0.31,0.24],2:[0.62,0.66,0.72],3:[0.35,0.42,0.55],4:[0.47,0.56,0.5]};
+const partColor={1:[0.78,0.31,0.24],2:[0.62,0.66,0.72],3:[0.35,0.42,0.55],4:[0.47,0.56,0.5],5:[0.87,0.64,0.16]};
+// The vent-foil row only shows when the run actually has one.
+if(quadsByPart[5]&&quadsByPart[5].length){const r=document.getElementById("prow5");if(r)r.hidden=false;}
 
 const state={t:0, playing:false, speed:1, wire:false, ghost:false, colorMode:"part",
-  vis:{1:true,2:true,3:true,4:true}, opa:{1:1,2:0.35,3:0.6,4:0.35},
+  vis:{1:true,2:true,3:true,4:true,5:true}, opa:{1:1,2:0.35,3:0.6,4:0.35,5:1},
   clipAxis:-1, clipPos:0.5, clipFlip:false,
   rotX:-1.05, rotZ:0.7, dist:diag*1.9, pan:[0,0]};
 
@@ -298,7 +311,10 @@ function rebuild(){
       let nx=uy*wz-uz*wy, ny=uz*wx-ux*wz, nz=ux*wy-uy*wx;
       const nl=Math.hypot(nx,ny,nz)||1; nx/=nl;ny/=nl;nz/=nl;
       let r,g,b2;
-      if(state.colorMode==="part"){ [r,g,b2]=partColor[pid]; }
+      if(state.colorMode==="part"){
+        [r,g,b2]=partColor[pid];
+        if(score&&score[q]){ r=0.52;g=0.30;b2=0.05; } // engraved score grooves
+      }
       else { [r,g,b2]=viridis(scalarAt(q)/smax()); }
       const alpha=state.opa[pid];
       for(const t3 of [0,1,2, 0,2,3]){
@@ -475,16 +491,26 @@ function updateCbar(){
   $("cbarMin").textContent="0";
 }
 
-// curve mapping: time -> displacement/force (absent on pressure-driven runs)
+// curve mapping: time -> (x,y). kind "force": x=displacement, y=force.
+// kind "pressure": x=time[ms], y=internal pressure[MPa]. Optional marks:
+// [{t,label}] vertical annotations (e.g. first rupture).
 const HASCURVE=!!(D.curve&&D.curve.t&&D.curve.t.length);
-const CT=HASCURVE?D.curve.t:[0], CD=HASCURVE?D.curve.d:[0], CF=HASCURVE?D.curve.f:[0];
+const CT=HASCURVE?D.curve.t:[0], CX=HASCURVE?D.curve.x:[0], CY=HASCURVE?D.curve.y:[0];
+const CKIND=HASCURVE?(D.curve.kind||"force"):"", CMARKS=(HASCURVE&&D.curve.marks)||[];
+const XUNIT=HASCURVE?(D.curve.xunit||""):"", YUNIT=HASCURVE?(D.curve.yunit||""):"";
+const CAREA=(HASCURVE&&D.curve.area)||null; // vent open-area overlay {t,y[%],label,total_mm2}
+function areaAt(time){ // stepped: the area jumps when an element deletes
+  if(!CAREA||time<=CAREA.t[0])return CAREA?CAREA.y[0]:0;
+  for(let i=1;i<CAREA.t.length;i++) if(CAREA.t[i]>time) return CAREA.y[i-1];
+  return CAREA.y[CAREA.y.length-1];
+}
 function curveAt(time){
-  if(time<=CT[0])return[CD[0],CF[0]];
+  if(time<=CT[0])return[CX[0],CY[0]];
   for(let i=1;i<CT.length;i++) if(CT[i]>=time){
     const a=(time-CT[i-1])/(CT[i]-CT[i-1]||1e-12);
-    return [CD[i-1]+(CD[i]-CD[i-1])*a, CF[i-1]+(CF[i]-CF[i-1])*a];
+    return [CX[i-1]+(CX[i]-CX[i-1])*a, CY[i-1]+(CY[i]-CY[i-1])*a];
   }
-  return [CD[CD.length-1],CF[CF.length-1]];
+  return [CX[CX.length-1],CY[CY.length-1]];
 }
 function simTime(){
   const {i,a}=frameLerp();
@@ -493,14 +519,42 @@ function simTime(){
 function updateReadout(){
   const t=simTime();
   if(!HASCURVE){$("readout").innerHTML=`t <b>${(t*1000).toFixed(2)} ms</b>`;return;}
-  const [d,f]=curveAt(t);
-  $("readout").innerHTML=`t <b>${(t*1000).toFixed(2)} ms</b> &nbsp; d <b>${d.toFixed(2)} mm</b> &nbsp; F <b>${f.toFixed(1)} N</b>`;
+  const [x,y]=curveAt(t);
+  if(CKIND==="pressure"){
+    let extra="";
+    if(CAREA){
+      const pct=areaAt(t);
+      extra=` &nbsp; 개구 <b>${pct.toFixed(0)}%</b> (${(pct/100*CAREA.total_mm2).toFixed(0)} mm²)`;
+    }
+    $("readout").innerHTML=`t <b>${(t*1000).toFixed(2)} ms</b> &nbsp; P <b>${y.toFixed(2)} MPa</b>`+extra;
+  }
+  else
+    $("readout").innerHTML=`t <b>${(t*1000).toFixed(2)} ms</b> &nbsp; d <b>${x.toFixed(2)} mm</b> &nbsp; F <b>${y.toFixed(1)} N</b>`;
 }
 // chart
 const chart=$("chart"),ctx=chart.getContext("2d");
-const fMax=Math.max(...CF), dMax=Math.max(...CD);
-if(HASCURVE){$("chartNote").textContent=`피크 ${fMax.toFixed(0)} N @ ${CD[CF.indexOf(fMax)].toFixed(1)} mm`;}
-else{$("chartNote").textContent="압력 구동 해석 — 하중-변위 곡선 없음";const c=$("chart");if(c)c.style.display="none";}
+const yMax=Math.max(...CY), xMax=Math.max(...CX);
+if(HASCURVE){
+  if(CKIND==="pressure"){
+    $("chartTitle").textContent=(D.curve.ylabel||"내압")+" – "+(D.curve.xlabel||"시간");
+    $("chartNote").textContent=CMARKS.length
+      ? CMARKS.map(m=>`${m.label} P=${(curveAt(m.t)[1]).toFixed(2)} MPa (t=${(m.t*1000).toFixed(2)} ms)`).join(" · ")
+      : `피크 ${yMax.toFixed(2)} MPa`;
+  }else{
+    $("chartNote").textContent=`피크 ${yMax.toFixed(0)} N @ ${CX[CY.indexOf(yMax)].toFixed(1)} mm`;
+  }
+}else{$("chartNote").textContent="곡선 데이터 없음";const c=$("chart");if(c)c.style.display="none";}
+// key dimensions panel
+(function(){
+  const rows=(D.meta.dims||[]);
+  if(!rows.length)return;
+  const tab=$("dimsTable");
+  for(const [k,v] of rows){
+    const tr=document.createElement("tr"), a=document.createElement("td"), b=document.createElement("td");
+    a.textContent=k; b.textContent=v; tr.append(a,b); tab.append(tr);
+  }
+  $("dimsSec").hidden=false;
+})();
 function drawChart(){
   if(!HASCURVE)return;
   const w=chart.clientWidth*devicePixelRatio,h=chart.clientHeight*devicePixelRatio;
@@ -509,22 +563,51 @@ function drawChart(){
   const line=cs.getPropertyValue("--line").trim(),ink=cs.getPropertyValue("--ink").trim(),
         acc=cs.getPropertyValue("--accent").trim(),muted=cs.getPropertyValue("--muted").trim();
   ctx.clearRect(0,0,w,h);
-  const px=d=>8*devicePixelRatio+(w-16*devicePixelRatio)*d/dMax;
-  const py=f=>h-14*devicePixelRatio-(h-24*devicePixelRatio)*f/fMax;
+  const px=x=>8*devicePixelRatio+(w-16*devicePixelRatio)*x/(xMax||1);
+  const py=y=>h-14*devicePixelRatio-(h-24*devicePixelRatio)*y/(yMax||1);
   ctx.strokeStyle=line;ctx.lineWidth=devicePixelRatio;
-  ctx.beginPath();ctx.moveTo(px(0),py(0));ctx.lineTo(px(dMax),py(0));ctx.stroke();
+  ctx.beginPath();ctx.moveTo(px(0),py(0));ctx.lineTo(px(xMax),py(0));ctx.stroke();
+  // open-area overlay: stepped teal line on its own 0-100% scale
+  if(CAREA){
+    const pa=f=>h-14*devicePixelRatio-(h-24*devicePixelRatio)*f/100.0;
+    ctx.strokeStyle="#1e8e8e";ctx.lineWidth=1.5*devicePixelRatio;ctx.globalAlpha=0.8;
+    ctx.beginPath();
+    let prevY=pa(CAREA.y[0]);ctx.moveTo(px(CAREA.t[0]*(CKIND==="pressure"?1000:1)),prevY);
+    for(let i=1;i<CAREA.t.length;i++){
+      const X=px(CAREA.t[i]*(CKIND==="pressure"?1000:1)),Y=pa(CAREA.y[i]);
+      ctx.lineTo(X,prevY);ctx.lineTo(X,Y);prevY=Y;
+    }
+    ctx.lineTo(px(xMax),prevY);ctx.stroke();ctx.globalAlpha=1;
+    ctx.fillStyle="#1e8e8e";ctx.font=`${9*devicePixelRatio}px IBM Plex Mono,monospace`;
+    ctx.fillText(CAREA.label||"open area",10*devicePixelRatio,pa(100)+10*devicePixelRatio);
+  }
+  let markFlip=false;
+  for(const mark of CMARKS){
+    const [mx]=curveAt(mark.t);
+    ctx.strokeStyle=muted;ctx.lineWidth=devicePixelRatio;ctx.setLineDash([4*devicePixelRatio,3*devicePixelRatio]);
+    ctx.beginPath();ctx.moveTo(px(mx),py(0));ctx.lineTo(px(mx),py(yMax));ctx.stroke();
+    ctx.setLineDash([]);
+    if(mark.label){
+      ctx.fillStyle=ink;ctx.font=`${9*devicePixelRatio}px IBM Plex Mono,monospace`;
+      const tw=ctx.measureText(mark.label).width;
+      const tx=Math.min(Math.max(px(mx)-tw/2,2*devicePixelRatio),w-tw-2*devicePixelRatio);
+      ctx.fillText(mark.label,tx,py(yMax)+(markFlip?22:10)*devicePixelRatio);
+      markFlip=!markFlip;
+    }
+  }
   ctx.strokeStyle=muted;ctx.lineWidth=1.2*devicePixelRatio;ctx.globalAlpha=0.55;
-  ctx.beginPath();for(let i=0;i<CD.length;i++){const X=px(CD[i]),Y=py(CF[i]);i?ctx.lineTo(X,Y):ctx.moveTo(X,Y);}ctx.stroke();
+  ctx.beginPath();for(let i=0;i<CX.length;i++){const X=px(CX[i]),Y=py(CY[i]);i?ctx.lineTo(X,Y):ctx.moveTo(X,Y);}ctx.stroke();
   ctx.globalAlpha=1;
   const t=simTime();
   ctx.strokeStyle=acc;ctx.lineWidth=2*devicePixelRatio;
   ctx.beginPath();let started=false;
-  for(let i=0;i<CD.length;i++){if(CT[i]>t)break;const X=px(CD[i]),Y=py(CF[i]);started?ctx.lineTo(X,Y):ctx.moveTo(X,Y);started=true;}
+  for(let i=0;i<CX.length;i++){if(CT[i]>t)break;const X=px(CX[i]),Y=py(CY[i]);started?ctx.lineTo(X,Y):ctx.moveTo(X,Y);started=true;}
   ctx.stroke();
-  const [d,f]=curveAt(t);
-  ctx.fillStyle=acc;ctx.beginPath();ctx.arc(px(d),py(f),4*devicePixelRatio,0,7);ctx.fill();
+  const [x,y]=curveAt(t);
+  ctx.fillStyle=acc;ctx.beginPath();ctx.arc(px(x),py(y),4*devicePixelRatio,0,7);ctx.fill();
   ctx.fillStyle=ink;ctx.font=`${10*devicePixelRatio}px IBM Plex Mono,monospace`;
-  ctx.fillText(`${f.toFixed(0)} N`,Math.min(px(d)+6*devicePixelRatio,w-52*devicePixelRatio),py(f)-6*devicePixelRatio);
+  const tag=CKIND==="pressure"?`${y.toFixed(2)}${YUNIT}`:`${y.toFixed(0)}${YUNIT}`;
+  ctx.fillText(tag,Math.min(px(x)+6*devicePixelRatio,w-64*devicePixelRatio),py(y)-6*devicePixelRatio);
 }
 
 let drawQueued=false;

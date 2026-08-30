@@ -96,6 +96,16 @@ class DeckPart:
     thickness: float
     role: PartRole
     material: MaterialCard | None = None
+    host: str | None = None
+    """Name of an earlier part whose node block this part shares.
+
+    A host part's mesh must carry the host mesh's FULL node array in the
+    same order; the writer then renumbers it with the host's offset and
+    skips its /NODE block, so shared boundary nodes are merged - the exact
+    model of a weld (e.g. the vent membrane foil welded into the cap).
+    """
+    eps_p_max: float | None = None
+    """Per-part failure strain override for the LAW2 EPS_p_max slot."""
     part_id: int = 0
     prop_id: int = 0
     mat_id: int = 0
@@ -389,6 +399,7 @@ class RadiossDeckWriter:
         description: str = "",
         solver_version_tag: str = "unpinned",
         clamp_can_base: bool = False,
+        brace_walls: bool = False,
         extra_drives: list[DriveDefinition] | None = None,
         pressure: tuple[float, float, float] | None = None,
         eps_p_max: float | None = None,
@@ -426,6 +437,7 @@ class RadiossDeckWriter:
         self.description = description
         self.solver_version_tag = solver_version_tag
         self.clamp_can_base = bool(clamp_can_base)
+        self.brace_walls = bool(brace_walls)
         self.pressure = pressure
         self.eps_p_max = eps_p_max
         self._assign_ids()
@@ -440,11 +452,21 @@ class RadiossDeckWriter:
             part.part_id = index
             part.prop_id = index
             part.mat_id = index
-            part.node_offset = node_cursor
             part.element_offset = element_cursor
+            element_cursor += part.mesh.n_elements
+            if part.host is not None:
+                # Shared node block: same offset as the host, no new nodes.
+                # Identical node_ids ordering makes renumber() reproduce the
+                # host's mapping, so boundary nodes merge (welded).
+                host = next((p for p in self.parts if p.name == part.host), None)
+                if host is None or self.parts.index(host) >= self.parts.index(part):
+                    raise DeckError(f"Part {part.name} host {part.host!r} not found before it")
+                part.node_offset = host.node_offset
+                part.mesh = part.mesh.renumber(host.node_offset)
+                continue
+            part.node_offset = node_cursor
             part.mesh = part.mesh.renumber(node_cursor)
             node_cursor += part.mesh.n_nodes
-            element_cursor += part.mesh.n_elements
         # Rigid-body master nodes live after every meshed node.
         for part in self.parts:
             if part.rigid:
@@ -511,6 +533,8 @@ class RadiossDeckWriter:
     def _block_nodes(self) -> list[str]:
         lines = [RULER, "/NODE", "#  node_ID                   X                   Y                   Z"]
         for part in self.parts:
+            if part.host is not None:  # shares the host part's node block
+                continue
             lines.append(f"# part: {part.name}")
             for nid, (x, y, z) in zip(part.mesh.node_ids, part.mesh.nodes):
                 lines.append(i10(int(nid)) + reals((x, y, z)))
@@ -599,7 +623,13 @@ class RadiossDeckWriter:
                 reals((card.E, card.nu)),
                 "#                  a                   b                   n"
                 "           EPS_p_max           SIG_max0",
-                reals((card.law2.A, card.law2.B, card.law2.n, self.eps_p_max or 0.0, 0.0)),
+                reals((
+                    card.law2.A,
+                    card.law2.B,
+                    card.law2.n,
+                    (part.eps_p_max if part.eps_p_max is not None else self.eps_p_max) or 0.0,
+                    0.0,
+                )),
                 "#                  c           EPS_DOT_0       ICC   Fsmooth"
                 "               F_cut               Chard",
                 reals((0.0, 0.0)) + i10(1) + i10(0) + reals((0.0, 0.0)),
@@ -712,6 +742,38 @@ class RadiossDeckWriter:
             title("CAN_BASE_CLAMP"),
             "#  Tra rot   skew_ID  grnod_ID",
             s10("111 111") + i10(0) + i10(96),
+        ]
+        return lines
+
+    def _block_wall_brace(self) -> list[str]:
+        """Lock Y translation of the can's two extreme-Y faces (module bracing).
+
+        On a prismatic (box) can the large flat faces are normal to Y. Empty
+        and unsupported they balloon under internal pressure and tear near
+        the cap rim before the scored cap vent activates; in the cell the
+        jelly roll and the module end plates hold them nearly flat. Only the
+        face-normal translation is fixed - in-plane motion and all rotations
+        stay free, so the cap, the narrow walls, and the vent flap are
+        unaffected.
+        """
+        can = next(p for p in self.parts if p.role == "deformable")
+        y = np.asarray(can.mesh.nodes, dtype=float)[:, 1]
+        y_max = float(np.abs(y).max())
+        if y_max < 1e-6:
+            return []
+        face_ids = [
+            int(n) for n, yy in zip(can.mesh.node_ids, y) if abs(abs(yy) - y_max) <= 0.1
+        ]
+        if not face_ids:
+            return []
+        lines = [RULER, "/GRNOD/NODE/97", title("CAN_LARGE_FACES")]
+        for i in range(0, len(face_ids), 10):
+            lines.append("".join(i10(n) for n in face_ids[i : i + 10]))
+        lines += [
+            "/BCS/6",
+            title("WALL_BRACE"),
+            "#  Tra rot   skew_ID  grnod_ID",
+            s10("010 000") + i10(0) + i10(97),
         ]
         return lines
 
@@ -990,6 +1052,8 @@ class RadiossDeckWriter:
                 lines += self._block_fixed_bcs(part, bcs_id)
         if self.clamp_can_base:
             lines += self._block_can_base_clamp()
+        if self.brace_walls:
+            lines += self._block_wall_brace()
         lines += self._block_tool_drive()
         lines += self._block_pressure()
         lines += self._block_contact()
@@ -1068,6 +1132,10 @@ def build_deck(
     floor_mesh: ShellMesh | None = None,
     support_mesh: ShellMesh | None = None,
     extra_tool_meshes: list[ShellMesh] | None = None,
+    membrane_mesh: ShellMesh | None = None,
+    membrane_material: MaterialCard | None = None,
+    membrane_thickness: float | None = None,
+    membrane_eps_p_max: float | None = None,
     outdir: str | Path,
     run_name: str | None = None,
     solver_version_tag: str = "unpinned",
@@ -1096,6 +1164,22 @@ def build_deck(
             material=material,
         )
     ]
+    if membrane_mesh is not None:
+        # Foil vent welded into the cap: the membrane shares the CAN node
+        # block (host), so the stadium boundary nodes are merged - a weld.
+        if membrane_thickness is None:
+            raise DeckError("A vent membrane part needs its foil thickness")
+        parts.append(
+            DeckPart(
+                name="VENT_MEMBRANE",
+                mesh=membrane_mesh,
+                thickness=membrane_thickness,
+                role="deformable",
+                material=membrane_material or material,
+                host="CAN",
+                eps_p_max=membrane_eps_p_max,
+            )
+        )
     if floor_mesh is not None:
         parts.append(
             DeckPart(
@@ -1204,7 +1288,12 @@ def build_deck(
         pressure = (case.pressure.peak, case.pressure.rise, case.pressure.hold)
         # /PLOAD acts along element normals: a consistent outward orientation
         # is what makes the internal pressure inflate the can everywhere.
+        # The membrane sits in the cap plane, so its own centroid is useless
+        # as a reference - orient it from the can body's centre instead.
         can_mesh.orient_outward()
+        if membrane_mesh is not None:
+            centre = np.asarray(can_mesh.nodes, dtype=float).mean(axis=0)
+            membrane_mesh.orient_outward((float(centre[0]), float(centre[1]), float(centre[2])))
 
     writer = RadiossDeckWriter(
         run_name=run_name or case.name,
@@ -1213,6 +1302,7 @@ def build_deck(
         material=material,
         friction=case.contact.friction,
         clamp_can_base=case.loading.clamp_can_base,
+        brace_walls=case.loading.brace_walls,
         gap_scale=case.contact.gap_scale,
         stiffness_scale=case.contact.stiffness_scale,
         animation_frames=case.solver.animation_frames,

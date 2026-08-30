@@ -1,0 +1,77 @@
+# LC-6 v4 - prismatic vent burst: production foil-vent construction.
+#
+# Matches the real cap in the user's photos: the cap is thick aluminium
+# (here kept as the steel can shell - it barely deforms either way), the
+# stadium vent region is a SEPARATE hand-pressably thin soft-aluminium
+# foil welded into the cap (merged nodes along the stadium outline = the
+# weld), and the burst score is an X of coined grooves crossing at the
+# centre of the foil (vent.pattern: petal_x). Expected behaviour, and why
+# production caps carry the X instead of a perimeter score (which made the
+# v3 flap detach and eject): the burst starts at the crossing, tears run
+# outward along the arms, and the four petals fold back on the UNSCORED
+# welded perimeter - the vent opens without throwing a fragment.
+#
+# The foil is Al 1050-O (literature card): 0.1 mm membrane, 0.03 mm score
+# residual, failure strain 0.40 (soft Al elongation). Ramp to 2 MPa: a
+# thin soft foil membrane should open well below v3's 2.1 MPa.
+
+name: lc6_pris_vent_burst_v4b
+load_case: LC-3
+description: >-
+  Prismatic cell can (120.5 x 13.1 x 65, t0.6, braced) with a production
+  foil vent: 30 x 7 mm Al 1050-O membrane (0.1 mm) welded into the cap,
+  petal_x score pattern at 0.03 mm - internal pressure ramp to petal burst.
+
+geometry:
+  kind: box_can
+  width: 120.5
+  depth: 13.1
+  height: 65.0
+  thickness: 0.6
+  closed_bottom: true
+  closed_top: true
+  vent:
+    length: 30.0
+    width: 7.0
+    band: 1.0                 # score line width (petal_x arms catch band/2)
+    membrane_thickness: 0.1   # welded-in foil
+    score_thickness: 0.03     # coined groove residual
+    pattern: petal_x
+    material: al1050_foil
+    eps_p_max: 0.40           # soft Al elongation; can body keeps 0.35
+
+material:
+  key: ni_plated_steel_can
+  eps_p_max: 0.35
+
+mesh:
+  target_size: 1.2
+  recombine: true
+  curvature_points: 12
+
+loading:
+  tool: none                # pressure-driven
+  clamp_can_base: true
+  brace_walls: true         # jelly roll + module end plates on the large faces
+
+pressure:
+  peak: 0.8                 # MPa - just past burst (0.71): petals open and HOLD
+  rise: 3.0e-3
+  hold: 1.5e-3
+
+contact:
+  friction: 0.15
+
+solver:
+  config: configs/solver.yaml
+  threads: 4
+  end_time: auto
+  animation_frames: 40
+  time_history_points: 500
+  stop_on_energy_error: false  # element deletion removes IE from the balance at burst
+  stop_on_negative_volume: true
+
+output:
+  dir: runs/lc6_pris_vent_burst_v4b
+  render: true
+  report: true
