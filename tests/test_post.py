@@ -502,3 +502,61 @@ def test_vent_metrics_parses_sh3n_thickness() -> None:
     assert set(areas) == {10, 11}
     assert thickness[10] == 0.1
     assert thickness[11] == 0.03
+
+
+def test_vent_metrics_milestones_from_a_synthetic_run(tmp_path) -> None:
+    """Initiation is the first deletion; opening is the flow-area threshold.
+
+    The 'every score element torn' rule it replaced is not mesh-robust: one
+    lightly-loaded element surviving at an arc tip suppressed the milestone
+    entirely (measured 179 of 180 on the refined LC-6 score).
+    """
+    import json
+
+    from crushsim.deck.format import f20, i10
+    from crushsim.post.vent_metrics import OPENING_AREA_FRACTION, vent_metrics
+
+    deck_dir = tmp_path / "deck"
+    deck_dir.mkdir()
+    # Four unit-area membrane quads in a row; the first two are scored.
+    nodes = ["/NODE"]
+    for i in range(10):
+        nodes.append(i10(i + 1) + f20(float(i // 2)) + f20(float(i % 2)) + f20(0.0))
+    shells = ["/SHELL/2"]
+    for e in range(4):
+        n0 = 2 * e + 1
+        thickness = 0.03 if e < 2 else 0.1
+        shells.append(
+            i10(100 + e) + i10(n0) + i10(n0 + 2) + i10(n0 + 3) + i10(n0 + 1)
+            + f20(0.0) + f20(thickness)
+        )
+    (deck_dir / "run_0000.rad").write_text("\n".join([*nodes, *shells, "/END"]), encoding="utf-8")
+    # Engine listing: cycle lines set the clock, rupture lines delete elements.
+    def cycle(t: float) -> str:
+        return f"        1  {t:.6E}  1.000E-06   0.0"
+    (deck_dir / "run_0001.out").write_text(
+        "\n".join([
+            cycle(1.0e-3), " -- RUPTURE OF SHELL ELEMENT NUMBER        100",
+            cycle(2.0e-3), " -- RUPTURE OF SHELL ELEMENT NUMBER        101",
+            cycle(3.0e-3), " -- RUPTURE OF SHELL ELEMENT NUMBER        102",
+        ]),
+        encoding="utf-8",
+    )
+    (tmp_path / "pipeline_summary.json").write_text(
+        json.dumps({"deck": {"parts": [
+            {"name": "CAN", "role": "deformable", "part_id": 1},
+            {"name": "VENT_MEMBRANE", "role": "deformable", "part_id": 2},
+        ]}}),
+        encoding="utf-8",
+    )
+
+    m = vent_metrics(tmp_path)
+    assert m["vent_area_mm2"] == pytest.approx(4.0)
+    assert m["score_elements"] == 2
+    assert m["score_ruptured"] == 2
+    assert m["t_initiation_s"] == pytest.approx(1.0e-3)
+    # 25% of 4 mm^2 = 1 mm^2: reached by the very first deletion.
+    assert OPENING_AREA_FRACTION == 0.25
+    assert m["t_opening_s"] == pytest.approx(1.0e-3)
+    assert m["t_score_fully_torn_s"] == pytest.approx(2.0e-3)
+    assert m["area_curve"][-1][1] == pytest.approx(3.0)
