@@ -599,6 +599,11 @@ def load_case(path: str | Path) -> CaseConfig:
                 geometry.vent["material"], str
             ):
                 raise ConfigError(f"geometry.vent.material in {p} must be a material key string")
+            if geometry.vent.get("eps_p_max") is not None and geometry.vent["eps_p_max"] <= 0:
+                raise ConfigError(
+                    f"geometry.vent.eps_p_max in {p} must be > 0 - zero disables element "
+                    "deletion on the membrane, so the configured burst never happens"
+                )
 
     mesh_raw = dict(data.get("mesh") or {})
     mesh = MeshConfig(

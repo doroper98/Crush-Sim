@@ -69,7 +69,9 @@ def _element_areas(deck_text: str, part_id: int) -> tuple[dict[int, float], dict
         else:
             area = 0.5 * np.linalg.norm(np.cross(pts[1] - pts[0], pts[2] - pts[0]))
         areas[eid] = float(area)
-        if len(line) >= 90:
+        # Trailing (phi, thk) fields: a quad line is 50+40 chars, a /SH3N
+        # triangle line only 40+40 - size the guard per element type.
+        if len(line) >= 10 * (1 + count) + 40:
             try:
                 thickness[eid] = float(line[-20:])
             except ValueError:
