@@ -650,6 +650,29 @@ def _post_process(
         # retried once (the second pass reliably succeeds), and a still-failed
         # render degrades to a note instead of losing the report.
         out["render"] = _render_in_subprocess(result.run_dir)
+
+    # Vent milestones, cached here so the UI and the reports read them from the
+    # summary instead of re-parsing a multi-megabyte deck on every poll.
+    if result.case.pressure.peak > 0.0:
+        try:
+            from .post.vent_metrics import vent_metrics  # noqa: PLC0415
+
+            peak, rise = result.case.pressure.peak, result.case.pressure.rise
+            metrics_v = vent_metrics(result.run_dir)
+            if metrics_v is not None:
+                def _mpa(t: float | None) -> float | None:
+                    return None if t is None else peak * min(t / rise, 1.0) if rise > 0 else peak
+
+                out["vent"] = {
+                    "initiation_MPa": _mpa(metrics_v["t_initiation_s"]),
+                    "opening_MPa": _mpa(metrics_v["t_opening_s"]),
+                    "opening_area_fraction": metrics_v["opening_area_fraction"],
+                    "vent_area_mm2": metrics_v["vent_area_mm2"],
+                    "score_elements": metrics_v["score_elements"],
+                    "score_ruptured": metrics_v["score_ruptured"],
+                }
+        except Exception:  # noqa: BLE001 - metrics are an extra, never a blocker
+            pass
     return out
 
 

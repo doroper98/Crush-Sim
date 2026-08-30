@@ -272,6 +272,7 @@ def create_app(root: str | Path = ".") -> FastAPI:
                         "absorbed_energy_mJ": metrics.get("absorbed_energy_mJ"),
                         "energy_error": energy.get("energy_error"),
                         "gate_passed": (energy.get("gate") or {}).get("passed"),
+                        "vent": post.get("vent"),
                         "report": bool((summary.parent / "report.html").is_file()),
                         "viewer": bool((summary.parent / "viewer.html").is_file()),
                     }
@@ -291,6 +292,13 @@ def create_app(root: str | Path = ".") -> FastAPI:
         ):
             raise HTTPException(404, f"run not found: {name}")
         return run_dir
+
+    @app.get("/api/runs/{name}/report")
+    def run_report(name: str) -> FileResponse:
+        target = _run_dir_or_404(name) / "report.html"
+        if not target.is_file():
+            raise HTTPException(404, f"run {name} has no report.html")
+        return FileResponse(target, media_type="text/html")
 
     @app.get("/api/runs/{name}/viewer")
     def run_viewer(name: str) -> FileResponse:
