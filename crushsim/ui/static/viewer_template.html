@@ -238,7 +238,24 @@ const diag=Math.hypot(bmax[0]-bmin[0],bmax[1]-bmin[1],bmax[2]-bmin[2]);
 
 // ---------- WebGL ----------
 const canvas=document.getElementById("gl");
-const gl=canvas.getContext("webgl",{antialias:true});
+// Some in-app preview webviews (a file opened inside a messaging or mail app,
+// iOS Quick Look) render HTML but refuse WebGL. Without this guard the very
+// next line throws, the page keeps its panel but the model never appears and
+// no control responds - so say what happened instead of failing silently.
+const gl=canvas.getContext("webgl",{antialias:true})
+       ||canvas.getContext("experimental-webgl",{antialias:true});
+if(!gl){
+  const msg=document.createElement("div");
+  msg.style.cssText="position:absolute;inset:0;display:flex;align-items:center;"
+    +"justify-content:center;padding:24px;text-align:center;line-height:1.6;color:var(--muted)";
+  msg.innerHTML="<div><b style='color:var(--ink)'>3D 뷰를 표시할 수 없습니다</b><br>"
+    +"이 화면은 WebGL을 지원하지 않습니다.<br>"
+    +"파일을 저장한 뒤 <b>Safari·Chrome 같은 브라우저에서 직접 열어</b> 주세요.<br>"
+    +"<span style='font-size:11px'>(앱 안의 첨부파일 미리보기에서는 3D가 동작하지 않습니다)</span></div>";
+  canvas.parentNode.appendChild(msg);
+  canvas.style.display="none";
+  throw new Error("WebGL unavailable");
+}
 const VS=`attribute vec3 aPos; attribute vec3 aNrm; attribute vec4 aCol;
 uniform mat4 uMVP; uniform mat3 uNrm; varying vec3 vN; varying vec4 vC; varying vec3 vW;
 void main(){ gl_Position=uMVP*vec4(aPos,1.0); vN=uNrm*aNrm; vC=aCol; vW=aPos; }`;
