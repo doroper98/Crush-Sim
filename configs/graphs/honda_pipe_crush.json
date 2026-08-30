@@ -1,0 +1,119 @@
+{
+ "nodes": [
+  {
+   "id": "n1",
+   "type": "geometry",
+   "x": 20,
+   "y": 50,
+   "params": {
+    "kind": "step",
+    "step_path": "examples/step/Honda_Can.stp",
+    "thickness": 0.3,
+    "radius": 33.0,
+    "height": 115.0
+   }
+  },
+  {
+   "id": "n2",
+   "type": "mesh",
+   "x": 300,
+   "y": 50,
+   "params": {
+    "target_size": 1.5
+   }
+  },
+  {
+   "id": "n3",
+   "type": "material",
+   "x": 20,
+   "y": 320,
+   "params": {
+    "key": "aluminum_3003"
+   }
+  },
+  {
+   "id": "n4",
+   "type": "loading",
+   "x": 300,
+   "y": 290,
+   "params": {
+    "tool": "cylinder",
+    "direction": [
+     0,
+     1,
+     0
+    ],
+    "stroke": 8.0,
+    "velocity": 2.0,
+    "tool_gap": 0.5,
+    "indenter_radius": 8.0,
+    "tool_size": 150.0,
+    "height_frac": 0.5,
+    "support": "jig_plane",
+    "clamp_can_base": true
+   }
+  },
+  {
+   "id": "n5",
+   "type": "contact",
+   "x": 20,
+   "y": 530,
+   "params": {
+    "friction": 0.15
+   }
+  },
+  {
+   "id": "n6",
+   "type": "solver",
+   "x": 600,
+   "y": 50,
+   "params": {
+    "prefix": "honda_pipe_crush",
+    "load_case": "LC-2",
+    "threads": 4,
+    "animation_frames": 25,
+    "render": true,
+    "report": true
+   }
+  },
+  {
+   "id": "n7",
+   "type": "result",
+   "x": 600,
+   "y": 330,
+   "params": {}
+  }
+ ],
+ "edges": [
+  {
+   "from": "n1",
+   "to": "n2",
+   "port": "geom"
+  },
+  {
+   "from": "n2",
+   "to": "n6",
+   "port": "mesh"
+  },
+  {
+   "from": "n3",
+   "to": "n6",
+   "port": "mat"
+  },
+  {
+   "from": "n4",
+   "to": "n6",
+   "port": "load"
+  },
+  {
+   "from": "n5",
+   "to": "n6",
+   "port": "contact"
+  },
+  {
+   "from": "n6",
+   "to": "n7",
+   "port": "runs"
+  }
+ ]
+}

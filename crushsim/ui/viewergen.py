@@ -190,7 +190,8 @@ def _pressure_curve(run: Path, summary: dict) -> dict | None:
     if metrics is not None:
         marks = [{"t": metrics["t_initiation_s"], "label": "파단 개시"}]
         if metrics["t_opening_s"] is not None:
-            marks.append({"t": metrics["t_opening_s"], "label": "벤트 개방"})
+            pct = int(round(100 * metrics.get("opening_area_fraction", 0.25)))
+            marks.append({"t": metrics["t_opening_s"], "label": f"벤트 개방 ({pct}%)"})
         curve["marks"] = marks
         vent_area = metrics["vent_area_mm2"] or 1.0
         curve["area"] = {

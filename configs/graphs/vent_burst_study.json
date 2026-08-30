@@ -1,0 +1,170 @@
+{
+ "nodes": [
+  {
+   "id": "n1",
+   "type": "geometry",
+   "x": 20,
+   "y": 50,
+   "params": {
+    "kind": "box_can",
+    "width": 120.5,
+    "depth": 13.1,
+    "height": 65.0,
+    "thickness": 0.6,
+    "closed_bottom": true
+   }
+  },
+  {
+   "id": "n2",
+   "type": "cap",
+   "x": 275,
+   "y": 50,
+   "params": {
+    "note": "용접 = 절점 공유"
+   }
+  },
+  {
+   "id": "n3",
+   "type": "vent",
+   "x": 505,
+   "y": 50,
+   "params": {
+    "length": 30.0,
+    "width": 7.0,
+    "band": 1.0,
+    "membrane_thickness": 0.1,
+    "score_thickness": 0.03,
+    "pattern": "petal_x",
+    "material": "al1050_foil",
+    "eps_p_max": 0.4
+   }
+  },
+  {
+   "id": "n4",
+   "type": "mesh",
+   "x": 790,
+   "y": 40,
+   "params": {
+    "target_size": 1.2,
+    "vent_size": 0.5,
+    "tag": "medium"
+   }
+  },
+  {
+   "id": "n5",
+   "type": "mesh",
+   "x": 790,
+   "y": 250,
+   "params": {
+    "target_size": 1.2,
+    "vent_size": 0.3,
+    "tag": "fine"
+   }
+  },
+  {
+   "id": "n6",
+   "type": "material",
+   "x": 20,
+   "y": 420,
+   "params": {
+    "key": "ni_plated_steel_can",
+    "eps_p_max": 0.35
+   }
+  },
+  {
+   "id": "n7",
+   "type": "pressure",
+   "x": 275,
+   "y": 420,
+   "params": {
+    "peak": 0.85,
+    "rise": 0.003,
+    "hold": 0.0005,
+    "clamp_can_base": true,
+    "brace_walls": true
+   }
+  },
+  {
+   "id": "n8",
+   "type": "contact",
+   "x": 20,
+   "y": 660,
+   "params": {
+    "friction": 0.15
+   }
+  },
+  {
+   "id": "n9",
+   "type": "solver",
+   "x": 1045,
+   "y": 40,
+   "params": {
+    "prefix": "lc6_pris_vent_burst_v5",
+    "load_case": "LC-3",
+    "threads": 4,
+    "animation_frames": 40,
+    "render": true,
+    "report": true
+   }
+  },
+  {
+   "id": "n10",
+   "type": "result",
+   "x": 1020,
+   "y": 330,
+   "params": {}
+  }
+ ],
+ "edges": [
+  {
+   "from": "n1",
+   "to": "n2",
+   "port": "geom"
+  },
+  {
+   "from": "n2",
+   "to": "n3",
+   "port": "geom"
+  },
+  {
+   "from": "n3",
+   "to": "n4",
+   "port": "geom"
+  },
+  {
+   "from": "n3",
+   "to": "n5",
+   "port": "geom"
+  },
+  {
+   "from": "n4",
+   "to": "n9",
+   "port": "mesh"
+  },
+  {
+   "from": "n5",
+   "to": "n9",
+   "port": "mesh"
+  },
+  {
+   "from": "n6",
+   "to": "n9",
+   "port": "mat"
+  },
+  {
+   "from": "n7",
+   "to": "n9",
+   "port": "load"
+  },
+  {
+   "from": "n8",
+   "to": "n9",
+   "port": "contact"
+  },
+  {
+   "from": "n9",
+   "to": "n10",
+   "port": "runs"
+  }
+ ]
+}

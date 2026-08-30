@@ -68,13 +68,25 @@ h2.section:first-child{margin-top:0}
 .flowbar select,.flowbar input{font:inherit;font-size:13px;background:var(--panel);border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:6px 10px}
 .flowbar .meta{margin-left:auto}
 #flowWrap{position:relative;background:var(--panel2);border:1px solid var(--line);border-radius:10px;height:620px;overflow:auto}
-#flowCanvas{position:relative;width:1120px;height:860px}
+#flowCanvas{position:relative;width:1120px;height:860px}  /* grown by fitCanvas */
 #wires{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
 #wires path{fill:none;stroke:var(--muted);stroke-width:1.6;opacity:.6}
 .node{position:absolute;width:236px;background:var(--panel);border:1px solid var(--line);border-radius:9px;box-shadow:0 2px 10px rgba(0,0,0,.07)}
 .node h4{font-size:12.5px;font-weight:600;padding:8px 12px;border-bottom:1px solid var(--line);cursor:grab;user-select:none;border-radius:9px 9px 0 0;background:var(--chip)}
 .node .body{padding:9px 12px 11px;display:flex;flex-direction:column;gap:5px}
 .node label{font-size:11px;color:var(--muted);display:flex;justify-content:space-between;align-items:center;gap:8px}
+.node.result{width:300px}
+.resultRows{display:flex;flex-direction:column;gap:7px}
+.resultRow{display:grid;grid-template-columns:1fr auto;gap:3px 8px;align-items:center;
+  padding-bottom:6px;border-bottom:1px solid var(--line)}
+.resultRow:last-child{border-bottom:none;padding-bottom:0}
+.resultRow .rname{font-family:ui-monospace,monospace;font-size:10.5px;overflow-wrap:anywhere}
+.resultRow .rmeta{font-size:10.5px;color:var(--muted)}
+.resultRow .rlinks{font-size:10.5px;text-align:right}
+.resultRow .rlinks a{color:var(--accent);text-decoration:none}
+.resultRow .rlinks a:hover{text-decoration:underline}
+.pill.wait{background:var(--chip);color:var(--muted)}
+.pill.warn{background:#f5e2b8;color:#7a5410}
 .node input,.node select{font-family:'IBM Plex Mono',monospace;font-size:11.5px;width:116px;background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:4px;padding:3px 6px}
 .node input[type=checkbox]{width:auto}
 .node .del{position:absolute;top:6px;right:8px;font-size:12px;color:var(--muted);cursor:pointer;background:none;border:none}
@@ -255,10 +267,27 @@ const NODE_TYPES={
     {p:"height",label:"높이 mm",type:"num",show:n=>n.params.kind!=="step"},
     {p:"thickness",label:"두께 mm",type:"num"},
     {p:"closed_bottom",label:"바닥 닫힘",type:"bool"},
-    {p:"closed_top",label:"상단 닫힘",type:"bool"},
   ],defaults:{kind:"parametric_can",radius:33,height:115,thickness:0.1}},
+  // Geometry composes as a chain: 캔 -> (캡) -> (벤트) -> 메쉬. A crush case
+  // stops at the can; a vent case adds the cap and the vent onto it, so the
+  // graph itself shows what the analysis is made of.
+  cap:{title:"캡 (용접 뚜껑)",out:"geom",ins:[{port:"geom",label:"캔"}],fields:[
+    {p:"note",label:"용접 = 절점 공유",type:"text"},
+  ],defaults:{note:"merged nodes"}},
+  vent:{title:"벤트 (포일 + 스코어)",out:"geom",ins:[{port:"geom",label:"캡"}],fields:[
+    {p:"length",label:"길이 mm",type:"num"},
+    {p:"width",label:"폭 mm",type:"num"},
+    {p:"band",label:"스코어 폭 mm",type:"num"},
+    {p:"membrane_thickness",label:"포일 두께 mm",type:"num"},
+    {p:"score_thickness",label:"스코어 잔여 mm",type:"num"},
+    {p:"pattern",label:"패턴",type:"select",opts:["perimeter","petal_x"]},
+    {p:"material",label:"포일 재료",type:"text"},
+    {p:"eps_p_max",label:"포일 파단변형률",type:"num"},
+  ],defaults:{length:30,width:7,band:1.0,membrane_thickness:0.1,score_thickness:0.03,
+              pattern:"petal_x",material:"al1050_foil",eps_p_max:0.4}},
   mesh:{title:"메쉬",out:"mesh",ins:[{port:"geom",label:"형상"}],fields:[
     {p:"target_size",label:"요소 크기 mm",type:"num"},
+    {p:"vent_size",label:"벤트 세분 mm",type:"num"},
     {p:"imperfection_mm",label:"불완전성 mm",type:"num"},
     {p:"tag",label:"브랜치 태그",type:"text"},
   ],defaults:{target_size:1.5}},
@@ -285,12 +314,13 @@ const NODE_TYPES={
     {p:"rise",label:"램프 s",type:"num"},
     {p:"hold",label:"유지 s",type:"num"},
     {p:"clamp_can_base",label:"바닥 고정",type:"bool"},
+    {p:"brace_walls",label:"넓은 면 구속(모듈)",type:"bool"},
     {p:"tag",label:"브랜치 태그",type:"text"},
   ],defaults:{peak:3.0,rise:0.003,hold:0.001,clamp_can_base:true}},
   contact:{title:"접촉",out:"contact",ins:[],fields:[
     {p:"friction",label:"마찰 계수",type:"num"},
   ],defaults:{friction:0.15}},
-  solver:{title:"솔버 · 실행",out:null,ins:[
+  solver:{title:"솔버 · 실행",out:"runs",ins:[
     {port:"mesh",label:"메쉬 (다중 = 스윕)",multi:true},
     {port:"mat",label:"재료 (다중 = 스윕)",multi:true},
     {port:"load",label:"하중 (다중 = 스윕)",multi:true},
@@ -303,7 +333,59 @@ const NODE_TYPES={
     {p:"render",label:"애니메이션",type:"bool"},
     {p:"report",label:"리포트",type:"bool"},
   ],defaults:{prefix:"graph_case",load_case:"LC-1",threads:4,animation_frames:25,render:true,report:true}},
+  result:{title:"결과",out:null,ins:[{port:"runs",label:"솔버",multi:true}],fields:[],
+    defaults:{},render:renderResultBody},
 };
+
+/* The result node turns the graph into a dashboard: it lists the cases its
+   solver compiles to, their live state, and links straight to the report,
+   the 3D viewer and the deformed STEP. */
+function renderResultBody(node,body){
+  body.innerHTML='<div class="resultRows">불러오는 중…</div>';
+  refreshResultNode(node);
+}
+async function refreshResultNode(node){
+  const body=$("nodebody-"+node.id); if(!body)return;
+  const solvers=sources(node.id,"runs");
+  const wanted=[];
+  for(const sv of solvers)
+    for(const c of compileGraph(sv).cases) wanted.push(c.yaml.name);
+  if(!wanted.length){
+    body.innerHTML='<div class="resultRows"><i>솔버 노드를 연결하세요</i></div>';return;
+  }
+  let runs={active:[],queued:[],finished:[]};
+  try{runs=await api("/api/runs");}catch(e){}
+  const byName=Object.fromEntries((runs.finished||[]).map(r=>[r.name,r]));
+  const active=new Set((runs.active||[]).map(r=>(r.file||"").replace(/\.yaml$/,"")));
+  const queued=new Set((runs.queued||[]).map(f=>String(f).replace(/\.yaml$/,"")));
+  const rows=wanted.map(name=>{
+    const r=byName[name];
+    let state='<span class="pill wait">대기</span>', extra="", links="";
+    if(active.has(name))state='<span class="pill run">실행 중</span>';
+    else if(queued.has(name))state='<span class="pill wait">대기열</span>';
+    else if(r){
+      // A failed solution gate is worth showing, but not as a bare red flag:
+      // on a burst run element deletion removes internal energy from the
+      // balance, so name the number and let the reader judge.
+      const ok=r.gate_passed!==false;
+      state=`<span class="pill ${ok?"ok":"warn"}">${ok?"완료":"완료 · 게이트 ⚠"}</span>`;
+      const bits=[];
+      if(r.vent&&r.vent.initiation_MPa!=null){
+        const op=r.vent.opening_MPa!=null?` · 개방 ${r.vent.opening_MPa.toFixed(2)}`:"";
+        bits.push(`파단 ${r.vent.initiation_MPa.toFixed(2)}${op} MPa`);
+      } else if(r.peak_load_N!=null) bits.push(`피크 ${Math.round(r.peak_load_N)} N`);
+      if(!ok&&r.energy_error!=null) bits.push(`에너지 ${(r.energy_error*100).toFixed(1)}%`);
+      extra=bits.join(" · ");
+      const u="/api/runs/"+encodeURIComponent(name);
+      links=[r.report?`<a href="${u}/report" target="_blank">리포트</a>`:"",
+             `<a href="${u}/viewer" target="_blank">3D 뷰어</a>`,
+             `<a href="${u}/step" target="_blank">STP</a>`].filter(Boolean).join(" · ");
+    }
+    return `<div class="resultRow"><div class="rname">${name}</div>${state}`
+      +`<div class="rmeta">${extra}</div><div class="rlinks">${links}</div></div>`;
+  });
+  body.innerHTML='<div class="resultRows">'+rows.join("")+"</div>";
+}
 
 let G={nodes:[],edges:[]};   // graph model
 let nextId=1, armedPort=null, flowLoaded=false;
@@ -337,7 +419,8 @@ function fieldInput(node,f){
   }
   const inp=document.createElement("input");
   if(f.type==="bool"){inp.type="checkbox";inp.checked=!!cur;
-    inp.addEventListener("change",()=>{node.params[f.p]=inp.checked;});return inp;}
+    inp.addEventListener("change",()=>{node.params[f.p]=inp.checked;if(f.redraw)renderNodeBody(node);});
+    return inp;}
   inp.type="text";
   inp.value=cur==null?"":(f.type==="vec"&&Array.isArray(cur)?cur.join(", "):cur);
   inp.addEventListener("change",()=>{
@@ -353,6 +436,7 @@ function fieldInput(node,f){
 function renderNodeBody(node){
   const def=NODE_TYPES[node.type], body=$("nodebody-"+node.id);
   body.innerHTML="";
+  if(def.render){def.render(node,body);drawEdges();return;}
   for(const f of def.fields){
     if(f.show&&!f.show(node))continue;
     const lab=document.createElement("label");
@@ -365,7 +449,7 @@ function renderNodeBody(node){
 function renderNode(node){
   const def=NODE_TYPES[node.type];
   const el=document.createElement("div");
-  el.className="node"; el.id="node-"+node.id;
+  el.className="node"+(node.type==="result"?" result":""); el.id="node-"+node.id;
   el.style.left=node.x+"px"; el.style.top=node.y+"px";
   const padTop=def.ins.length?10+def.ins.length*20:9;
   el.innerHTML=`<h4>${def.title}</h4><button class="del" title="노드 삭제">✕</button>
@@ -416,6 +500,7 @@ function renderNode(node){
     if(!pin.multi) G.edges=G.edges.filter(e2=>!(e2.to===toId&&e2.port===toPort));
     if(!G.edges.some(e2=>e2.from===fromId&&e2.to===toId&&e2.port===toPort))
       G.edges.push({from:fromId,to:toId,port:toPort});
+      if(NODE_TYPES[G.nodes.find(n=>n.id===toId)?.type]?.render)renderNodeBody(G.nodes.find(n=>n.id===toId));
     $("flowMsg").textContent="";
     drawEdges();
   });
@@ -430,7 +515,22 @@ function portPos(nodeId,port,dir){
   const cb=$("flowCanvas").getBoundingClientRect(), pb=pe.getBoundingClientRect();
   return [pb.left-cb.left+pb.width/2, pb.top-cb.top+pb.height/2];
 }
+// The canvas has to cover every node, or nodes placed to the right of the
+// default 1120 px (a long chain: 캔 -> 캡 -> 벤트 -> 메쉬 -> 솔버 -> 결과)
+// are clipped and unreachable even by scrolling.
+function fitCanvas(){
+  const el=$("flowCanvas"); if(!el)return;
+  let w=1120, h=860;
+  for(const n of G.nodes){
+    const node=$("node-"+n.id);
+    w=Math.max(w,(n.x||0)+(node?node.offsetWidth:240)+60);
+    h=Math.max(h,(n.y||0)+(node?node.offsetHeight:200)+60);
+  }
+  el.style.width=w+"px"; el.style.height=h+"px";
+}
+
 function drawEdges(){
+  fitCanvas();
   const svg=$("wires"); svg.innerHTML="";
   G.edges.forEach((e,i)=>{
     const a=portPos(e.from,null,"out"), b=portPos(e.to,e.port,"in");
@@ -490,9 +590,9 @@ async function importCase(file){
 
 /* ---- compile the graph into case yamls, save and queue each ---- */
 function tagOf(node,fallback){return (node.params.tag||"").trim()||fallback;}
-function compileGraph(){
+function compileGraph(only){
   const cases=[], errors=[];
-  for(const sv of G.nodes.filter(n=>n.type==="solver")){
+  for(const sv of (only?[only]:G.nodes.filter(n=>n.type==="solver"))){
     const meshes=sources(sv.id,"mesh"), mats=sources(sv.id,"mat"), loads=sources(sv.id,"load");
     const contacts=sources(sv.id,"contact");
     if(!meshes.length||!mats.length||!loads.length){
@@ -502,7 +602,14 @@ function compileGraph(){
     for(const m of meshes)for(const mat of mats)for(const ld of loads){
       const geos=sources(m.id,"geom");
       if(geos.length!==1){errors.push("메쉬 노드마다 형상 1개가 연결되어야 합니다");continue;}
-      const geo=geos[0].params, y={};
+      // Walk the 캔 -> 캡 -> 벤트 chain back to the can it is built on.
+      const chain=[]; let cur=geos[0], guard=0;
+      while(cur&&guard++<16){chain.unshift(cur); if(cur.type==="geometry")break; cur=sources(cur.id,"geom")[0];}
+      if(!chain.length||chain[0].type!=="geometry"){
+        errors.push("형상 체인의 시작은 '형상(캔)' 노드여야 합니다");continue;}
+      const capNode=chain.find(n=>n.type==="cap"), ventNode=chain.find(n=>n.type==="vent");
+      if(ventNode&&!capNode){errors.push("벤트 노드는 캡 노드 뒤에 연결하세요");continue;}
+      const geo=chain[0].params, y={};
       let name=(sv.params.prefix||"graph_case").replace(/[^A-Za-z0-9_\-]/g,"_");
       if(combos>1){
         const parts=[];
@@ -513,16 +620,27 @@ function compileGraph(){
       }
       y.name=name; y.load_case=sv.params.load_case||"LC-1";
       y.geometry={kind:geo.kind};
-      for(const k of ["radius","height","thickness","closed_bottom","closed_top","width","depth","step_path","vent"])
+      for(const k of ["radius","height","thickness","closed_bottom","width","depth","step_path"])
         if(geo[k]!==undefined)y.geometry[k]=geo[k];
+      // The cap node IS the closed top; the vent rides on it.
+      if(capNode)y.geometry.closed_top=true;
+      if(ventNode){
+        const v={};
+        for(const k of ["length","width","band","membrane_thickness","score_thickness",
+                        "pattern","material","eps_p_max","arc_bulge"])
+          if(ventNode.params[k]!==undefined&&ventNode.params[k]!=="")v[k]=ventNode.params[k];
+        if(v.length&&v.width)y.geometry.vent=v;
+      }
       y.material={key:mat.params.key};
       if(mat.params.eps_p_max!==undefined)y.material.eps_p_max=mat.params.eps_p_max;
       y.mesh={recombine:true};
       if(m.params.target_size!==undefined)y.mesh.target_size=m.params.target_size;
+      if(m.params.vent_size)y.mesh.vent_size=m.params.vent_size;
       if(m.params.imperfection_mm!==undefined)y.mesh.imperfection_mm=m.params.imperfection_mm;
       if(ld.type==="pressure"){
         y.loading={tool:"none"};
         if(ld.params.clamp_can_base)y.loading.clamp_can_base=true;
+        if(ld.params.brace_walls)y.loading.brace_walls=true;
         y.pressure={peak:ld.params.peak,rise:ld.params.rise,hold:ld.params.hold};
         y.solver={stop_on_energy_error:false};
       } else {
@@ -584,6 +702,9 @@ async function loadGraphFile(name){
   }
   G.edges=(data.edges||[]).filter(e=>G.nodes.some(n=>n.id===e.from)&&G.nodes.some(n=>n.id===e.to));
   drawEdges();
+  // Nodes render before the edges exist, so anything that reads its inputs
+  // (the result node) has to be rebuilt once the wiring is in.
+  for(const n of G.nodes)if(NODE_TYPES[n.type].render)renderNodeBody(n);
   $("graphName").value=name;
 }
 async function fillGraphSelect(){
@@ -611,6 +732,12 @@ async function initFlow(){
   $("flowRun").addEventListener("click",()=>runGraph().catch(e=>$("flowMsg").textContent=e.message));
   await fillGraphSelect();
   defaultGraph();
+  // Result nodes are live: keep them in step with the queue while the
+  // workflow tab is open.
+  setInterval(()=>{
+    if($("pageFlow").hidden)return;
+    for(const n of G.nodes.filter(n=>n.type==="result"))refreshResultNode(n);
+  },4000);
 }
 
 async function refresh(){

@@ -5,9 +5,16 @@ geometry/thickness) and the engine listing (rupture log):
 
 - **initiation**: the first membrane element deletes - the first
   through-crack. Gas starts leaking, but the flow area is a pinhole.
-- **opening (activation)**: every score-line element has torn, so the
-  petals are mechanically free and the open area ramps steeply. This is
-  the point a vent datasheet's burst/activation pressure corresponds to.
+- **opening (activation)**: the open flow area first reaches
+  :data:`OPENING_AREA_FRACTION` of the vent area, so the petals are
+  mechanically free and gas can actually leave. This is the point a vent
+  datasheet's burst/activation pressure corresponds to.
+
+A flow-area threshold is used rather than "every score element has torn"
+because the latter is not mesh-robust: on a refined score a single
+lightly-loaded element at an arc tip can survive (measured: 179 of 180)
+and suppress the milestone entirely, and the count itself changes with
+the mesh while the area does not.
 
 Between them runs the crack-propagation phase; the quantitative signal is
 the cumulative open-area curve A_open(t) (initial areas of deleted
@@ -23,6 +30,9 @@ from pathlib import Path
 import numpy as np
 
 _CYCLE_RE = re.compile(r"\s*\d+\s+([0-9.E+-]+)\s+[0-9.E+-]+\s")
+
+OPENING_AREA_FRACTION: float = 0.25
+"""Open area / vent area at which the vent counts as activated."""
 
 
 def _element_areas(deck_text: str, part_id: int) -> tuple[dict[int, float], dict[int, float]]:
@@ -100,8 +110,9 @@ def vent_metrics(run_dir: str | Path) -> dict | None:
 
     Returns:
         ``{t_initiation_s, t_opening_s, vent_area_mm2, score_elements,
-        score_ruptured, area_curve: [[t, mm2], ...]}`` - ``t_opening_s`` is
-        None while any score element survives (the vent never fully opened).
+        score_ruptured, t_score_fully_torn_s, area_curve: [[t, mm2], ...]}``
+        - ``t_opening_s`` is None while the open area never reaches
+        :data:`OPENING_AREA_FRACTION` of the vent.
     """
     run = Path(run_dir)
     summary_path = run / "pipeline_summary.json"
@@ -142,16 +153,20 @@ def vent_metrics(run_dir: str | Path) -> dict | None:
         open_area += areas[eid]
         curve.append([t, open_area])
     score_ruptured = {eid for eid, _ in events if eid in scored}
-    t_opening = (
-        max(t for eid, t in events if eid in scored)
-        if scored and score_ruptured == scored
-        else None
-    )
+    vent_area = float(sum(areas.values()))
+    threshold = OPENING_AREA_FRACTION * vent_area
+    t_opening = next((t for t, area in curve if area >= threshold), None)
     return {
         "t_initiation_s": events[0][1],
         "t_opening_s": t_opening,
-        "vent_area_mm2": float(sum(areas.values())),
+        "opening_area_fraction": OPENING_AREA_FRACTION,
+        "vent_area_mm2": vent_area,
         "score_elements": len(scored),
         "score_ruptured": len(score_ruptured),
+        "t_score_fully_torn_s": (
+            max(t for eid, t in events if eid in scored)
+            if scored and score_ruptured == scored
+            else None
+        ),
         "area_curve": curve,
     }

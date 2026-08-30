@@ -117,6 +117,7 @@ def evaluate_mesh_gate(
     min_edge_length: float,
     triangle_fraction: float,
     non_manifold_edges: int = 0,
+    min_edge_limit: float | None = None,
     info: dict[str, Any] | None = None,
 ) -> GateResult:
     """Judge mesh statistics against the spec §7 mesh gate.
@@ -127,6 +128,11 @@ def evaluate_mesh_gate(
         min_edge_length: Shortest element edge [mm].
         triangle_fraction: Triangles / all shell elements, in [0, 1].
         non_manifold_edges: Edges shared by more than two shells.
+        min_edge_limit: Override for the minimum-edge floor [mm]. That floor
+            is a COST guard ("edges below it collapse the explicit timestep"),
+            not a quality one, so a deliberately refined sub-millimetre
+            feature - a scored vent, say - may lower it knowingly and pay the
+            timestep. Every other metric keeps its full-strength limit.
         info: Extra context (element counts, target size, ...) for the report.
 
     Returns:
@@ -153,7 +159,7 @@ def evaluate_mesh_gate(
         GateMetric(
             name="min_edge_length",
             value=float(min_edge_length),
-            limit=MESH_MIN_EDGE_LENGTH_MM,
+            limit=float(min_edge_limit) if min_edge_limit else MESH_MIN_EDGE_LENGTH_MM,
             mode="min",
             unit="mm",
             recommendation=(

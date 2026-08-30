@@ -205,3 +205,80 @@ def test_graph_save_and_load_roundtrip(client: TestClient) -> None:
     # Name policy and shape validation.
     assert client.put("/api/graphs/..%2Fevil.json", json=graph).status_code == 404
     assert client.put("/api/graphs/bad.json", json={"nodes": []}).status_code == 422
+
+
+def test_prebuilt_graphs_compile_to_valid_cases(tmp_path) -> None:
+    """The shipped workflow graphs must describe runnable analyses.
+
+    The graph is the UI's source of truth for what an analysis is made of -
+    a crush case stops at the can, a vent case adds 캡 and 벤트 on top of the
+    same can - so a broken graph is a broken story, not just a broken file.
+    This mirrors the browser's compileGraph() over the geometry chain.
+    """
+    import json
+
+    import yaml
+
+    from crushsim.config import load_case
+
+    graphs = sorted(Path("configs/graphs").glob("*.json"))
+    assert graphs, "no prebuilt graphs shipped"
+    seen_vent = seen_plain = False
+    for path in graphs:
+        graph = json.loads(path.read_text(encoding="utf-8"))
+        nodes = {n["id"]: n for n in graph["nodes"]}
+        assert {"solver", "result"} <= {n["type"] for n in graph["nodes"]}, path.name
+        for edge in graph["edges"]:  # every wire lands on real nodes
+            assert edge["from"] in nodes and edge["to"] in nodes, (path.name, edge)
+
+        def upstream(node_id: str, port: str) -> list[dict]:
+            return [nodes[e["from"]] for e in graph["edges"]
+                    if e["to"] == node_id and e["port"] == port]
+
+        for solver in [n for n in graph["nodes"] if n["type"] == "solver"]:
+            meshes = upstream(solver["id"], "mesh")
+            assert meshes, path.name
+            for mesh in meshes:
+                chain, cur = [], upstream(mesh["id"], "geom")[0]
+                while cur is not None:
+                    chain.insert(0, cur)
+                    up = upstream(cur["id"], "geom")
+                    cur = up[0] if up and cur["type"] != "geometry" else None
+                assert chain[0]["type"] == "geometry", path.name
+                base = dict(chain[0]["params"])
+                case: dict = {
+                    "name": "graphtest",
+                    "load_case": solver["params"].get("load_case", "LC-1"),
+                    "geometry": {k: v for k, v in base.items()},
+                    "material": {"key": upstream(solver["id"], "mat")[0]["params"]["key"]},
+                    "mesh": {"target_size": mesh["params"]["target_size"]},
+                    "output": {"dir": "runs/graphtest"},
+                }
+                if mesh["params"].get("vent_size"):
+                    case["mesh"]["vent_size"] = mesh["params"]["vent_size"]
+                cap = next((n for n in chain if n["type"] == "cap"), None)
+                vent = next((n for n in chain if n["type"] == "vent"), None)
+                assert not (vent and not cap), f"{path.name}: 벤트 needs 캡"
+                if cap:
+                    case["geometry"]["closed_top"] = True
+                if vent:
+                    case["geometry"]["vent"] = dict(vent["params"])
+                    seen_vent = True
+                else:
+                    seen_plain = True
+                load = upstream(solver["id"], "load")[0]
+                if load["type"] == "pressure":
+                    case["loading"] = {"tool": "none"}
+                    for flag in ("clamp_can_base", "brace_walls"):
+                        if load["params"].get(flag):
+                            case["loading"][flag] = True
+                    case["pressure"] = {k: load["params"][k] for k in ("peak", "rise", "hold")}
+                else:
+                    case["loading"] = {k: v for k, v in load["params"].items() if k != "tag"}
+                target = tmp_path / "graphtest.yaml"
+                target.write_text(yaml.safe_dump(case, allow_unicode=True), encoding="utf-8")
+                loaded = load_case(target)
+                assert loaded.geometry.kind == base["kind"], path.name
+                if vent:
+                    assert loaded.geometry.vent["pattern"] == vent["params"]["pattern"]
+    assert seen_vent and seen_plain, "expected both a vent graph and a plain-can graph"
