@@ -434,3 +434,41 @@ def test_box_can_scored_vent_mesh_gate():
                 z = mesh.nodes[[index[int(n)] for n in element]][:, 2].mean()
                 assert abs(z - box.height) < 1e-3
             order += 1
+
+
+def test_vent_size_refines_the_flap_only():
+    """mesh.vent_size raises the score resolution without touching the can.
+
+    The flap is where the score lives; the weld band and the narrow cap
+    remainder keep their sizes on purpose (refining that ~2 mm strip
+    squeezes skewed quads in and fails the gate).
+    """
+    from crushsim.geometry.parametric import BoxCan, VentSpec
+    from crushsim.meshing.mesher import mesh_box_can, split_vent_membrane
+
+    box = BoxCan(
+        width=120.5, depth=13.1, height=65.0, thickness=0.6,
+        vent=VentSpec(
+            length=30.0, width=7.0, band=1.0, score_thickness=0.03,
+            membrane_thickness=0.1, pattern="petal_x",
+        ),
+    )
+    coarse = mesh_box_can(box, target_size=1.2, enforce=False, name="c", max_attempts=1)
+    fine = mesh_box_can(
+        box, target_size=1.2, vent_size=0.3, enforce=False, name="f", max_attempts=1
+    )
+    assert coarse.gate.passed and fine.gate.passed, "both levels must clear the gate"
+
+    _, mem_c = split_vent_membrane(coarse.mesh, box)
+    can_f, mem_f = split_vent_membrane(fine.mesh, box)
+    scored_c = int((mem_c.element_thickness == 0.03).sum())
+    scored_f = int((mem_f.element_thickness == 0.03).sum())
+    assert scored_f > 10 * scored_c, f"score barely refined: {scored_c} -> {scored_f}"
+    # The can wall is untouched: its growth is only the vent's own elements.
+    growth = fine.mesh.n_elements - coarse.mesh.n_elements
+    assert growth < 2 * (mem_f.n_elements - mem_c.n_elements)
+    # Quality metrics keep their full limits; only the timestep-cost floor moves.
+    limits = {m["name"]: m["limit"] for m in fine.gate.to_dict()["metrics"]}
+    assert limits["min_sicn"] == 0.3
+    assert limits["max_aspect_ratio"] == 5.0
+    assert limits["min_edge_length"] == pytest.approx(0.1)

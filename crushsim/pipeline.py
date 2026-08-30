@@ -343,6 +343,7 @@ def build_meshes(
             curvature_points=case.mesh.curvature_points,
             out_path=outdir / "can.msh",
             enforce=enforce_gate,
+            vent_size=case.mesh.vent_size,
             name="CAN",
         )
     else:

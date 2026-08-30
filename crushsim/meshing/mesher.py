@@ -738,6 +738,7 @@ def _mesh_with_gate(
     enforce: bool = True,
     finish: Any | None = None,
     option_overrides: dict[str, float] | None = None,
+    min_edge_limit: float | None = None,
 ) -> MeshResult:
     """Mesh, gate, and automatically remesh with a smaller target on failure.
 
@@ -769,6 +770,7 @@ def _mesh_with_gate(
             min_edge_length=quality.min_edge_length,
             triangle_fraction=quality.triangle_fraction,
             non_manifold_edges=mesh.non_manifold_edge_count(),
+            min_edge_limit=min_edge_limit,
             info={
                 "part": name,
                 "source": source,
@@ -865,7 +867,9 @@ def _stadium_outline(
     return points, curves
 
 
-def _build_box_surfaces(gmsh: Any, box: BoxCan, target_size: float) -> None:
+def _build_box_surfaces(
+    gmsh: Any, box: BoxCan, target_size: float, vent_size: float | None = None
+) -> None:
     """Build the box-can mid-surface (walls + caps) with a structured score band.
 
     Walls and the bottom are structured quad grids. The scored cap is built
@@ -930,21 +934,34 @@ def _build_box_surfaces(gmsh: Any, box: BoxCan, target_size: float) -> None:
     )
     occ.synchronize()
 
-    # Refine along the imprinted score arcs so the score band resolves: every
-    # curve on the cap plane strictly inside the inner stadium is (a piece
-    # of) a score arc after retagging - identified geometrically, like the
-    # faces below.
-    if score_curves and box.vent is not None:
-        score_size = min(target_size, max(box.vent.band, 0.4))
-        for _dim, ctag in gmsh.model.getEntities(1):
-            bb = gmsh.model.getBoundingBox(1, ctag)
-            if abs(bb[2] - h) > 1e-3 or abs(bb[5] - h) > 1e-3:
-                continue
-            cx = (bb[0] + bb[3]) / 2.0
-            cy = (bb[1] + bb[4]) / 2.0
-            if box.vent.contains(cx, cy, grow=-box.vent.band):
-                points = gmsh.model.getBoundary([(1, ctag)], oriented=False, recursive=True)
-                gmsh.model.mesh.setSize(points, score_size)
+    # Refine the vent region with a size FIELD, not point sizes: the mesher
+    # sets MeshSizeFromPoints=0 and re-stamps every point with the target
+    # size after this build runs, so a per-point setSize here is a no-op.
+    # A Box field over the cap's vent footprint survives both.
+    # The field covers the FLAP (inside the score band) only. Everything
+    # outside keeps its v5 discretisation on purpose:
+    #   * the band is transfinite, so a field would not reach it anyway, and
+    #     its outer curve is shared with the cap remainder;
+    #   * that remainder is the ~2 mm strip between the vent and the edge of
+    #     a narrow prismatic cap, and it is at its BEST coarse - refining it
+    #     squeezes skewed quads in (measured: aspect ratio 5.1-6.5, edges
+    #     down to 0.07 mm, §7 gate FAIL at every vent size tried).
+    # The score lives on the flap, so that is where the density belongs.
+    if vent_size and box.vent is not None and box.closed_top:
+        v = box.vent
+        field = gmsh.model.mesh.field
+        box_id = field.add("Box")
+        field.setNumber(box_id, "VIn", float(vent_size))
+        field.setNumber(box_id, "VOut", float(target_size))
+        field.setNumber(box_id, "XMin", -(v.length - v.band) / 2.0)
+        field.setNumber(box_id, "XMax", (v.length - v.band) / 2.0)
+        field.setNumber(box_id, "YMin", -(v.width - v.band) / 2.0)
+        field.setNumber(box_id, "YMax", (v.width - v.band) / 2.0)
+        field.setNumber(box_id, "ZMin", h - 1.0)
+        field.setNumber(box_id, "ZMax", h + 1.0)
+        with contextlib.suppress(Exception):  # 'Thickness' needs a recent Gmsh
+            field.setNumber(box_id, "Thickness", 2.0 * float(vent_size))
+        field.setAsBackgroundMesh(box_id)
 
     # All meshing constraints are applied AFTER the fragment (which retags
     # entities): faces are re-identified geometrically. Cap faces are told
@@ -952,6 +969,10 @@ def _build_box_surfaces(gmsh: Any, box: BoxCan, target_size: float) -> None:
     # pieces get matched structured divisions (~square quads, two elements
     # across the band), flap and remainder mesh with plain Delaunay.
     vent = box.vent
+    # vent_size refines the whole vent region: the band's transfinite
+    # divisions (circumferentially AND across it) and, through the score-arc
+    # point sizes above, the flap interior. Element-deletion fracture is
+    # mesh-sensitive, so the score's own resolution is the knob that matters.
     band_len = max(vent.band, 1e-6) if vent else target_size
     for _dim, face in gmsh.model.getEntities(2):
         bb = gmsh.model.getBoundingBox(2, face)
@@ -992,10 +1013,17 @@ def mesh_box_can(
     out_path: str | Path | None = None,
     max_attempts: int = MESH_REMESH_MAX_ATTEMPTS,
     enforce: bool = True,
+    vent_size: float | None = None,
     name: str = "can",
 ) -> MeshResult:
     """Mesh a prismatic (box) can shell; the scored vent band gets its own
     per-element thickness (:attr:`ShellMesh.element_thickness`).
+
+    ``vent_size`` refines the vent region (score band and flap) alone,
+    leaving the can wall at ``target_size``: element-deletion fracture is
+    mesh-sensitive, so the score's resolution is what a convergence study
+    on burst pressure has to vary, and refining only there costs a fraction
+    of a global refinement.
 
     Raises:
         GateFailure: If the mesh gate fails and ``enforce`` is True.
@@ -1003,7 +1031,11 @@ def mesh_box_can(
     """
 
     def build(gmsh: Any, size: float) -> None:
-        _build_box_surfaces(gmsh, box, size)
+        _build_box_surfaces(gmsh, box, size, vent_size)
+
+    # A vent finer than the global floor (target*0.5) would be clamped away.
+    if vent_size and (min_size is None or min_size > vent_size * 0.8):
+        min_size = vent_size * 0.8
 
     def finish(gmsh: Any) -> None:
         with contextlib.suppress(Exception):
@@ -1024,6 +1056,15 @@ def mesh_box_can(
         out_path=out_path,
         max_attempts=max_attempts,
         enforce=enforce,
+        # A deliberately refined vent legitimately carries sub-limit edges;
+        # the §7 floor is a timestep-cost guard, so it moves with the
+        # requested size while every quality metric keeps its full limit.
+        # (a third of the nominal size: within the graded transition the
+        # shortest edge measures ~0.35-0.42x it.)
+        min_edge_limit=(vent_size / 3.0) if vent_size else None,
+        # Grading from the refined flap to its coarse rim needs smoothing:
+        # without it the transition quads collapse (min SICN 0.05 vs 0.42).
+        option_overrides={"Mesh.Smoothing": 20.0} if vent_size else None,
     )
     if box.vent is not None and box.vent.membrane_thickness is None:
         mesh = result.mesh
