@@ -78,12 +78,15 @@ class SkinResult:
     kept_faces: int
     dropped_faces: int
     wall_thickness_mm: float
-    """Thickness implied by ``volume / mid-surface area``.
+    """Wall thickness gauged by ray across the wall, not inferred from areas.
 
-    Measured from the shape rather than taken from the case: it is the number
-    the mass check in :func:`shell_mass_error` compares against, so reading it
-    from the geometry is what makes that check independent.
+    An area ratio cannot supply this: deriving the thickness from the areas and
+    then checking mass against those same areas is circular and always reports
+    zero error. Measured on the Honda can, the area route gives 0.412 mm
+    against a gauged - and cross-checked - 0.380 mm.
     """
+    brep_path: Path | None = None
+    """Per-solid BREP, when ``per_solid`` was requested."""
 
     @property
     def outer_share(self) -> float:
@@ -135,6 +138,7 @@ def extract_shell_skins(
     out_path: str | Path,
     *,
     probe_offset_mm: float = SKIN_PROBE_OFFSET_MM,
+    per_solid: bool = False,
 ) -> list[SkinResult]:
     """Write a BREP holding one shell surface per solid in ``step_path``.
 
@@ -143,6 +147,11 @@ def extract_shell_skins(
         out_path: BREP file receiving the surviving faces; feed it to the
             normal STEP mesher, which imports BREP as readily as STEP.
         probe_offset_mm: Ray start offset; see :data:`SKIN_PROBE_OFFSET_MM`.
+        per_solid: Also write ``<out_path stem>.<n>.brep`` per solid and record
+            the path on each result. An assembly has to be meshed as one model
+            so the parts share nodes where they touch, but the mesher still has
+            to know which elements belong to which part - importing the solids
+            one at a time is what keeps that mapping unambiguous.
 
     Returns:
         One :class:`SkinResult` per solid, in file order.
@@ -166,15 +175,23 @@ def extract_shell_skins(
     compound = occ["TopoDS_Compound"]()
     builder.MakeCompound(compound)
 
+    target = Path(out_path)
     results: list[SkinResult] = []
     explorer = occ["TopExp_Explorer"](shape, occ["TopAbs_SOLID"])
     index = 0
     while explorer.More():
         solid = occ["TopoDS"].Solid_s(explorer.Current())
         index += 1
-        results.append(
-            _classify_solid(occ, solid, index, builder, compound, probe_offset_mm)
+        one = occ["TopoDS_Compound"]()
+        builder.MakeCompound(one)
+        result = _classify_solid(
+            occ, solid, index, builder, compound, probe_offset_mm, also=one
         )
+        if per_solid:
+            side = target.with_suffix(f".{index}.brep")
+            occ["BRepTools"].Write_s(one, str(side))
+            result.brep_path = side
+        results.append(result)
         explorer.Next()
 
     if not results:
@@ -182,7 +199,7 @@ def extract_shell_skins(
             f"{source} contains no solids. A surface/sheet body needs no shell "
             "idealisation - mesh it directly with mesh_step_surfaces."
         )
-    occ["BRepTools"].Write_s(compound, str(out_path))
+    occ["BRepTools"].Write_s(compound, str(target))
     return results
 
 
@@ -193,6 +210,7 @@ def _classify_solid(
     builder: Any,
     compound: Any,
     probe_offset_mm: float,
+    also: Any = None,
 ) -> SkinResult:
     """Split one solid's boundary and add its shell faces to ``compound``."""
     props = occ["GProp_GProps"]()
@@ -269,6 +287,8 @@ def _classify_solid(
 
     for face in keep:
         builder.Add(compound, face)
+        if also is not None:
+            builder.Add(also, face)
 
     return SkinResult(
         index=index,
