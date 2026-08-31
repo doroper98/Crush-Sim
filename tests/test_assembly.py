@@ -91,3 +91,76 @@ class TestFailsLoudly:
                 target_size=5.0,
                 coplanar={"VENT": "LID"},
             )
+
+
+class TestPerElementThickness:
+    """The reason a single thickness per part is not enough.
+
+    Pockets milled for weight, pads left on the load path and a vent score are
+    all places where the designer deliberately left a different thickness. One
+    number per part erases exactly those - which is to say, it erases the
+    design intent the analysis exists to check.
+    """
+
+    def test_thickness_varies_within_a_part(self, welded) -> None:
+        can = welded.part("CAN")
+        assert can.mesh.element_thickness is not None
+        spread = np.unique(np.round(can.mesh.element_thickness, 2))
+        assert len(spread) > 1, f"a single gauge would hide the wall steps: {spread}"
+
+    def test_score_survives_as_thin_elements(self, welded) -> None:
+        """Measured: 0.100 mm residual inside a 0.400 mm foil.
+
+        Before per-element gauging the whole foil came back at one value - the
+        score was either everywhere or nowhere depending on where the single
+        per-face sample happened to land.
+        """
+        vent = welded.part("VENT")
+        thickness = vent.mesh.element_thickness
+        assert thickness is not None
+        assert thickness.min() == pytest.approx(0.10, abs=0.02)
+        assert thickness.max() == pytest.approx(0.40, abs=0.02)
+        scored = int((thickness <= 0.15).sum())
+        assert 0 < scored < vent.mesh.n_elements * 0.2, (
+            f"{scored} scored elements of {vent.mesh.n_elements} - a score is a "
+            "narrow band, not the whole foil"
+        )
+
+    def test_outliers_do_not_reach_the_deck(self, welded) -> None:
+        """A ray that finds no opposite wall runs the length of the part.
+
+        Measured on this can: 218 mm readings on 6 961 of 18 117 elements
+        against a 0.65 mm wall. Unclamped they would go straight into the
+        /SHELL cards as element thicknesses.
+        """
+        for part in welded.parts:
+            thickness = part.mesh.element_thickness
+            assert thickness is not None
+            assert thickness.max() < part.thickness_mm * 4.0, part.name
+
+    def test_thickness_array_matches_element_count(self, welded) -> None:
+        for part in welded.parts:
+            assert part.mesh.element_thickness.shape[0] == part.mesh.n_elements
+
+    def test_can_be_turned_off(self, tmp_path: Path) -> None:
+        plain = mesh_step_assembly(
+            ASSEMBLY,
+            names=["CAN", "CAP", "VENT"],
+            workdir=tmp_path,
+            target_size=5.0,
+            coplanar={"VENT": "CAP"},
+            per_element_thickness=False,
+        )
+        assert plain.part("CAN").mesh.element_thickness is None
+
+
+class TestUniformityDiagnostic:
+    def test_uniformity_flags_a_varying_part(self, welded) -> None:
+        """The number to look at before trusting one thickness.
+
+        Nothing here is uniform: 79 % of the can's area, 55 % of the cap's and
+        44 % of the vent's sits within 5 % of its own median.
+        """
+        by_name = {p.name: p.skin.uniformity for p in welded.parts}
+        assert by_name["VENT"] < by_name["CAN"], by_name
+        assert all(0.0 <= v <= 1.0 for v in by_name.values())

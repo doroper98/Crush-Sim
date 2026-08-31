@@ -87,6 +87,23 @@ class SkinResult:
     """
     brep_path: Path | None = None
     """Per-solid BREP, when ``per_solid`` was requested."""
+    face_gauges: dict[int, float] = field(default_factory=dict)
+    """Gauged thickness per kept face, keyed by its index in ``kept`` order.
+
+    A single number per part is a fiction for anything real: measured on the
+    validation assembly only 79 % of the can's area, 55 % of the cap's and
+    44 % of the vent's sits within 5 % of the part median. The vent's low
+    decile *is* the score residual (0.100 mm against a 0.300 mm median), so a
+    part-level thickness erases the very feature the analysis is about. This
+    is what per-element thickness is built from.
+    """
+    uniformity: float = 1.0
+    """Fraction of area within +-5 % of the median gauge.
+
+    The number to look at before trusting a single thickness. Low means the
+    part has pockets, pads or a score - places where the load path was
+    deliberately thinned - and those need per-element thickness.
+    """
 
     @property
     def outer_share(self) -> float:
@@ -228,6 +245,7 @@ def _classify_solid(
 
     outer: list[tuple[Any, float]] = []
     measured: list[tuple[float, float]] = []
+    gauges: dict[int, float] = {}
     cavity_area = outer_area = 0.0
     dropped = 0
 
@@ -247,6 +265,7 @@ def _classify_solid(
             gauge = _wall_thickness_at(occ, face, intersector, reach, probe_offset_mm)
             if gauge is not None:
                 measured.append((gauge, area))
+            gauges[len(outer) - 1] = gauge if gauge is not None else 0.0
         explorer.Next()
 
     if not outer:
@@ -271,8 +290,10 @@ def _classify_solid(
         # exists to avoid. Its mid-plane is one face: the dominant one, which
         # already carries the plate's openings (the vent stadium, the terminal
         # holes) as holes in the surface.
-        face, mid_area = max(outer, key=lambda item: item[1])
+        winner = max(range(len(outer)), key=lambda i: outer[i][1])
+        face, mid_area = outer[winner]
         keep = [face]
+        gauges = {0: gauges.get(winner, 0.0)}
         dropped += len(outer) - 1
         outer_area = mid_area
     # Prefer the thickness the shape actually has over one inferred from
@@ -299,7 +320,20 @@ def _classify_solid(
         kept_faces=len(keep),
         dropped_faces=dropped,
         wall_thickness_mm=thickness,
+        face_gauges=gauges,
+        uniformity=_uniformity(measured, thickness),
     )
+
+
+def _uniformity(measured: list[tuple[float, float]], median: float) -> float:
+    """Fraction of area whose gauge is within 5 % of ``median``."""
+    if not measured or median <= 0.0:
+        return 1.0
+    total = sum(w for _, w in measured)
+    if total <= 0.0:
+        return 1.0
+    near = sum(w for g, w in measured if abs(g - median) <= 0.05 * median)
+    return near / total
 
 
 def _gauged_thickness(measured: list[tuple[float, float]]) -> float:
@@ -511,3 +545,103 @@ def offset_to_mid_surface(mesh: Any, thickness_mm: float) -> float:
     mesh.metadata["area_before_offset_mm2"] = area_before
     mesh.metadata["area_after_offset_mm2"] = area_after
     return area_after / area_before if area_before > 0 else 1.0
+
+
+ELEMENT_GAUGE_OUTLIER_FACTOR: Final[float] = 3.0
+"""Reject an element gauge above this multiple of the part's median.
+
+A ray that finds no opposite wall - at a rim, across an opening, or along an
+open end - runs the length of the part instead of across its wall and comes
+back with a reading in the hundreds of millimetres. Measured on the validation
+can: 218 mm readings on 6 961 of 18 117 elements, against a 0.65 mm wall.
+Those elements fall back to the part median rather than poisoning the deck.
+"""
+
+
+def gauge_elements(
+    step_path: str | Path,
+    solid_index: int,
+    centroids: Any,
+    normals: Any,
+    *,
+    fallback_mm: float,
+    probe_offset_mm: float = SKIN_PROBE_OFFSET_MM,
+) -> Any:
+    """Per-element wall thickness, by ray from each element into the solid.
+
+    One sample per *face* is not enough for the parts this matters for. A
+    pocket milled for weight, a pad left on the load path and a vent score all
+    vary the thickness *within* a face, and a single sample at the face's
+    parametric midpoint reports whichever of them it happened to land on -
+    measured on the validation vent, that put the 0.100 mm score residual on
+    all 1 709 elements of a 0.400 mm foil. Sampling per element is what makes
+    a thinned region come out thinned and its surroundings come out nominal.
+
+    Args:
+        step_path: The STEP the skins came from.
+        solid_index: 1-based index of the solid these elements belong to.
+        centroids: ``(N, 3)`` element centroids.
+        normals: ``(N, 3)`` element normals, any consistent orientation.
+        fallback_mm: Thickness for elements whose ray finds no opposite wall.
+        probe_offset_mm: Ray start offset.
+
+    Returns:
+        ``(N,)`` thickness array.
+
+    Raises:
+        GeometryError: If ``solid_index`` is not in the file.
+    """
+    import numpy as np  # noqa: PLC0415
+
+    occ = _require_occ()
+    reader = occ["STEPControl_Reader"]()
+    reader.ReadFile(str(step_path))
+    reader.TransferRoots()
+    shape = reader.OneShape()
+
+    explorer = occ["TopExp_Explorer"](shape, occ["TopAbs_SOLID"])
+    solid = None
+    index = 0
+    while explorer.More():
+        index += 1
+        if index == solid_index:
+            solid = occ["TopoDS"].Solid_s(explorer.Current())
+            break
+        explorer.Next()
+    if solid is None:
+        raise GeometryError(f"{step_path} has no solid {solid_index}")
+
+    box = occ["Bnd_Box"]()
+    occ["BRepBndLib"].Add_s(solid, box)
+    x0, y0, z0, x1, y1, z1 = box.Get()
+    reach = ((x1 - x0) ** 2 + (y1 - y0) ** 2 + (z1 - z0) ** 2) ** 0.5
+    intersector = occ["IntCurvesFace_ShapeIntersector"]()
+    intersector.Load(solid, 1.0e-6)
+
+    points = np.asarray(centroids, dtype=float)
+    dirs = np.asarray(normals, dtype=float)
+    lengths = np.linalg.norm(dirs, axis=1)
+    out = np.full(points.shape[0], float(fallback_mm), dtype=float)
+
+    for i in range(points.shape[0]):
+        if lengths[i] <= 0.0:
+            continue
+        n = dirs[i] / lengths[i]
+        best = None
+        # Try both ways: the mesh's normal orientation is not guaranteed to
+        # point into the material, and the wall is whichever side answers.
+        for sign in (1.0, -1.0):
+            d = occ["gp_Dir"](sign * n[0], sign * n[1], sign * n[2])
+            start = occ["gp_Pnt"](
+                points[i, 0] + d.X() * probe_offset_mm,
+                points[i, 1] + d.Y() * probe_offset_mm,
+                points[i, 2] + d.Z() * probe_offset_mm,
+            )
+            intersector.PerformNearest(occ["gp_Lin"](start, d), 0.0, reach)
+            if intersector.IsDone() and intersector.NbPnt() > 0:
+                hit = float(intersector.WParameter(1)) + probe_offset_mm
+                if best is None or hit < best:
+                    best = hit
+        if best is not None and best <= fallback_mm * ELEMENT_GAUGE_OUTLIER_FACTOR:
+            out[i] = best
+    return out

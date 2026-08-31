@@ -26,7 +26,7 @@ from typing import Any
 import numpy as np
 
 from ..errors import MeshingError
-from ..geometry.skin import SkinResult, extract_shell_skins
+from ..geometry.skin import SkinResult, extract_shell_skins, gauge_elements
 from ..units import MESH_TARGET_SIZE_DEFAULT_MM
 from .mesh_data import ShellMesh
 from .mesher import _GMSH_QUAD, _GMSH_TRIANGLE, gmsh_session
@@ -62,6 +62,8 @@ class AssemblyMesh:
     node_count: int = 0
     shared_nodes: int = 0
     """Nodes referenced by more than one part - the welds."""
+    weld_counts: dict[str, int] = field(default_factory=dict)
+    """Shared-node count per declared weld pair."""
 
     def part(self, name: str) -> AssemblyPart:
         """Look one part up by name.
@@ -81,6 +83,7 @@ class AssemblyMesh:
         return {
             "nodes": self.node_count,
             "shared_nodes": self.shared_nodes,
+            "weld_counts": dict(self.weld_counts),
             "parts": [p.summary() for p in self.parts],
         }
 
@@ -93,6 +96,8 @@ def mesh_step_assembly(
     target_size: float = MESH_TARGET_SIZE_DEFAULT_MM,
     local_sizes: dict[str, float] | None = None,
     coplanar: dict[str, str] | None = None,
+    welds: list[tuple[str, str]] | None = None,
+    per_element_thickness: bool = True,
     recombine: bool = True,
 ) -> AssemblyMesh:
     """Mesh every solid of ``step_path`` into one welded shell assembly.
@@ -113,6 +118,18 @@ def mesh_step_assembly(
             Shell models resolve this the way ``box_can`` builds it: the two
             live on one plane, the foil fills the hole, and their shared
             outline is the weld.
+        welds: Part pairs the case says are welded. Each is checked for shared
+            nodes and a pair that shares none is an error, not a warning: an
+            unwelded foil is an island that flies off under pressure while the
+            run still reports a burst. Measured on the validation cell the vent
+            welded to nothing until ``coplanar`` was applied, and only the
+            shared-node count showed it.
+        per_element_thickness: Carry each face's gauged thickness onto its
+            elements instead of one value per part. A single number is a
+            fiction for a real part - pockets cut for weight, pads left on the
+            load path, and a vent score are all *deliberately* not the nominal
+            thickness, and the part median erases them (measured: the vent's
+            0.100 mm score residual disappears into a 0.300 mm median).
         recombine: Recombine into quads.
 
     Returns:
@@ -136,16 +153,22 @@ def mesh_step_assembly(
     with gmsh_session() as gmsh:
         owner: dict[int, str] = {}
         planes: dict[str, float] = {}
+        thickness_of: dict[int, float] = {}
         for skin, name in zip(skins, names):
             if skin.brep_path is None:  # pragma: no cover - per_solid was requested
                 raise MeshingError(f"Solid {skin.index} produced no BREP to import")
             added = gmsh.model.occ.importShapes(str(skin.brep_path))
             gmsh.model.occ.synchronize()
             mine = [tag for dim, tag in added if dim == 2]
-            for tag in mine:
+            order = sorted(mine, key=lambda tg: -gmsh.model.occ.getMass(2, tg))
+            for position, tag in enumerate(order):
                 owner[tag] = name
+                # Faces come back in import order; skin.face_gauges is keyed by
+                # the same kept-face order, so the two line up by area rank.
+                thickness_of[tag] = skin.face_gauges.get(position, skin.wall_thickness_mm)
             planes[name] = _plane_height(gmsh, mine)
 
+        shifts: dict[str, float] = {}
         for part, host in (coplanar or {}).items():
             if part not in planes or host not in planes:
                 raise MeshingError(
@@ -153,6 +176,7 @@ def mesh_step_assembly(
                     f"{sorted(planes)}"
                 )
             shift = planes[host] - planes[part]
+            shifts[part] = shift
             if shift:
                 movable = [(2, tag) for tag, name in owner.items() if name == part]
                 gmsh.model.occ.translate(movable, 0.0, 0.0, shift)
@@ -166,7 +190,7 @@ def mesh_step_assembly(
         if len(surfaces) > 1:
             fragments, mapping = gmsh.model.occ.fragment(surfaces[:1], surfaces[1:])
             gmsh.model.occ.synchronize()
-            owner = _remap_owner(surfaces, mapping, owner)
+            owner, thickness_of = _remap_owner(surfaces, mapping, owner, thickness_of)
 
         gmsh.option.setNumber("Mesh.MeshSizeMin", 0.0)
         gmsh.option.setNumber("Mesh.MeshSizeMax", float(target_size))
@@ -189,17 +213,51 @@ def mesh_step_assembly(
         if node_ids.size == 0:
             raise MeshingError(f"Meshing {step_path} produced no nodes")
 
-        grouped: dict[str, list[tuple[int, np.ndarray]]] = {name: [] for name in names}
+        grouped: dict[str, list[tuple[int, np.ndarray, float]]] = {name: [] for name in names}
         for _, tag in gmsh.model.getEntities(2):
             name = owner.get(tag)
             if name is None:
                 continue
+            gauge = thickness_of.get(tag, 0.0)
             etypes, _, enodes = gmsh.model.mesh.getElements(2, tag)
             for etype, conn in zip(etypes, enodes):
                 if etype in (_GMSH_QUAD, _GMSH_TRIANGLE):
-                    grouped[name].append((int(etype), np.asarray(conn, dtype=np.int64)))
+                    grouped[name].append((int(etype), np.asarray(conn, dtype=np.int64), gauge))
 
-    return _assemble(skins, names, node_ids, nodes, grouped, str(step_path))
+    assembly = _assemble(
+        skins,
+        names,
+        node_ids,
+        nodes,
+        grouped,
+        str(step_path),
+        per_element_thickness,
+        shifts,
+    )
+    _check_welds(assembly, welds or [])
+    return assembly
+
+
+def _check_welds(assembly: AssemblyMesh, welds: list[tuple[str, str]]) -> None:
+    """Fail loudly on a declared weld that shares no nodes (spec §13.5)."""
+    for left, right in welds:
+        a = _node_set(assembly.part(left))
+        b = _node_set(assembly.part(right))
+        shared = len(a & b)
+        assembly.weld_counts[f"{left}-{right}"] = shared
+        if shared == 0:
+            raise MeshingError(
+                f"{left} and {right} are declared welded but share no nodes, so "
+                f"{right} is a free body in the model. Their shells are not "
+                "touching after idealisation - check the gap between them, and "
+                f"whether the case should map {right} onto {left}'s plane."
+            )
+
+
+def _node_set(part: AssemblyPart) -> set[int]:
+    """Node ids this part's elements reference."""
+    blocks = [part.mesh.quads.ravel(), part.mesh.tris.ravel()]
+    return set(np.unique(np.concatenate(blocks)).tolist())
 
 
 def _plane_height(gmsh: Any, tags: list[int]) -> float:
@@ -217,7 +275,8 @@ def _remap_owner(
     before: list[tuple[int, int]],
     mapping: list[list[tuple[int, int]]],
     owner: dict[int, str],
-) -> dict[str, Any]:
+    thickness_of: dict[int, float],
+) -> tuple[dict[int, str], dict[int, float]]:
     """Carry part ownership across an ``occ.fragment``.
 
     Fragment returns, for each input entity, the output entities it became.
@@ -226,6 +285,7 @@ def _remap_owner(
     node is shared either way.
     """
     remapped: dict[int, str] = {}
+    gauges: dict[int, float] = {}
     for (dim, tag), children in zip(before, mapping):
         if dim != 2:
             continue
@@ -235,7 +295,55 @@ def _remap_owner(
         for child_dim, child_tag in children:
             if child_dim == 2:
                 remapped.setdefault(child_tag, name)
-    return remapped
+                gauges.setdefault(child_tag, thickness_of.get(tag, 0.0))
+    return remapped, gauges
+
+
+def _gauge_part(
+    source: str,
+    skin: SkinResult,
+    node_ids: np.ndarray,
+    nodes: np.ndarray,
+    quads: np.ndarray,
+    tris: np.ndarray,
+    shift: float,
+) -> np.ndarray:
+    """Per-element thickness for one part, gauged element by element.
+
+    A part moved onto another's plane by ``coplanar`` no longer sits where its
+    solid is, so the rays are cast at the *original* location and the result
+    carried back. Without this the vent - the one part whose thickness varies
+    in the way that matters - gauges against empty space and comes back
+    uniformly nominal, score and all.
+    """
+    index = {int(t): i for i, t in enumerate(node_ids)}
+    centroids: list[np.ndarray] = []
+    normals: list[np.ndarray] = []
+    for block, corners in ((quads, 4), (tris, 3)):
+        if block.size == 0:
+            continue
+        rows = np.vectorize(index.__getitem__)(block)
+        pts = nodes[rows]
+        middle = pts.mean(axis=1)
+        if shift:
+            middle = middle - np.array([0.0, 0.0, shift])
+        centroids.append(middle)
+        n = np.zeros((pts.shape[0], 3), dtype=float)
+        for k in range(corners):
+            a, b = pts[:, k], pts[:, (k + 1) % corners]
+            n[:, 0] += (a[:, 1] - b[:, 1]) * (a[:, 2] + b[:, 2])
+            n[:, 1] += (a[:, 2] - b[:, 2]) * (a[:, 0] + b[:, 0])
+            n[:, 2] += (a[:, 0] - b[:, 0]) * (a[:, 1] + b[:, 1])
+        normals.append(n)
+    if not centroids:
+        return np.zeros(0, dtype=float)
+    return gauge_elements(
+        source,
+        skin.index,
+        np.vstack(centroids),
+        np.vstack(normals),
+        fallback_mm=skin.wall_thickness_mm,
+    )
 
 
 def _assemble(
@@ -243,8 +351,10 @@ def _assemble(
     names: list[str],
     node_ids: np.ndarray,
     nodes: np.ndarray,
-    grouped: dict[str, list[tuple[int, np.ndarray]]],
+    grouped: dict[str, list[tuple[int, np.ndarray, float]]],
     source: str,
+    per_element_thickness: bool,
+    shifts: dict[str, float],
 ) -> AssemblyMesh:
     """Build one :class:`ShellMesh` per part over the shared node array."""
     parts: list[AssemblyPart] = []
@@ -252,12 +362,17 @@ def _assemble(
     for skin, name in zip(skins, names):
         quads = np.zeros((0, 4), dtype=np.int64)
         tris = np.zeros((0, 3), dtype=np.int64)
-        for etype, conn in grouped.get(name, []):
+        quad_t: list[float] = []
+        tri_t: list[float] = []
+        for etype, conn, gauge in grouped.get(name, []):
             block = conn.reshape(-1, 4 if etype == _GMSH_QUAD else 3)
+            width = gauge if gauge > 0.0 else skin.wall_thickness_mm
             if etype == _GMSH_QUAD:
                 quads = np.vstack([quads, block]) if quads.size else block
+                quad_t += [width] * block.shape[0]
             else:
                 tris = np.vstack([tris, block]) if tris.size else block
+                tri_t += [width] * block.shape[0]
         if quads.size == 0 and tris.size == 0:
             raise MeshingError(
                 f"Part {name!r} came out of the assembly mesh with no elements. "
@@ -276,6 +391,14 @@ def _assemble(
                     nodes=nodes,
                     quads=quads,
                     tris=tris,
+                    # Quads first then tris - the order the deck writer emits.
+                    element_thickness=(
+                        _gauge_part(
+                            source, skin, node_ids, nodes, quads, tris, shifts.get(name, 0.0)
+                        )
+                        if per_element_thickness
+                        else None
+                    ),
                     name=name,
                     source=source,
                 ),
