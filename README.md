@@ -5,6 +5,7 @@ CATPart → STEP → Gmsh 쉘 메싱 → **OpenRadioss** explicit 해석 → 애
 
 - 기준 문서: [`docs/SPEC-v2.1.md`](docs/SPEC-v2.1.md) (요구사항·ADR — 위반 시 리뷰 반려)
 - 실행계획: [`docs/EXECUTION_PLAN.md`](docs/EXECUTION_PLAN.md) (Phase별 WBS·게이트)
+- 벤트 파단 모델링: [`docs/VENT_BURST.md`](docs/VENT_BURST.md) (각형 셀 스코어 벤트 — 구성·판정·메쉬·보정)
 - Python 패키지 `crushsim` · CLI `csim` · 단위계 **mm·s·tonne·N·MPa** (ADR-04)
 
 > 물리는 자체 구현하지 않는다(ADR-01). 계산은 배치, 시각화는 결과 파일 기반(ADR-02).
@@ -92,7 +93,7 @@ examples/step/   # 실형상 STEP 예제
 bench/           # 검증 벤치마크 B-1~B-4 (pytest)
 tests/           # 단위 테스트
 scripts/         # 부트스트랩·솔버 설치·레거시 페치
-docs/            # SPEC · 실행계획
+docs/            # SPEC · 실행계획 · 벤트 파단 가이드
 webapp/          # Phase 3 전까지 비움 (ADR-03)
 runs/            # 실행 출력 (git 제외)
 legacy_ref/      # 구 저장소 읽기 전용 참조 (git 제외)

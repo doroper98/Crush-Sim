@@ -6,6 +6,12 @@
 # the weld band and the narrow cap remainder keep their gated sizes - that
 # remainder is at its best coarse). Score resolution 4.5 elements per mm of
 # arc vs 0.6 in the baseline v5, for +1000 elements.
+#
+# MEASURED: initiation 0.303 MPa, opening 0.385 MPa. Refining a further
+# 40% (_fine, 0.3 mm) moves these only 5% for 17x the run time, so THIS
+# is the working mesh for vent burst. Energy error 9.1% - element
+# deletion removes internal energy from the balance; see
+# docs/VENT_BURST.md before quoting a burst pressure.
 
 name: lc6_pris_vent_burst_v5_medium
 load_case: LC-3

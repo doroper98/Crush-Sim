@@ -9,6 +9,11 @@
 # The viewer now also renders the score grooves dark on the gold foil.
 # Short hold past the ~0.71 MPa opening to catch the petals before the
 # sustained-overpressure shredding v4b demonstrated.
+#
+# MEASURED (see docs/VENT_BURST.md): initiation 0.514 MPa, opening
+# 0.703 MPa - but this uniform mesh leaves the score ONE element wide and
+# is under-resolved, overpredicting the burst by ~70%. Kept as the
+# convergence baseline; use _medium (mesh.vent_size 0.5) for real work.
 
 name: lc6_pris_vent_burst_v5
 load_case: LC-3
