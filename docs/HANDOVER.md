@@ -5,6 +5,7 @@
 검증해서 값을 치른 사실들이라, 모르면 같은 실수를 반복하게 됩니다.
 
 - 요구사항·ADR: [`SPEC-v2.1.md`](SPEC-v2.1.md) — 위반 시 리뷰 반려
+- **삽질 기록: [`LOG.md`](LOG.md)** — 시도했다 실패한 것들과 그 이유
 - 벤트 파단 상세: [`VENT_BURST.md`](VENT_BURST.md)
 - 폐쇄망 설치: [`OFFLINE.md`](OFFLINE.md)
 
