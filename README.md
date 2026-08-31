@@ -3,6 +3,7 @@
 원통형 캔의 압착(지그 압착력)·강도(축방향 압궤) 시뮬레이션 파이프라인.
 CATPart → STEP → Gmsh 쉘 메싱 → **OpenRadioss** explicit 해석 → 애니메이션·HTML 리포트 자동화.
 
+- **처음 오셨다면: [`docs/HANDOVER.md`](docs/HANDOVER.md)** (프로젝트 개요·쉘 이상화·검증된 사실들)
 - 기준 문서: [`docs/SPEC-v2.1.md`](docs/SPEC-v2.1.md) (요구사항·ADR — 위반 시 리뷰 반려)
 - 실행계획: [`docs/EXECUTION_PLAN.md`](docs/EXECUTION_PLAN.md) (Phase별 WBS·게이트)
 - 벤트 파단 모델링: [`docs/VENT_BURST.md`](docs/VENT_BURST.md) (각형 셀 스코어 벤트 — 구성·판정·메쉬·보정)
@@ -93,7 +94,7 @@ examples/step/   # 실형상 STEP 예제
 bench/           # 검증 벤치마크 B-1~B-4 (pytest)
 tests/           # 단위 테스트
 scripts/         # 부트스트랩·솔버 설치·레거시 페치
-docs/            # SPEC · 실행계획 · 벤트 파단 가이드
+docs/            # 인수인계 · SPEC · 실행계획 · 벤트 파단 가이드
 webapp/          # Phase 3 전까지 비움 (ADR-03)
 runs/            # 실행 출력 (git 제외)
 legacy_ref/      # 구 저장소 읽기 전용 참조 (git 제외)
