@@ -6,6 +6,12 @@
 # flap-to-rim grading collapses). Compare the burst/opening pressures with
 # the baseline and medium runs: a converged score reports a burst that no
 # longer moves with the mesh.
+#
+# MEASURED: initiation 0.287 MPa, opening 0.366 MPa - 5% below _medium
+# (0.303 / 0.385), so the answer HAS converged from 0.5 mm on. This run
+# took 7.3 h against 25 min for _medium: keep it as the convergence
+# evidence, run _medium for work. Energy error 13.0% (553 deletions).
+# See docs/VENT_BURST.md.
 
 name: lc6_pris_vent_burst_v5_fine
 load_case: LC-3
