@@ -25,9 +25,15 @@ from typing import Any
 
 import numpy as np
 
-from ..errors import MeshingError
-from ..geometry.skin import SkinResult, extract_shell_skins, gauge_elements
+from ..errors import GateFailure, MeshingError
+from ..geometry.skin import (
+    SkinResult,
+    extract_shell_skins,
+    gauge_elements,
+    shell_mass_error,
+)
 from ..units import MESH_TARGET_SIZE_DEFAULT_MM
+from .gates import GateResult, evaluate_idealisation_gate
 from .mesh_data import ShellMesh
 from .mesher import _GMSH_QUAD, _GMSH_TRIANGLE, gmsh_session
 
@@ -41,6 +47,8 @@ class AssemblyPart:
     """Elements of this part, over the assembly's shared node array."""
     thickness_mm: float
     skin: SkinResult
+    gate: GateResult | None = None
+    """Idealisation verdict for this part."""
 
     def summary(self) -> dict[str, Any]:
         """Flat dictionary for run summaries and reports."""
@@ -51,6 +59,7 @@ class AssemblyPart:
             "quads": self.mesh.n_quads,
             "tris": self.mesh.n_tris,
             "skin": self.skin.summary(),
+            "gate": self.gate.to_dict() if self.gate else None,
         }
 
 
@@ -64,6 +73,8 @@ class AssemblyMesh:
     """Nodes referenced by more than one part - the welds."""
     weld_counts: dict[str, int] = field(default_factory=dict)
     """Shared-node count per declared weld pair."""
+    weld_seam_fractions: dict[str, float] = field(default_factory=dict)
+    """Shared boundary fraction per welded part - the value the gate judges."""
 
     def part(self, name: str) -> AssemblyPart:
         """Look one part up by name.
@@ -84,6 +95,7 @@ class AssemblyMesh:
             "nodes": self.node_count,
             "shared_nodes": self.shared_nodes,
             "weld_counts": dict(self.weld_counts),
+            "weld_seam_fractions": dict(self.weld_seam_fractions),
             "parts": [p.summary() for p in self.parts],
         }
 
@@ -98,6 +110,7 @@ def mesh_step_assembly(
     coplanar: dict[str, str] | None = None,
     welds: list[tuple[str, str]] | None = None,
     per_element_thickness: bool = True,
+    enforce_gate: bool = True,
     recombine: bool = True,
 ) -> AssemblyMesh:
     """Mesh every solid of ``step_path`` into one welded shell assembly.
@@ -130,6 +143,8 @@ def mesh_step_assembly(
             load path, and a vent score are all *deliberately* not the nominal
             thickness, and the part median erases them (measured: the vent's
             0.100 mm score residual disappears into a 0.300 mm median).
+        enforce_gate: Stop on a part that did not idealise to a valid shell
+            (ADR-06). Turn it off only to inspect a failing import.
         recombine: Recombine into quads.
 
     Returns:
@@ -139,6 +154,8 @@ def mesh_step_assembly(
         MeshingError: If the solid count and ``names`` disagree, or a part ends
             up with no elements - a part that vanished silently would be absent
             from the deck while the report still listed it (§13.5).
+        GateFailure: If a part's shell does not carry its solid's mass, or a
+            declared weld shares too little boundary.
     """
     work = Path(workdir)
     work.mkdir(parents=True, exist_ok=True)
@@ -235,14 +252,87 @@ def mesh_step_assembly(
         shifts,
     )
     _check_welds(assembly, welds or [])
+    _judge(assembly, enforce_gate)
     return assembly
 
 
+def _judge(assembly: AssemblyMesh, enforce: bool) -> None:
+    """Run the idealisation gate on every part (ADR-06)."""
+    failures: list[str] = []
+    for part in assembly.parts:
+        area = float(_meshed_area(part.mesh))
+        thickness = part.mesh.element_thickness
+        volume = part.skin.volume_mm3
+        # Per-element thickness makes the mass exact rather than nominal: sum
+        # area x thickness element by element instead of assuming one gauge.
+        if thickness is not None and thickness.size:
+            shell_volume = float(_meshed_area(part.mesh, thickness))
+            error = (shell_volume - volume) / volume if volume > 0 else float("inf")
+        else:
+            error = shell_mass_error(
+                meshed_area_mm2=area,
+                thickness_mm=part.thickness_mm,
+                solid_volume_mm3=volume,
+            )
+        seam = assembly.weld_seam_fractions.get(part.name)
+        part.gate = evaluate_idealisation_gate(
+            part=part.name,
+            mass_error=error,
+            weld_seam_fraction=seam,
+            info={
+                "meshed_area_mm2": area,
+                "solid_volume_mm3": volume,
+                "thickness_uniformity": part.skin.uniformity,
+                "kind": part.skin.kind,
+            },
+        )
+        if not part.gate.passed:
+            failures.append(part.gate.describe())
+    if failures and enforce:
+        raise GateFailure(
+            "Shell idealisation failed - these solids did not become valid "
+            "shells:\n" + "\n".join(failures)
+        )
+
+
+def _meshed_area(mesh: ShellMesh, weights: np.ndarray | None = None) -> float:
+    """Total meshed area, or area x per-element weight when given."""
+    index = {int(t): i for i, t in enumerate(mesh.node_ids)}
+    total = 0.0
+    offset = 0
+    for block, corners in ((mesh.quads, 4), (mesh.tris, 3)):
+        if block.size == 0:
+            continue
+        rows = np.vectorize(index.__getitem__)(block)
+        pts = mesh.nodes[rows]
+        n = np.zeros((pts.shape[0], 3), dtype=float)
+        for k in range(corners):
+            a, b = pts[:, k], pts[:, (k + 1) % corners]
+            n[:, 0] += (a[:, 1] - b[:, 1]) * (a[:, 2] + b[:, 2])
+            n[:, 1] += (a[:, 2] - b[:, 2]) * (a[:, 0] + b[:, 0])
+            n[:, 2] += (a[:, 0] - b[:, 0]) * (a[:, 1] + b[:, 1])
+        area = np.linalg.norm(n, axis=1) / 2.0
+        if weights is not None:
+            area = area * weights[offset : offset + area.size]
+        total += float(area.sum())
+        offset += area.size
+    return total
+
+
 def _check_welds(assembly: AssemblyMesh, welds: list[tuple[str, str]]) -> None:
-    """Fail loudly on a declared weld that shares no nodes (spec §13.5)."""
+    """Measure each declared weld, and refuse one that shares nothing.
+
+    Counting shared nodes is not enough on its own: two parts grazing at a
+    corner share one node and would pass, while the foil is still free to lift
+    off. What matters is how much of the *boundary* is shared, so the seam is
+    measured as a length and judged by the idealisation gate. Zero shared
+    nodes is still refused here and immediately - past that point the part is
+    simply not attached, and every later number would describe a different
+    model than the one the case asked for (§13.5).
+    """
     for left, right in welds:
-        a = _node_set(assembly.part(left))
-        b = _node_set(assembly.part(right))
+        host, guest = assembly.part(left), assembly.part(right)
+        a, b = _node_set(host), _node_set(guest)
         shared = len(a & b)
         assembly.weld_counts[f"{left}-{right}"] = shared
         if shared == 0:
@@ -252,6 +342,35 @@ def _check_welds(assembly: AssemblyMesh, welds: list[tuple[str, str]]) -> None:
                 "touching after idealisation - check the gap between them, and "
                 f"whether the case should map {right} onto {left}'s plane."
             )
+        assembly.weld_seam_fractions[right] = _seam_fraction(guest, a & b)
+
+
+def _seam_fraction(part: AssemblyPart, shared: set[int]) -> float:
+    """Shared length of this part's free boundary, as a fraction of it.
+
+    The free boundary is the part's own rim - the edges its elements use once.
+    A foil welded all round has essentially all of it shared; one touching at
+    a corner has almost none.
+    """
+    counts: dict[tuple[int, int], int] = {}
+    for block, corners in ((part.mesh.quads, 4), (part.mesh.tris, 3)):
+        for element in block:
+            for k in range(corners):
+                lo, hi = int(element[k]), int(element[(k + 1) % corners])
+                key = (lo, hi) if lo < hi else (hi, lo)
+                counts[key] = counts.get(key, 0) + 1
+    index = {int(t): i for i, t in enumerate(part.mesh.node_ids)}
+    rim = welded = 0.0
+    for (lo, hi), seen in counts.items():
+        if seen != 1:
+            continue
+        length = float(
+            np.linalg.norm(part.mesh.nodes[index[lo]] - part.mesh.nodes[index[hi]])
+        )
+        rim += length
+        if lo in shared and hi in shared:
+            welded += length
+    return welded / rim if rim > 0 else 0.0
 
 
 def _node_set(part: AssemblyPart) -> set[int]:

@@ -20,6 +20,8 @@ from ..units import (
     MESH_MAX_TRIANGLE_FRACTION,
     MESH_MIN_EDGE_LENGTH_MM,
     MESH_MIN_SICN,
+    SHELL_MASS_ERROR_MAX,
+    SHELL_WELD_SEAM_FRACTION_MIN,
     within,
 )
 
@@ -245,3 +247,68 @@ def evaluate_solution_gate(
         ),
     ]
     return GateResult(name="solution", metrics=metrics, info=dict(info or {}))
+
+
+def evaluate_idealisation_gate(
+    *,
+    part: str,
+    mass_error: float,
+    weld_seam_fraction: float | None = None,
+    info: dict[str, Any] | None = None,
+) -> GateResult:
+    """Judge whether an imported solid became a usable shell (FR-02).
+
+    Shell idealisation replaces a solid wall with a surface carrying the
+    thickness as a property, and the check that it worked is conservation of
+    mass: area times thickness must reproduce the solid's volume. That single
+    number separates the parts that idealise from the ones that must not be
+    shelled at all - measured over every STEP in the repository, cans land at
+    -6.6 to -9.1 % and a 17.6 mm terminal block at +683 %.
+
+    Deliberately *not* gated here: thickness uniformity. It reads like a
+    quality measure and is not one - a passing part measured 43 % uniform
+    against a failing part's 90 %. Low uniformity means the designer varied the
+    thickness (a pocket, a pad, a score), which per-element thickness handles;
+    it says nothing about whether the shell is valid. It travels in ``info``.
+
+    Args:
+        part: Part name, for the failure message.
+        mass_error: Signed relative mass error; see
+            :func:`crushsim.geometry.skin.shell_mass_error`.
+        weld_seam_fraction: Shared boundary length over the shorter part's
+            boundary, for a part the case declares welded. ``None`` skips it.
+        info: Extra context for the report.
+
+    Returns:
+        A :class:`GateResult` named ``idealisation:<part>``.
+    """
+    metrics = [
+        GateMetric(
+            name="shell_mass_error",
+            value=abs(float(mass_error)),
+            limit=SHELL_MASS_ERROR_MAX,
+            mode="max",
+            recommendation=(
+                "The shell does not carry the solid's mass. A large positive "
+                "error usually means the solid is not shell-like at all (a "
+                "block, a post, a boss) - model it rigid or exclude it. A "
+                "negative one means faces were dropped: check the cavity "
+                "classification on a re-entrant shape."
+            ),
+        )
+    ]
+    if weld_seam_fraction is not None:
+        metrics.append(
+            GateMetric(
+                name="weld_seam_fraction",
+                value=float(weld_seam_fraction),
+                limit=SHELL_WELD_SEAM_FRACTION_MIN,
+                mode="min",
+                recommendation=(
+                    "The parts share too little boundary to be welded. Check "
+                    "the gap between their idealised surfaces, and whether the "
+                    "case should place one on the other's plane."
+                ),
+            )
+        )
+    return GateResult(name=f"idealisation:{part}", metrics=metrics, info=dict(info or {}))

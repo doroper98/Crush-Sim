@@ -32,6 +32,7 @@ def welded(tmp_path_factory: pytest.TempPathFactory):
         target_size=3.0,
         local_sizes={"VENT": 0.8},
         coplanar={"VENT": "CAP"},
+        welds=[("CAN", "CAP"), ("CAP", "VENT")],
     )
 
 
@@ -150,6 +151,7 @@ class TestPerElementThickness:
             target_size=5.0,
             coplanar={"VENT": "CAP"},
             per_element_thickness=False,
+            enforce_gate=False,
         )
         assert plain.part("CAN").mesh.element_thickness is None
 
@@ -164,3 +166,81 @@ class TestUniformityDiagnostic:
         by_name = {p.name: p.skin.uniformity for p in welded.parts}
         assert by_name["VENT"] < by_name["CAN"], by_name
         assert all(0.0 <= v <= 1.0 for v in by_name.values())
+
+
+class TestIdealisationGate:
+    """ADR-06 for shell idealisation: a bad import must not reach the deck.
+
+    A gate here is an automated pass/fail on a measured number, not a prompt to
+    look at the geometry (GOAL.md: the criterion is gate pass rate, not visual
+    plausibility). Mass conservation is the number that does the work - across
+    every STEP in the repository it separates the parts that idealise (-9 to
+    +4 %) from the ones that must not be shelled at all (a 17.6 mm terminal
+    block: +683 %).
+    """
+
+    def test_every_part_is_judged(self, welded) -> None:
+        for part in welded.parts:
+            assert part.gate is not None, part.name
+            assert part.gate.passed, part.gate.describe()
+
+    def test_per_element_thickness_is_what_conserves_mass(self, tmp_path: Path) -> None:
+        """The measurement that justifies per-element thickness.
+
+        With one gauge per part the cap is 11 % heavy and the vent 23 % - the
+        score is averaged away and the foil comes out solid. Gauging per
+        element brings both inside 2 %.
+        """
+        errors = {}
+        for per_element in (False, True):
+            mesh = mesh_step_assembly(
+                ASSEMBLY,
+                names=["CAN", "CAP", "VENT"],
+                workdir=tmp_path / f"per{per_element}",
+                target_size=3.0,
+                local_sizes={"VENT": 0.4},
+                coplanar={"VENT": "CAP"},
+                per_element_thickness=per_element,
+                enforce_gate=False,
+            )
+            errors[per_element] = {
+                p.name: next(
+                    m.value for m in p.gate.metrics if m.name == "shell_mass_error"
+                )
+                for p in mesh.parts
+            }
+        for name in ("CAP", "VENT"):
+            assert errors[False][name] > 0.10, f"{name} should fail on one gauge"
+            assert errors[True][name] < 0.10, f"{name} should pass per element"
+
+    def test_uniformity_is_reported_not_gated(self, welded) -> None:
+        """It reads like a quality measure and is not one.
+
+        Measured: a part that passes at 43 % uniform, one that fails at 90 %.
+        Low uniformity means the designer varied the thickness on purpose, and
+        per-element thickness handles that; gating on it would reject exactly
+        the pocketed and scored parts this pipeline exists for.
+        """
+        for part in welded.parts:
+            names = {m.name for m in part.gate.metrics}
+            assert "thickness_uniformity" not in names
+            assert "thickness_uniformity" in part.gate.info
+
+    def test_weld_is_judged_by_seam_length(self, welded) -> None:
+        """Shared nodes > 0 is not a weld - two parts can graze at a corner."""
+        assert welded.weld_seam_fractions["VENT"] > 0.9
+        vent_gate = welded.part("VENT").gate
+        seam = next(m for m in vent_gate.metrics if m.name == "weld_seam_fraction")
+        assert seam.passed
+
+    def test_gate_can_be_inspected_without_stopping(self, tmp_path: Path) -> None:
+        mesh = mesh_step_assembly(
+            ASSEMBLY,
+            names=["CAN", "CAP", "VENT"],
+            workdir=tmp_path,
+            target_size=5.0,
+            coplanar={"VENT": "CAP"},
+            per_element_thickness=False,
+            enforce_gate=False,
+        )
+        assert any(not p.gate.passed for p in mesh.parts)

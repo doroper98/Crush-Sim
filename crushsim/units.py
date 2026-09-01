@@ -132,6 +132,28 @@ gate targets non-manifold edges; the plain free-edge count is reported for
 inspection.
 """
 
+SHELL_MASS_ERROR_MAX: Final[float] = 0.10
+"""Largest |shell mass - solid mass| / solid mass a shell idealisation may carry.
+
+A shell stands in for a solid wall, so its area times its thickness has to
+reproduce the solid's volume. This is the one measurement that decides whether
+an imported solid became a valid shell, and it needs no human to look at the
+geometry: measured across every STEP in the repository, the parts that
+idealise cleanly land inside +-10 % (cans: -6.6 to -9.1 %) and the ones that
+must not be shells land far outside it (a 17.6 mm terminal block: +683 %).
+
+Diagnostics like thickness uniformity do NOT separate the two - a passing part
+measured 43 % uniform and a failing one 90 % - so they are reported, not gated.
+"""
+
+SHELL_WELD_SEAM_FRACTION_MIN: Final[float] = 0.5
+"""Fraction of the shorter part's boundary that a weld must actually share.
+
+A weld is shared nodes, but "more than zero shared nodes" is not a weld: two
+parts grazing at a corner pass that test while the foil is still free to lift
+off. The seam has to be a real length of the boundary."""
+
+
 # ---------------------------------------------------------------------------
 # Meshing targets (spec §4 FR-03)
 # ---------------------------------------------------------------------------
