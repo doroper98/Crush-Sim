@@ -23,6 +23,7 @@
 | `lc6v5_vent_viewer.html` | v5 스코어를 실제 기하로 각인 | 0.51 MPa, 개방 단계 파단 100%가 스코어 위 |
 | `v5_medium_viewer.html` | **v5 + 스코어 0.5mm 세분 — 실무 기준** | **파단 0.303 / 개방 0.385 MPa** |
 | `v5_fine_viewer.html` | v5 + 스코어 0.3mm 세분 (수렴 근거) | 0.287 / 0.366 MPa — medium 대비 5% |
+| `lc6_step_vent_viewer.html` | **실형상 STEP 어셈블리** (`can/test.stp` 캔+캡+용접 벤트, 요소별 실측 두께로 S-스코어 각인) | 파단 개시 **0.335 MPa** @ KE/IE 0.5% (개방은 컨테이너 종료로 미기록) |
 
 배경과 판정 기준은 [`../docs/VENT_BURST.md`](../docs/VENT_BURST.md) 참고.
 
