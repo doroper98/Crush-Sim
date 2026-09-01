@@ -51,7 +51,7 @@ from ..units import (
     UNIT_SYSTEM,
     m_per_s_to_mm_per_s,
 )
-from .format import RULER, f20, i10, reals, s10, title
+from .format import RULER, f20, f20narrow, i10, reals, s10, title
 
 PartRole = Literal["deformable", "floor", "tool"]
 
@@ -403,6 +403,9 @@ class RadiossDeckWriter:
         extra_drives: list[DriveDefinition] | None = None,
         pressure: tuple[float, float, float] | None = None,
         eps_p_max: float | None = None,
+        dt_min: float = 0.0,
+        contact_gap_max: float = 0.0,
+        self_contact: bool = True,
     ) -> None:
         if not parts:
             raise DeckError("A deck needs at least one part")
@@ -440,6 +443,34 @@ class RadiossDeckWriter:
         self.brace_walls = bool(brace_walls)
         self.pressure = pressure
         self.eps_p_max = eps_p_max
+        self.dt_min = float(dt_min)
+        self.contact_gap_max = float(contact_gap_max)
+        self.self_contact = bool(self_contact)
+        """Emit the can self-contact interface.
+
+        Needed when folds can touch (crush) or petals fold back (post-burst).
+        A welded flat lap - a cap sitting in the plane of the can's rim strip -
+        floods it with zero-distance initial penetrations instead: the rim
+        elements lie *in* the cap's plane at full gap depth, and the run
+        explodes within ~100 cycles (measured: energies at 1e226 in the rim
+        elements). Until a contact exclusion set exists for declared welds,
+        such decks run without self contact and say so in the summary."""
+        """Cap for the TYPE7 variable gap [mm]; 0 = uncapped.
+
+        With Igap=2 the gap is derived from element size, and a degenerate
+        sliver poisons that derivation: measured 7.8e8 mm on an imprinted can
+        rim, which put every node in contact with everything - 1.15 s/cycle
+        and a numerical explosion inside 44 cycles. A cap at the physical
+        scale (about the largest contact thickness) restores both."""
+        """Nodal mass-scaling floor for /DT/NODA/CST [s]; 0 = stability dt.
+
+        A handful of sliver elements - e.g. the 0.01 mm strips left where a
+        cap outline imprints a can rim it almost coincides with - would pin
+        the whole run to their timestep (measured: 8.7e-10 s, 4 million
+        cycles). Mass-scaling only those nodes is the standard explicit
+        answer; the added-mass gate (<= 2 %) polices the cost. Keep the floor
+        below the smallest *intentional* element's natural timestep so real
+        features never gain mass."""
         self._assign_ids()
 
     # -- id assignment ------------------------------------------------------
@@ -562,7 +593,7 @@ class RadiossDeckWriter:
                 eid += 1
                 line = i10(eid) + "".join(i10(int(n)) for n in quad)
                 if thk is not None:
-                    line += f20(0.0) + f20(float(thk[index]))
+                    line += f20(0.0) + f20narrow(float(thk[index]))
                 lines.append(line)
         if part.mesh.n_tris:
             lines.append(f"/SH3N/{part.part_id}")
@@ -571,7 +602,7 @@ class RadiossDeckWriter:
                 eid += 1
                 line = i10(eid) + "".join(i10(int(n)) for n in tri)
                 if thk is not None:
-                    line += f20(0.0) + f20(float(thk[part.mesh.n_quads + index]))
+                    line += f20(0.0) + f20narrow(float(thk[part.mesh.n_quads + index]))
                 lines.append(line)
         return lines
 
@@ -746,26 +777,37 @@ class RadiossDeckWriter:
         return lines
 
     def _block_wall_brace(self) -> list[str]:
-        """Lock Y translation of the can's two extreme-Y faces (module bracing).
+        """Lock the face-normal translation of the can's two large flat faces.
 
-        On a prismatic (box) can the large flat faces are normal to Y. Empty
-        and unsupported they balloon under internal pressure and tear near
-        the cap rim before the scored cap vent activates; in the cell the
-        jelly roll and the module end plates hold them nearly flat. Only the
-        face-normal translation is fixed - in-plane motion and all rotations
-        stay free, so the cap, the narrow walls, and the vent flap are
-        unaffected.
+        Empty and unsupported, a prismatic can's large faces balloon under
+        internal pressure and tear near the cap rim before the scored vent
+        activates; in the cell the jelly roll and the module end plates hold
+        them nearly flat. Only the face-normal translation is fixed - in-plane
+        motion and all rotations stay free, so the cap, the narrow walls and
+        the vent flap are unaffected.
+
+        The large faces are normal to whichever in-plane axis the can is
+        thinnest along: Y for a ``box_can`` (width x depth convention), X for
+        the imported prismatic cell, whose 28.6 mm depth runs along X. The
+        axis is measured from the mesh rather than assumed, so both sources
+        brace the faces they mean to.
         """
         can = next(p for p in self.parts if p.role == "deformable")
-        y = np.asarray(can.mesh.nodes, dtype=float)[:, 1]
-        y_max = float(np.abs(y).max())
-        if y_max < 1e-6:
-            return []
+        nodes = np.asarray(can.mesh.nodes, dtype=float)
+        extent = nodes.max(axis=0) - nodes.min(axis=0)
+        axis = 0 if extent[0] < extent[1] else 1
+        centre = float((nodes[:, axis].max() + nodes[:, axis].min()) / 2.0)
+        offset = np.abs(nodes[:, axis] - centre)
+        span = float(offset.max())
+        # A part that is flat along the brace axis (a single wall patch) has
+        # zero span there; its "large face" is then the whole patch, so every
+        # node is braced rather than none.
         face_ids = [
-            int(n) for n, yy in zip(can.mesh.node_ids, y) if abs(abs(yy) - y_max) <= 0.1
+            int(n) for n, d in zip(can.mesh.node_ids, offset) if abs(d - span) <= 0.1
         ]
         if not face_ids:
             return []
+        code = "100 000" if axis == 0 else "010 000"
         lines = [RULER, "/GRNOD/NODE/97", title("CAN_LARGE_FACES")]
         for i in range(0, len(face_ids), 10):
             lines.append("".join(i10(n) for n in face_ids[i : i + 10]))
@@ -773,7 +815,7 @@ class RadiossDeckWriter:
             "/BCS/6",
             title("WALL_BRACE"),
             "#  Tra rot   skew_ID  grnod_ID",
-            s10("010 000") + i10(0) + i10(97),
+            s10(code) + i10(0) + i10(97),
         ]
         return lines
 
@@ -929,10 +971,15 @@ class RadiossDeckWriter:
         """
         lines: list[str] = []
         has_tools = any(p.role == "tool" for p in self.parts)
-        pairs = ([(1, "TOOL_CONTACT", 1)] if has_tools else []) + [
-            (2, "FIXED_CONTACT", 2),
-            (3, "SELF_CONTACT", 3),
-        ]
+        has_fixed = any(p.role == "floor" for p in self.parts)
+        # An interface whose main surface is empty is a starter ERROR 3160,
+        # so each contact pair exists only when its partner does - a
+        # pressure-only deck with no floor keeps just the self contact.
+        pairs = (
+            ([(1, "TOOL_CONTACT", 1)] if has_tools else [])
+            + ([(2, "FIXED_CONTACT", 2)] if has_fixed else [])
+            + ([(3, "SELF_CONTACT", 3)] if self.self_contact else [])
+        )
         if sum(1 for p in self.parts if p.role == "tool") > 1:
             pairs.append((4, "EXTRA_TOOL_CONTACT", 4))
         for inter_id, name, surf_id in pairs:
@@ -950,7 +997,7 @@ class RadiossDeckWriter:
             "      Idel     Icurv      Iadm",
             i10(90) + i10(surf_id) + i10(4) + i10(0) + i10(2) + " " * 10 + i10(0) + i10(0) + i10(0) + i10(0),
             "#          Fscalegap             Gap_max             Fpenmax",
-            reals((self.gap_scale, 0.0, 0.0)),
+            reals((self.gap_scale, self.contact_gap_max, 0.0)),
             "#              Stmin               Stmax   Percent_mesh_size               dtmin"
             "  Irem_gap   Irem_i2",
             reals((0.0, 0.0, 0.0, 0.0)) + i10(0) + i10(0),
@@ -1077,7 +1124,7 @@ class RadiossDeckWriter:
                     "# Constant nodal timestep: added mass is gated at "
                     "units.ADDED_MASS_MAX",
                     "/DT/NODA/CST",
-                    reals((0.9, 0.0)),
+                    reals((0.9, self.dt_min)),
                     "# Animation output interval [s]",
                     "/ANIM/DT",
                     reals((0.0, dt_anim)),

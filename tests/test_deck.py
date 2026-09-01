@@ -527,8 +527,10 @@ def test_wall_brace_block(material_card, can_mesh_fixture, floor_mesh_fixture) -
     assert "/GRNOD/NODE/97" in text
     assert "CAN_LARGE_FACES" in text
     assert "/BCS/6" in text
-    # Y translation only: in-plane motion and all rotations stay free.
-    assert "   010 000" in text.split("WALL_BRACE")[1].splitlines()[2]
+    # Face-normal translation only, and the normal is measured from the mesh:
+    # this fixture is a wall patch at constant X, so the brace locks X. (The
+    # box_can path still braces Y - its depth is the thinner in-plane axis.)
+    assert "   100 000" in text.split("WALL_BRACE")[1].splitlines()[2]
     # Off by default.
     writer2 = RadiossDeckWriter(
         run_name="free",
@@ -654,3 +656,58 @@ def test_retract_drive_reverses_and_returns() -> None:
         peak = max(peak, disp)
     assert peak == pytest.approx(10.0, abs=0.15)
     assert disp == pytest.approx(6.0, abs=0.15)
+
+
+def test_element_thickness_digits_stay_in_the_reader_window() -> None:
+    """The pinned starter reads /SHELL trailing thickness from the LAST TEN
+    columns of the field, not all twenty.
+
+    A gauged thickness like 0.0856419204 formats to twelve characters, spills
+    its leading digits out of that window, and the remainder parses as
+    856,419,204 mm - one element then outweighs the whole cell by four orders
+    of magnitude and the run explodes inside 100 cycles (EXP-005). Short
+    values (0.03, 1.2) fit the window by luck, which is why the original
+    total-mass validation never caught it: golden decks validate the values
+    they contain, not the format's envelope.
+    """
+    from crushsim.deck.format import f20narrow
+
+    adversarial = [0.0856419204, 0.10000000000000009, 1.8470000000000002, 2.5, 0.065]
+    for value in adversarial:
+        field = f20narrow(value)
+        assert len(field) == 20
+        digits = field.strip()
+        assert len(digits) <= 10, f"{value} -> {digits!r} spills the 10-char window"
+        # The whole number must sit inside the last ten columns.
+        assert field[:10].strip() == "", f"{value} -> {field!r} has digits outside the window"
+        assert abs(float(digits) - value) / value < 1e-4
+
+
+def test_per_element_thickness_uses_the_narrow_field(material_card) -> None:
+    """A deck with adversarial gauged thicknesses must emit parseable fields."""
+    import numpy as np
+
+    from crushsim.meshing.mesh_data import ShellMesh
+
+    mesh = ShellMesh(
+        node_ids=np.array([1, 2, 3, 4], dtype=np.int64),
+        nodes=np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 10.0, 0.0], [0.0, 10.0, 0.0]]),
+        quads=np.array([[1, 2, 3, 4]], dtype=np.int64),
+        tris=np.zeros((0, 3), dtype=np.int64),
+        element_thickness=np.array([0.0856419204]),
+        name="CAN",
+    )
+    writer = RadiossDeckWriter(
+        run_name="narrow",
+        parts=[DeckPart(name="CAN", mesh=mesh, thickness=0.65, role="deformable", material=material_card)],
+        drive=None,
+        material=material_card,
+        pressure=(1.0, 1.0e-3, 0.0),
+    )
+    for line in writer.starter_text().splitlines():
+        if line.startswith("         1         1         2         3         4"):
+            thickness_window = line[80:90]
+            assert abs(float(thickness_window) - 0.0856419204) < 1e-6
+            break
+    else:  # pragma: no cover
+        raise AssertionError("quad element line not found")

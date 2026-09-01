@@ -52,3 +52,24 @@ def reals(values: Iterable[float]) -> str:
 def title(text: str, *, width: int = 100) -> str:
     """Truncate a title line to the Radioss title-field width."""
     return text[:width]
+
+
+def f20narrow(value: float) -> str:
+    """A real in a 20-character field whose digits stay in the last 10 columns.
+
+    The pinned starter reads the /SHELL and /SH3N trailing thickness from the
+    LAST TEN columns of the field, not from all twenty: a value whose text is
+    eleven characters or longer spills its leading digits out of that window
+    and the remainder parses as garbage. Measured on a gauged can wall,
+    ``0.0856419204`` (twelve characters) read back as 856,419,204 mm - one
+    element outweighed the whole cell by four orders of magnitude, and the
+    kinetic energy this fed created a numerical explosion within 100 cycles.
+    Ten significant characters keep six significant figures on any thickness
+    this pipeline meshes, which is far inside gauge accuracy.
+    """
+    text = f"{float(value):.9g}"
+    precision = 9
+    while len(text) > 10 and precision > 1:
+        precision -= 1
+        text = f"{float(value):.{precision}g}"
+    return f"{text:>{REAL_WIDTH}}"
