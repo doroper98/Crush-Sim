@@ -130,6 +130,7 @@ def _require_occ() -> dict[str, Any]:
     """Import the OCP names this module needs, or say what to install."""
     try:
         from OCP.BRep import BRep_Builder  # noqa: PLC0415
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing  # noqa: PLC0415
         from OCP.BRepAdaptor import BRepAdaptor_Surface  # noqa: PLC0415
         from OCP.BRepBndLib import BRepBndLib  # noqa: PLC0415
         from OCP.BRepGProp import BRepGProp  # noqa: PLC0415
@@ -306,10 +307,36 @@ def _classify_solid(
     if thickness <= 0.0:
         thickness = volume / mid_area if mid_area > 0 else 0.0
 
-    for face in keep:
-        builder.Add(compound, face)
+    # Sew the kept faces into one connected shell before handing them on.
+    # Faces dropped into a compound stay loose sheets: their coincident edges
+    # do not unify, the mesher then meshes each panel with its own boundary
+    # nodes, and the "part" is several bodies that merely touch. Measured on
+    # the validation can: 4 connected components, and the loose 883-element
+    # bottom-fillet ring flew off under pressure at 47 m/s while the walls
+    # stored almost no strain energy.
+    if kind == "hollow":
+        sewing = occ["BRepBuilderAPI_Sewing"](1.0e-2)
+        for face, _ in outer:
+            sewing.Add(face)
+        sewing.Perform()
+        # The sewn result may be several shells: the outer skin proper, plus
+        # islands - cavity-lining patches the ray test misread where the ray
+        # leaves at a tangent (a bottom-fillet ring, the cap-seat step) and
+        # exits through the corner without meeting the far wall. Those islands
+        # sit a wall-thickness INSIDE the skin with a real gap all round, so
+        # sewing cannot attach them and, meshed, they are loose bodies that
+        # fly under pressure (measured: an 883-element ring at 47 m/s).
+        # Keeping only the largest shell drops them; the mass gate then judges
+        # the choice - discarding true outer skin would show up as a deficit.
+        sewn = _largest_shell(occ, sewing.SewedShape())
+        builder.Add(compound, sewn)
         if also is not None:
-            builder.Add(also, face)
+            builder.Add(also, sewn)
+    else:
+        for face in keep:
+            builder.Add(compound, face)
+            if also is not None:
+                builder.Add(also, face)
 
     return SkinResult(
         index=index,
@@ -334,6 +361,24 @@ def _uniformity(measured: list[tuple[float, float]], median: float) -> float:
         return 1.0
     near = sum(w for g, w in measured if abs(g - median) <= 0.05 * median)
     return near / total
+
+
+def _largest_shell(occ: dict[str, Any], shape: Any) -> Any:
+    """The largest-area shell of a sewn shape (the shape itself if not split)."""
+    from OCP.TopAbs import TopAbs_SHELL  # noqa: PLC0415
+
+    best = None
+    best_area = -1.0
+    explorer = occ["TopExp_Explorer"](shape, TopAbs_SHELL)
+    while explorer.More():
+        shell = explorer.Current()
+        props = occ["GProp_GProps"]()
+        occ["BRepGProp"].SurfaceProperties_s(shell, props)
+        if props.Mass() > best_area:
+            best_area = props.Mass()
+            best = shell
+        explorer.Next()
+    return best if best is not None else shape
 
 
 def _gauged_thickness(measured: list[tuple[float, float]]) -> float:

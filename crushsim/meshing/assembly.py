@@ -252,8 +252,64 @@ def mesh_step_assembly(
         shifts,
     )
     _check_welds(assembly, welds or [])
+    _check_connectivity(assembly)
     _judge(assembly, enforce_gate)
     return assembly
+
+
+def _check_connectivity(assembly: AssemblyMesh) -> None:
+    """Every part must be one connected body (spec §13.5).
+
+    A part in several pieces is not a coarser model, it is a different
+    structure: the loose pieces are free bodies that fly under load while
+    every global number still prints. Measured on the validation can before
+    the skin was sewn: an 883-element ring left the model at 47 m/s and the
+    kinetic energy dwarfed the strain energy it should have stored. The
+    islands come from cavity-lining faces the ray test misreads at tangent
+    angles; the skin extraction drops them by keeping the largest sewn shell,
+    and this check is what keeps that class of defect from ever reaching a
+    deck silently again.
+    """
+    for part in assembly.parts:
+        sizes = _component_sizes(part.mesh)
+        if len(sizes) > 1:
+            raise MeshingError(
+                f"Part {part.name!r} meshed into {len(sizes)} disconnected pieces "
+                f"(element counts {sizes[:5]}). Loose pieces fly under load; "
+                "check the skin extraction for misclassified cavity faces."
+            )
+
+
+def _component_sizes(mesh: ShellMesh) -> list[int]:
+    """Element counts of the mesh's connected components, largest first."""
+    parent: dict[int, int] = {}
+
+    def find(item: int) -> int:
+        root = item
+        while parent.get(root, root) != root:
+            root = parent[root]
+        while parent.get(item, item) != item:
+            parent[item], item = root, parent[item]
+        return root
+
+    owner: dict[int, int] = {}
+    count = 0
+    for block in (mesh.quads, mesh.tris):
+        for element in block:
+            for raw in element:
+                node = int(raw)
+                if node in owner:
+                    left, right = find(count), find(owner[node])
+                    if left != right:
+                        parent[left] = right
+                else:
+                    owner[node] = count
+            count += 1
+    sizes: dict[int, int] = {}
+    for index in range(count):
+        root = find(index)
+        sizes[root] = sizes.get(root, 0) + 1
+    return sorted(sizes.values(), reverse=True)
 
 
 def _judge(assembly: AssemblyMesh, enforce: bool) -> None:
