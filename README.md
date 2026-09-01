@@ -4,6 +4,7 @@
 CATPart → STEP → Gmsh 쉘 메싱 → **OpenRadioss** explicit 해석 → 애니메이션·HTML 리포트 자동화.
 
 - **처음 오셨다면: [`docs/HANDOVER.md`](docs/HANDOVER.md)** (프로젝트 개요·쉘 이상화·검증된 사실들)
+- 삽질 기록: [`docs/LOG.md`](docs/LOG.md) (시도했다 실패한 것들과 그 이유)
 - 기준 문서: [`docs/SPEC-v2.1.md`](docs/SPEC-v2.1.md) (요구사항·ADR — 위반 시 리뷰 반려)
 - 실행계획: [`docs/EXECUTION_PLAN.md`](docs/EXECUTION_PLAN.md) (Phase별 WBS·게이트)
 - 벤트 파단 모델링: [`docs/VENT_BURST.md`](docs/VENT_BURST.md) (각형 셀 스코어 벤트 — 구성·판정·메쉬·보정)
