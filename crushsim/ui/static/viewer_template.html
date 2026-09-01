@@ -37,7 +37,7 @@ canvas#gl.dragging{cursor:grabbing}
 .hud h1{font-size:15px; font-weight:600; letter-spacing:-.01em}
 .hud .case{font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--muted); margin-top:2px}
 .readout{
-  position:absolute; left:16px; bottom:16px; pointer-events:none;
+  position:absolute; right:16px; bottom:16px; pointer-events:none;
   font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--muted);
   background:color-mix(in srgb, var(--panel) 78%, transparent); border:1px solid var(--line);
   border-radius:6px; padding:8px 12px; backdrop-filter:blur(4px);
@@ -78,6 +78,18 @@ button.on{background:var(--ink); color:var(--bg); border-color:transparent}
 .grp{display:flex; gap:6px; flex-wrap:wrap}
 .frameno{font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--muted); width:74px; flex:none; text-align:right}
 .chart{width:100%; height:150px; display:block}
+.chartCard{
+  position:absolute; left:16px; bottom:16px; width:min(400px, 44vw);
+  background:rgba(255,255,255,0.90); border:1px solid #d0d5dd; border-radius:12px;
+  padding:10px 12px 6px; box-shadow:0 2px 10px rgba(16,24,40,.08);
+  backdrop-filter:blur(3px); pointer-events:none;
+}
+.chartCard h2{margin:0 0 4px; font-size:12px; font-weight:600; color:#1d2939; letter-spacing:.02em}
+.chartCard .note{margin:4px 0 2px; font-size:11px; color:#475467; font-family:'IBM Plex Mono',monospace}
+@media (max-width:640px){
+  .chartCard{left:10px; bottom:10px; width:62vw; padding:8px 9px 4px}
+  .chartCard h2{font-size:11px}
+}
 table.dims{width:100%; border-collapse:collapse; font-size:11.5px}
 table.dims td{padding:3px 0; border-bottom:1px solid var(--line); vertical-align:top}
 table.dims td:first-child{color:var(--muted); padding-right:8px; white-space:nowrap}
@@ -113,7 +125,7 @@ select{
   .hud h1{font-size:13.5px; max-width:62vw}
   .hud .case{display:none}
   .cbar{right:10px}
-  .readout{left:10px; bottom:10px; font-size:11px; padding:6px 9px}
+  .readout{right:10px; bottom:10px; font-size:11px; padding:6px 9px}
   .panelToggle{
     display:block; position:absolute; right:10px; top:10px; z-index:5;
     background:color-mix(in srgb, var(--panel) 88%, transparent);
@@ -131,6 +143,11 @@ select{
       <div class="case" id="caseLabel"></div>
     </div>
     <div class="readout" id="readout"></div>
+    <div class="chartCard" id="chartCard">
+      <h2 id="chartTitle">하중 – 변위</h2>
+      <canvas class="chart" id="chart"></canvas>
+      <p class="note" id="chartNote"></p>
+    </div>
     <button class="panelToggle" id="panelToggle" aria-expanded="true">패널 숨기기</button>
     <div class="cbar" id="cbar">
       <div class="ttl" id="cbarTitle"></div>
@@ -194,11 +211,6 @@ select{
         <input type="range" id="clipPos" min="0" max="1" value="0.5" step="0.005">
         <div class="val" id="clipVal">50%</div>
       </div>
-    </div>
-    <div class="sec">
-      <h2 id="chartTitle">하중 – 변위</h2>
-      <canvas class="chart" id="chart"></canvas>
-      <p class="note" id="chartNote"></p>
     </div>
     <div class="sec" id="dimsSec" hidden>
       <h2>주요 치수</h2>
@@ -634,7 +646,7 @@ if(HASCURVE){
   }else{
     $("chartNote").textContent=`피크 ${yMax.toFixed(0)} N @ ${CX[CY.indexOf(yMax)].toFixed(1)} mm`;
   }
-}else{$("chartNote").textContent="곡선 데이터 없음";const c=$("chart");if(c)c.style.display="none";}
+}else{const cc=$("chartCard");if(cc)cc.style.display="none";}
 // key dimensions panel
 (function(){
   const rows=(D.meta.dims||[]);
@@ -650,18 +662,42 @@ function drawChart(){
   if(!HASCURVE)return;
   const w=chart.clientWidth*devicePixelRatio,h=chart.clientHeight*devicePixelRatio;
   if(chart.width!==w||chart.height!==h){chart.width=w;chart.height=h;}
-  const cs=getComputedStyle(document.documentElement);
-  const line=cs.getPropertyValue("--line").trim(),ink=cs.getPropertyValue("--ink").trim(),
-        acc=cs.getPropertyValue("--accent").trim(),muted=cs.getPropertyValue("--muted").trim();
+  // The card is a light instrument panel whatever the page scheme, so the
+  // chart keeps its own light palette instead of the CSS variables.
+  const line="#e4e7ec",ink="#1d2939",acc="#c0392b",muted="#667085",teal="#1e8e8e";
+  const DP=devicePixelRatio;
   ctx.clearRect(0,0,w,h);
-  const px=x=>8*devicePixelRatio+(w-16*devicePixelRatio)*x/(xMax||1);
-  const py=y=>h-14*devicePixelRatio-(h-24*devicePixelRatio)*y/(yMax||1);
-  ctx.strokeStyle=line;ctx.lineWidth=devicePixelRatio;
-  ctx.beginPath();ctx.moveTo(px(0),py(0));ctx.lineTo(px(xMax),py(0));ctx.stroke();
-  // open-area overlay: stepped teal line on its own 0-100% scale
+  // Margins leave room for the value axes: primary on the left, open-area
+  // per-cent on the right, time along the bottom.
+  const ml=40*DP, mr=(CAREA?34:10)*DP, mt=16*DP, mb=18*DP;
+  const px=x=>ml+(w-ml-mr)*x/(xMax||1);
+  const py=y=>h-mb-(h-mt-mb)*y/(yMax||1);
+  ctx.font=`${9*DP}px IBM Plex Mono,monospace`;
+  // frame + y ticks (0, mid, max) - the axis the chart could not be read without
+  ctx.strokeStyle=line;ctx.lineWidth=DP;
+  ctx.beginPath();ctx.moveTo(px(0),py(yMax));ctx.lineTo(px(0),py(0));ctx.lineTo(px(xMax),py(0));ctx.stroke();
+  ctx.fillStyle=muted;ctx.textAlign="right";ctx.textBaseline="middle";
+  const yfmt=v=>CKIND==="pressure"?v.toFixed(2):v.toFixed(0);
+  for(const f of [0,0.5,1]){
+    const yv=yMax*f, Y=py(yv);
+    ctx.strokeStyle=line;ctx.globalAlpha=f?0.6:1;
+    ctx.beginPath();ctx.moveTo(px(0),Y);ctx.lineTo(px(xMax),Y);ctx.stroke();ctx.globalAlpha=1;
+    ctx.fillText(yfmt(yv),ml-4*DP,Y);
+  }
+  // x ticks (0, mid, max)
+  ctx.textAlign="center";ctx.textBaseline="top";
+  const xfmt=v=>CKIND==="pressure"?v.toFixed(1):v.toFixed(0);
+  for(const f of [0,0.5,1]){
+    const xv=xMax*f, X=px(xv);
+    ctx.fillText(xfmt(xv)+(f===1&&XUNIT?` ${XUNIT}`:""),Math.min(X,w-16*DP),h-mb+3*DP);
+  }
+  // open-area overlay on its own right-hand 0-100% axis
   if(CAREA){
-    const pa=f=>h-14*devicePixelRatio-(h-24*devicePixelRatio)*f/100.0;
-    ctx.strokeStyle="#1e8e8e";ctx.lineWidth=1.5*devicePixelRatio;ctx.globalAlpha=0.8;
+    const pa=f=>h-mb-(h-mt-mb)*f/100.0;
+    ctx.strokeStyle=teal;ctx.fillStyle=teal;ctx.lineWidth=DP;
+    ctx.textAlign="left";ctx.textBaseline="middle";
+    for(const f of [0,50,100]) ctx.fillText(`${f}%`,w-mr+4*DP,pa(f));
+    ctx.lineWidth=1.5*DP;ctx.globalAlpha=0.85;
     ctx.beginPath();
     let prevY=pa(CAREA.y[0]);ctx.moveTo(px(CAREA.t[0]*(CKIND==="pressure"?1000:1)),prevY);
     for(let i=1;i<CAREA.t.length;i++){
@@ -669,36 +705,42 @@ function drawChart(){
       ctx.lineTo(X,prevY);ctx.lineTo(X,Y);prevY=Y;
     }
     ctx.lineTo(px(xMax),prevY);ctx.stroke();ctx.globalAlpha=1;
-    ctx.fillStyle="#1e8e8e";ctx.font=`${9*devicePixelRatio}px IBM Plex Mono,monospace`;
-    ctx.fillText(CAREA.label||"open area",10*devicePixelRatio,pa(100)+10*devicePixelRatio);
+    // legend sits top-right, clear of the burst-mark labels on the left
+    ctx.textAlign="right";ctx.textBaseline="top";
+    ctx.fillText(CAREA.label||"open area",w-mr-4*DP,2*DP);
   }
-  let markFlip=false;
+  // event marks: dashed verticals, labels top-left row(s)
+  ctx.textAlign="left";ctx.textBaseline="top";
+  let markRow=0;
   for(const mark of CMARKS){
     const [mx]=curveAt(mark.t);
-    ctx.strokeStyle=muted;ctx.lineWidth=devicePixelRatio;ctx.setLineDash([4*devicePixelRatio,3*devicePixelRatio]);
+    ctx.strokeStyle=muted;ctx.lineWidth=DP;ctx.setLineDash([4*DP,3*DP]);
     ctx.beginPath();ctx.moveTo(px(mx),py(0));ctx.lineTo(px(mx),py(yMax));ctx.stroke();
     ctx.setLineDash([]);
     if(mark.label){
-      ctx.fillStyle=ink;ctx.font=`${9*devicePixelRatio}px IBM Plex Mono,monospace`;
+      ctx.fillStyle=ink;
       const tw=ctx.measureText(mark.label).width;
-      const tx=Math.min(Math.max(px(mx)-tw/2,2*devicePixelRatio),w-tw-2*devicePixelRatio);
-      ctx.fillText(mark.label,tx,py(yMax)+(markFlip?22:10)*devicePixelRatio);
-      markFlip=!markFlip;
+      const tx=Math.min(Math.max(px(mx)-tw/2,ml+2*DP),w-mr-tw-4*DP);
+      ctx.fillText(mark.label,tx,2*DP+markRow*11*DP);
+      markRow=(markRow+1)%2;
     }
   }
-  ctx.strokeStyle=muted;ctx.lineWidth=1.2*devicePixelRatio;ctx.globalAlpha=0.55;
+  // full curve faint, swept part strong, live dot + value
+  ctx.strokeStyle=muted;ctx.lineWidth=1.2*DP;ctx.globalAlpha=0.5;
   ctx.beginPath();for(let i=0;i<CX.length;i++){const X=px(CX[i]),Y=py(CY[i]);i?ctx.lineTo(X,Y):ctx.moveTo(X,Y);}ctx.stroke();
   ctx.globalAlpha=1;
   const t=simTime();
-  ctx.strokeStyle=acc;ctx.lineWidth=2*devicePixelRatio;
+  ctx.strokeStyle=acc;ctx.lineWidth=2*DP;
   ctx.beginPath();let started=false;
   for(let i=0;i<CX.length;i++){if(CT[i]>t)break;const X=px(CX[i]),Y=py(CY[i]);started?ctx.lineTo(X,Y):ctx.moveTo(X,Y);started=true;}
   ctx.stroke();
   const [x,y]=curveAt(t);
-  ctx.fillStyle=acc;ctx.beginPath();ctx.arc(px(x),py(y),4*devicePixelRatio,0,7);ctx.fill();
-  ctx.fillStyle=ink;ctx.font=`${10*devicePixelRatio}px IBM Plex Mono,monospace`;
+  ctx.fillStyle=acc;ctx.beginPath();ctx.arc(px(x),py(y),4*DP,0,7);ctx.fill();
+  ctx.fillStyle=ink;ctx.font=`${10*DP}px IBM Plex Mono,monospace`;
+  ctx.textAlign="left";ctx.textBaseline="alphabetic";
   const tag=CKIND==="pressure"?`${y.toFixed(2)}${YUNIT}`:`${y.toFixed(0)}${YUNIT}`;
-  ctx.fillText(tag,Math.min(px(x)+6*devicePixelRatio,w-64*devicePixelRatio),py(y)-6*devicePixelRatio);
+  const tagW=ctx.measureText(tag).width;
+  ctx.fillText(tag,Math.min(px(x)+6*DP,w-mr-tagW-2*DP),Math.max(py(y)-6*DP,mt+10*DP));
 }
 
 let drawQueued=false;
