@@ -15,21 +15,38 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
+
+
+#: Windows refuses ``os.replace`` while another handle has the target open, so
+#: a reader that happens to be mid-read makes the write fail rather than tear.
+#: A couple of short retries covers that window; POSIX never takes this path.
+_REPLACE_ATTEMPTS = 5
+_REPLACE_WAIT_S = 0.05
 
 
 def write_text_atomic(path: str | Path, text: str) -> Path:
     """Replace ``path`` with ``text`` atomically (same filesystem)."""
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    handle, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp")
+    handle, tmp_name = tempfile.mkstemp(
+        dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp"
+    )
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
             stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(tmp_name, target)
+        for attempt in range(_REPLACE_ATTEMPTS):
+            try:
+                os.replace(tmp_name, target)
+                break
+            except PermissionError:  # pragma: no cover - Windows only
+                if attempt == _REPLACE_ATTEMPTS - 1:
+                    raise
+                time.sleep(_REPLACE_WAIT_S)
     except BaseException:
         Path(tmp_name).unlink(missing_ok=True)
         raise
