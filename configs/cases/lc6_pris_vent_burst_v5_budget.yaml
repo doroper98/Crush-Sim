@@ -75,6 +75,6 @@ solver:
   stop_on_negative_volume: true
 
 output:
-  dir: runs/lc6_pris_vent_burst_v5_medium
+  dir: runs/lc6_pris_vent_burst_v5_budget
   render: true
   report: true
