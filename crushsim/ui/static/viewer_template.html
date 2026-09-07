@@ -1,7 +1,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>__TITLE__</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<!-- No external stylesheet, font or script: a downloaded viewer has to open
+     with no network at all (UI_001 §15, U39). The families below are used
+     when the reader happens to have them installed, system fonts otherwise. -->
 <style>
 :root{
   --bg:#f4f5f7; --panel:#ffffff; --panel2:#eceef2; --ink:#1a2230; --muted:#5b6675;
@@ -29,7 +31,46 @@ body{
   font-size:14px; line-height:1.45; overflow:hidden;
 }
 /* dvh follows the mobile browser's collapsing chrome; vh is the fallback. */
-.app{display:flex; height:100vh; height:100dvh}
+.page{display:flex; flex-direction:column; height:100vh; height:100dvh}
+.app{display:flex; flex:1 1 auto; min-height:0}
+
+/* ---- result header (UI_001 §10.1, fixed order) ------------------------- */
+.rhead{
+  flex:none; background:var(--panel); border-bottom:1px solid var(--line);
+  padding:10px 16px 12px; overflow-y:auto; max-height:44vh;
+}
+.rhead .rtop{display:flex; align-items:baseline; gap:10px; flex-wrap:wrap}
+.rhead h1{font-size:15px; font-weight:600; letter-spacing:-.01em}
+.rhead .meta{font-size:11.5px; color:var(--muted)}
+.rhead .meta b{font-weight:500; color:var(--ink)}
+.rhead .spacer{flex:1}
+.verdict{font-size:17px; line-height:1.4; font-weight:600; margin:8px 0 2px}
+.caveat{font-size:12.5px; color:var(--muted); margin-bottom:4px}
+.trust{display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:6px}
+.badge{
+  display:inline-flex; align-items:center; gap:5px; font-size:12px; font-weight:600;
+  border-radius:999px; padding:3px 10px; border:1px solid var(--line); background:var(--chip);
+}
+.badge .k{font-weight:400; color:var(--muted)}
+.badge.ok{background:#e6f4ec; border-color:#bfe0cd; color:#0d6b45}
+.badge.bad{background:#fdeceb; border-color:#f2c9c5; color:#a3231b}
+.badge.warn{background:#fdf4e3; border-color:#eddcb6; color:#7a4d00}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]) .badge.ok{background:#123227; border-color:#1e4b39; color:#7fd5ab}
+  :root:not([data-theme="light"]) .badge.bad{background:#3a1a18; border-color:#5c2a26; color:#ff9a91}
+  :root:not([data-theme="light"]) .badge.warn{background:#332714; border-color:#4d3a1c; color:#ecc276}
+}
+.diagBox{margin-top:8px; font-size:12px; color:var(--muted)}
+.diagBox ul{margin:4px 0 0 16px; padding:0}
+.diagBox li{margin:2px 0}
+.metrics{display:flex; gap:22px; flex-wrap:wrap; margin-top:10px; list-style:none}
+.metrics li{min-width:120px}
+.metrics .lab{display:block; font-size:11.5px; color:var(--muted)}
+.metrics .num{font-size:24px; font-weight:600; font-variant-numeric:tabular-nums; letter-spacing:-.01em}
+.metrics .unit{font-size:12px; color:var(--muted); margin-left:3px; font-weight:400}
+.metrics .none{font-size:13px; color:var(--muted)}
+.metrics .def{display:block; font-size:10.5px; color:var(--muted)}
+.rhead.collapsed .rbody{display:none}
 .stage{flex:1; position:relative; min-width:0}
 canvas#gl{position:absolute; inset:0; width:100%; height:100%; display:block; background:var(--viewport); touch-action:none; cursor:grab}
 canvas#gl.dragging{cursor:grabbing}
@@ -82,12 +123,21 @@ button.on{background:var(--ink); color:var(--bg); border-color:transparent}
   position:absolute; left:16px; bottom:16px; width:min(400px, 44vw);
   background:rgba(255,255,255,0.90); border:1px solid #d0d5dd; border-radius:12px;
   padding:10px 12px 6px; box-shadow:0 2px 10px rgba(16,24,40,.08);
-  backdrop-filter:blur(3px); pointer-events:none;
+  backdrop-filter:blur(3px);
 }
+.chartCard canvas{cursor:crosshair}
+.chartCard .axis{font-size:10.5px; color:#475467; display:flex; justify-content:space-between; gap:8px}
+.chartCard .legend{display:flex; gap:10px; flex-wrap:wrap; font-size:10.5px; color:#475467; margin-top:2px}
+.chartCard .legend i{display:inline-block; width:10px; height:3px; border-radius:2px; margin-right:4px;
+  vertical-align:middle}
 .chartCard h2{margin:0 0 4px; font-size:12px; font-weight:600; color:#1d2939; letter-spacing:.02em}
 .chartCard .note{margin:4px 0 2px; font-size:11px; color:#475467; font-family:'IBM Plex Mono',monospace}
-@media (max-width:640px){
-  .chartCard{left:10px; bottom:10px; width:62vw; padding:8px 9px 4px}
+@media (max-width:760px), (pointer:coarse) and (max-width:1100px){
+  /* On a phone the card is anchored to the stage's own bottom and capped at
+     half of it: floating it at a content-sized height pushed it up over the
+     result header, and overlapping controls is exactly what U37 forbids. */
+  .chartCard{left:8px; right:8px; bottom:8px; width:auto; max-height:52%;
+             overflow:auto; padding:8px 9px 4px}
   .chartCard h2{font-size:11px}
 }
 table.dims{width:100%; border-collapse:collapse; font-size:11.5px}
@@ -100,7 +150,18 @@ select{
   font:inherit; font-size:12.5px; color:var(--ink); background:var(--chip);
   border:1px solid var(--line); border-radius:6px; padding:4px 8px;
 }
-.parts .prow{display:grid; grid-template-columns:20px 56px 1fr 42px; align-items:center; gap:8px; margin-top:8px}
+.events{display:flex; flex-wrap:wrap; gap:6px}
+.events button{display:flex; flex-direction:column; align-items:flex-start; gap:1px; line-height:1.25}
+.events button .t{font-family:'IBM Plex Mono',monospace; font-size:10.5px; color:var(--muted)}
+.events button[disabled]{opacity:.55; cursor:not-allowed}
+.legend{display:flex; flex-wrap:wrap; gap:10px; margin-top:10px; font-size:11.5px; color:var(--muted)}
+.legend span{display:flex; align-items:center; gap:5px}
+.links{display:flex; flex-direction:column; gap:6px}
+.links a{color:var(--accent); font-size:12.5px}
+.sampleTag{font-size:11px; color:var(--muted); margin-top:6px}
+.scaleTag{font-size:12px; font-weight:600}
+.parts .prow{display:grid; grid-template-columns:20px 52px 1fr auto 42px; align-items:center; gap:8px; margin-top:8px}
+.parts .solo{padding:2px 6px; font-size:11px}
 .parts .prow:first-of-type{margin-top:0}
 .sw{width:12px; height:12px; border-radius:3px; border:1px solid var(--line)}
 .panelToggle{display:none}
@@ -108,7 +169,7 @@ select{
   .app{flex-direction:column}
   .stage{flex:1 1 auto; min-height:0}
   .side{
-    width:100%; flex:0 0 auto; max-height:52%;
+    width:100%; flex:0 0 auto; max-height:40%;
     border-left:none; border-top:1px solid var(--line);
     padding-bottom:env(safe-area-inset-bottom);
     -webkit-overflow-scrolling:touch;
@@ -121,7 +182,15 @@ select{
   input[type=range]::-webkit-slider-thumb{margin-top:-9px; width:22px; height:22px}
   input[type=checkbox]{width:20px; height:20px}
   button{padding:8px 12px}
-  .parts .prow{grid-template-columns:24px 56px 1fr 42px}
+  .parts .prow{grid-template-columns:24px 52px 1fr auto 42px}
+  .parts .solo{padding:6px 8px}
+  /* The judgement is what a phone reader came for, so the header keeps its
+     size (up to 46vh, then it scrolls itself) and the 3D/panel share what is
+     left. Letting it shrink cut the sentence in half mid-word. */
+  .rhead{max-height:46vh; flex:0 0 auto; padding:10px 12px}
+  .stage{min-height:200px}
+  .metrics{gap:14px}
+  .metrics .num{font-size:20px}
   .hud h1{font-size:13.5px; max-width:62vw}
   .hud .case{display:none}
   .cbar{right:10px}
@@ -135,6 +204,28 @@ select{
 }
 </style>
 
+<div class="page">
+<header class="rhead" id="rhead">
+  <div class="rtop">
+    <h1 id="hdrTitle">__TITLE__</h1>
+    <span class="meta" id="hdrTime"></span>
+    <span class="meta" id="hdrChanged"></span>
+    <span class="spacer"></span>
+    <button id="hdrToggle" aria-expanded="true" aria-controls="rbody">판단 요약 접기</button>
+  </div>
+  <div class="rbody" id="rbody">
+    <p class="verdict" id="hdrJudgement">정보 없음</p>
+    <p class="caveat" id="hdrCaveat" hidden></p>
+    <div class="trust" id="hdrTrust">
+      <span class="badge" id="hdrTarget"><span class="k">설계 목표</span><span class="v">정보 없음</span></span>
+      <span class="badge" id="hdrValidity"><span class="k">계산 유효성</span><span class="v">정보 없음</span></span>
+      <span class="badge" id="hdrScope"><span class="k">검증 근거</span><span class="v">정보 없음</span></span>
+      <button id="hdrDiagBtn" aria-expanded="false" aria-controls="hdrDiag">진단 0건</button>
+    </div>
+    <div class="diagBox" id="hdrDiag" hidden></div>
+    <ul class="metrics" id="hdrMetrics"></ul>
+  </div>
+</header>
 <div class="app">
   <div class="stage">
     <canvas id="gl"></canvas>
@@ -145,7 +236,9 @@ select{
     <div class="readout" id="readout"></div>
     <div class="chartCard" id="chartCard">
       <h2 id="chartTitle">하중 – 변위</h2>
-      <canvas class="chart" id="chart"></canvas>
+      <canvas class="chart" id="chart" aria-label="결과 곡선"></canvas>
+      <div class="axis"><span id="chartYAxis"></span><span id="chartXAxis"></span></div>
+      <div class="legend" id="chartLegend"></div>
       <p class="note" id="chartNote"></p>
     </div>
     <button class="panelToggle" id="panelToggle" aria-expanded="true">패널 숨기기</button>
@@ -157,20 +250,32 @@ select{
     </div>
   </div>
   <div class="side" id="side">
-    <div class="sec">
+    <div class="sec" id="timeSec">
       <h2>시간 · 프레임</h2>
       <div class="timebar">
         <button class="primary" id="play" aria-label="재생/일시정지">▶</button>
         <input type="range" id="time" min="0" max="1000" value="0" step="1" aria-label="시간 슬라이더">
         <div class="frameno" id="frameno"></div>
       </div>
+      <div class="grp" style="margin-top:8px">
+        <button id="first" aria-label="처음 프레임" title="처음 프레임">⏮</button>
+        <button id="prev" aria-label="이전 프레임" title="이전 프레임">◀</button>
+        <button id="next" aria-label="다음 프레임" title="다음 프레임">▶</button>
+        <span class="scaleTag" id="scaleTag" title="변형은 실제 크기로 그립니다 (배율 없음)">변형 1×</span>
+      </div>
       <div class="row" style="margin-top:10px">
         <label>재생 속도</label>
         <input type="range" id="speed" min="0.25" max="3" value="1" step="0.25">
         <div class="val" id="speedVal">1.0×</div>
       </div>
+      <p class="sampleTag" id="sampleTag"></p>
     </div>
-    <div class="sec">
+    <div class="sec" id="eventSec" hidden>
+      <h2>이벤트</h2>
+      <div class="events" id="eventList"></div>
+      <p class="note">이벤트를 누르면 프레임과 곡선 위치가 함께 이동합니다.</p>
+    </div>
+    <div class="sec" id="viewSec">
       <h2>뷰</h2>
       <div class="grp">
         <button id="viewIso">Iso</button>
@@ -187,17 +292,28 @@ select{
           <option value="ps">소성 변형률</option>
         </select>
       </div>
-      <p class="note" id="navHint">드래그: 회전 · 휠: 줌 · Shift+드래그: 이동</p>
+      <div class="grp" style="margin-top:8px">
+        <button id="rotL" aria-label="왼쪽으로 회전">←</button>
+        <button id="rotR" aria-label="오른쪽으로 회전">→</button>
+        <button id="rotU" aria-label="위로 회전">↑</button>
+        <button id="rotD" aria-label="아래로 회전">↓</button>
+        <button id="zoomIn" aria-label="확대">＋</button>
+        <button id="zoomOut" aria-label="축소">－</button>
+        <button id="fitView" aria-label="화면에 맞춤">맞춤</button>
+      </div>
+      <p class="note" id="navHint">드래그: 회전 · 휠: 줌 · Shift+드래그: 이동 · 위 버튼으로도 조작할 수 있습니다</p>
     </div>
-    <div class="sec parts">
+    <div class="sec parts" id="partsSec">
       <h2>파트 · 투명도</h2>
-      <div class="prow"><input type="checkbox" id="v1" checked><span style="display:flex;gap:6px;align-items:center"><span class="sw" id="sw1"></span>캔</span><input type="range" id="o1" min="0" max="1" value="1" step="0.05"><span class="val" id="ov1">100%</span></div>
-      <div class="prow" id="prow5" hidden><input type="checkbox" id="v5" checked><span style="display:flex;gap:6px;align-items:center"><span class="sw" id="sw5"></span>벤트</span><input type="range" id="o5" min="0" max="1" value="1" step="0.05"><span class="val" id="ov5">100%</span></div>
-      <div class="prow"><input type="checkbox" id="v3" checked><span style="display:flex;gap:6px;align-items:center"><span class="sw" id="sw3"></span>공구</span><input type="range" id="o3" min="0" max="1" value="0.6" step="0.05"><span class="val" id="ov3">60%</span></div>
-      <div class="prow"><input type="checkbox" id="v2" checked><span style="display:flex;gap:6px;align-items:center"><span class="sw" id="sw2"></span>바닥</span><input type="range" id="o2" min="0" max="1" value="0.35" step="0.05"><span class="val" id="ov2">35%</span></div>
-      <div class="prow"><input type="checkbox" id="v4" checked><span style="display:flex;gap:6px;align-items:center"><span class="sw" id="sw4"></span>지지대</span><input type="range" id="o4" min="0" max="1" value="0.35" step="0.05"><span class="val" id="ov4">35%</span></div>
+      <div class="prow"><input type="checkbox" id="v1" checked><span style="display:flex;gap:6px;align-items:center"><span class="sw" id="sw1"></span>캔</span><input type="range" id="o1" min="0" max="1" value="1" step="0.05"><button class="solo" id="solo1" aria-label="캔만 보기" title="선택 부품 보기">단독</button><span class="val" id="ov1">100%</span></div>
+      <div class="prow" id="prow5" hidden><input type="checkbox" id="v5" checked><span style="display:flex;gap:6px;align-items:center"><span class="sw" id="sw5"></span>벤트</span><input type="range" id="o5" min="0" max="1" value="1" step="0.05"><button class="solo" id="solo5" aria-label="벤트만 보기" title="선택 부품 보기">단독</button><span class="val" id="ov5">100%</span></div>
+      <div class="prow"><input type="checkbox" id="v3" checked><span style="display:flex;gap:6px;align-items:center"><span class="sw" id="sw3"></span>공구</span><input type="range" id="o3" min="0" max="1" value="0.6" step="0.05"><button class="solo" id="solo3" aria-label="공구만 보기" title="선택 부품 보기">단독</button><span class="val" id="ov3">60%</span></div>
+      <div class="prow"><input type="checkbox" id="v2" checked><span style="display:flex;gap:6px;align-items:center"><span class="sw" id="sw2"></span>바닥</span><input type="range" id="o2" min="0" max="1" value="0.35" step="0.05"><button class="solo" id="solo2" aria-label="바닥만 보기" title="선택 부품 보기">단독</button><span class="val" id="ov2">35%</span></div>
+      <div class="prow"><input type="checkbox" id="v4" checked><span style="display:flex;gap:6px;align-items:center"><span class="sw" id="sw4"></span>지지대</span><input type="range" id="o4" min="0" max="1" value="0.35" step="0.05"><button class="solo" id="solo4" aria-label="지지대만 보기" title="선택 부품 보기">단독</button><span class="val" id="ov4">35%</span></div>
+      <div class="grp" style="margin-top:10px"><button id="showAll">전체 보기</button></div>
+      <div class="legend" id="legend"></div>
     </div>
-    <div class="sec">
+    <div class="sec" id="clipSec">
       <h2>단면</h2>
       <div class="grp">
         <button id="clipOff" class="on">끔</button>
@@ -217,12 +333,20 @@ select{
       <table class="dims" id="dimsTable"></table>
     </div>
     <div class="sec">
-      <p class="note">Phase 3 결과 판독 화면 프로토타입 — __NOTE__ 구동됩니다. 프레임 사이는 선형 보간.</p>
+      <h2>산출물</h2>
+      <div class="links" id="links"></div>
+    </div>
+    <div class="sec">
+      <p class="note" id="genNote">__NOTE__ 구동됩니다. 프레임 사이는 선형 보간.</p>
     </div>
   </div>
 </div>
+</div>
 
 <script type="application/json" id="simdata">__DATA__</script>
+<!-- render3d.js is inlined here by viewergen.py so the exported file stays
+     a single standalone HTML with no network request (UI_001 §15). -->
+<script>__RENDER3D__</script>
 <script>
 "use strict";
 const D = JSON.parse(document.getElementById("simdata").textContent);
@@ -238,6 +362,158 @@ const pos = D.pos.map(b64f), vm = D.vm.map(b64f), ps = (D.ps||[]).map(b64f);
 if(!ps.length){const o=document.querySelector('option[value="ps"]'); if(o)o.remove();}
 document.getElementById("caseLabel").textContent = D.meta.case + " · " + D.meta.elements + " elems · " + NF + " frames";
 
+// ---------- result header (UI_001 §10.1) ----------
+// Fixed order: 검토명·실행 시각·변경 파라미터 → 판단 문장 → 목표 배지 + 신뢰
+// 정보 → 핵심 지표 ≤3 → 3D/곡선 → 링크. Every field comes from the server's
+// result contract (D.result); a run that has none shows 정보 없음 and the
+// viewer invents nothing (U43).
+const UNKNOWN="정보 없음";
+const RESULT=D.result||null;
+const TARGET_TEXT={within:"목표 범위 내",below:"하한 미달",above:"상한 초과",
+                   none:"목표 없음",unavailable:"판정 불가"};
+const VALIDITY_TEXT={valid:"유효",invalid:"무효",unknown:"확인 불가"};
+const SCOPE_TEXT={verified:"검증 범위 내",unverified:"일부 조건 미검증",out_of_scope:"검증 범위 밖"};
+const REASON_TEXT={NOT_REACHED_AT_MAX_PRESSURE:"최대 가압까지 기준 미도달"};
+const el=id=>document.getElementById(id);
+function sig(v,digits){ // 3 significant digits for display; raw value kept
+  const n=Number(v);
+  if(!isFinite(n))return UNKNOWN;
+  const text=n.toPrecision(digits||3);
+  return text.indexOf("e")<0&&text.indexOf(".")>=0
+    ? text.replace(/0+$/,"").replace(/\.$/,"") : text;
+}
+function setBadge(node,klass,text){
+  node.classList.remove("ok","bad","warn");
+  if(klass)node.classList.add(klass);
+  node.querySelector(".v").textContent=text;
+}
+(function renderHeader(){
+  el("hdrTitle").textContent=D.meta.case;
+  const r=RESULT||{};
+  el("hdrTime").innerHTML="";
+  const stamp=r.executed_at;
+  const timeNode=el("hdrTime");
+  timeNode.textContent="실행 시각 "+(stamp?String(stamp).replace("T"," ").replace(/\+.*$/,""):UNKNOWN);
+  const changed=r.changed_vs_first&&Object.keys(r.changed_vs_first).length
+    ? Object.keys(r.changed_vs_first).map(k=>{
+        const pair=r.changed_vs_first[k];
+        return k+" "+(Array.isArray(pair)?pair.join(" → "):pair);
+      }).join(" · ")
+    : (r.legacy===false?"변경 파라미터 없음":UNKNOWN);
+  el("hdrChanged").textContent="변경 파라미터: "+changed;
+  const j=r.judgement||null;
+  el("hdrJudgement").textContent=j&&j.sentence?j.sentence:"판단 문장 "+UNKNOWN;
+  if(j&&j.caveat){el("hdrCaveat").textContent=j.caveat;el("hdrCaveat").hidden=false;}
+  const ts=r.target_status;
+  setBadge(el("hdrTarget"),ts==="within"?"ok":(ts==="below"||ts==="above"?"bad":null),
+           TARGET_TEXT[ts]||UNKNOWN);
+  if(r.target&&r.target.lower!=null&&r.target.upper!=null){
+    el("hdrTarget").title="목표 "+r.target.lower+"–"+r.target.upper+" "+(r.target.unit||"");
+  }
+  const v=(r.validation||{}).model_validity;
+  setBadge(el("hdrValidity"),v==="valid"?"ok":(v==="invalid"?"bad":null),VALIDITY_TEXT[v]||UNKNOWN);
+  const sc=(r.validation||{}).scope_status;
+  setBadge(el("hdrScope"),sc==="verified"?"ok":(sc==="out_of_scope"?"bad":"warn"),SCOPE_TEXT[sc]||UNKNOWN);
+  const diags=(r.validation||{}).diagnostics||[];
+  const refs=(r.validation||{}).references||[];
+  el("hdrDiagBtn").textContent="진단 "+diags.length+"건 · 검증 근거";
+  const box=el("hdrDiag"), list=document.createElement("ul");
+  for(const d of diags){
+    const li=document.createElement("li");
+    li.textContent="["+d.severity+"] "+d.message;
+    list.append(li);
+  }
+  if(!diags.length){const li=document.createElement("li");li.textContent="비치명 경고 없음";list.append(li);}
+  for(const ref of refs){
+    const li=document.createElement("li");
+    li.textContent="근거 "+ref.id+": "+(ref.detail||ref.title||ref.path||"");
+    list.append(li);
+  }
+  box.append(list);
+  el("hdrDiagBtn").addEventListener("click",e=>{
+    const open=box.hidden; box.hidden=!open;
+    e.target.setAttribute("aria-expanded",String(open));
+  });
+  // ≤3 headline metrics. WHICH three is decided once, on the server
+  // (results.key_metrics), and shipped as D.key_metrics; re-implementing the
+  // rule here is how the viewer and the workshop would start leading with
+  // different numbers for the same run. The local sort is the fallback for a
+  // payload generated before that field existed.
+  const byKey=new Map((r.metrics||[]).map(m=>[m.key,m]));
+  let scalars=(D.key_metrics||[]).map(k=>byKey.get(k)).filter(Boolean);
+  if(!scalars.length){
+    scalars=(r.metrics||[]).filter(m=>m.kind==="scalar");
+    const key=(r.target||{}).metric_key;
+    scalars.sort((a,b)=>(a.key===key?0:1)-(b.key===key?0:1));
+  }
+  const ul=el("hdrMetrics");
+  for(const m of scalars.slice(0,3)){
+    const li=document.createElement("li"), lab=document.createElement("span");
+    lab.className="lab"; lab.textContent=m.label; li.append(lab);
+    if(m.value==null){
+      const none=document.createElement("span");
+      none.className="none";
+      none.textContent=REASON_TEXT[m.unavailable_reason]||m.unavailable_reason||UNKNOWN;
+      li.append(none);
+    }else{
+      const num=document.createElement("span");
+      num.className="num"; num.textContent=sig(m.value);
+      num.title="원값 "+m.value;
+      const unit=document.createElement("span");
+      unit.className="unit"; unit.textContent=m.unit||"";
+      num.append(unit); li.append(num);
+    }
+    const def=document.createElement("span");
+    def.className="def"; def.textContent=m.definition_id||"";
+    li.append(def);
+    ul.append(li);
+  }
+  if(!scalars.length){
+    const li=document.createElement("li");
+    li.className="none"; li.textContent="핵심 지표 "+UNKNOWN;
+    ul.append(li);
+  }
+  el("hdrToggle").addEventListener("click",e=>{
+    const collapsed=el("rhead").classList.toggle("collapsed");
+    e.target.textContent=collapsed?"판단 요약 펼치기":"판단 요약 접기";
+    e.target.setAttribute("aria-expanded",String(!collapsed));
+    requestAnimationFrame(()=>{if(window.requestDraw)requestDraw();if(window.drawChart)drawChart();});
+  });
+})();
+
+// ---------- links (§10.1: last in the reading order) ----------
+(function renderLinks(){
+  const box=el("links"), r=RESULT||{};
+  // Served through the API the run is /api/runs/<id>/…; downloaded next to the
+  // run it is a plain sibling file. Both are resolved here so one generated
+  // file works in both places.
+  // Only report/viewer/step have API routes; every other file of a run is
+  // served by the static mount at /runs/<id>/…. Sending pipeline_summary.json
+  // to /api/runs/<id>/pipeline_summary.json was a 404.
+  const api=location.pathname.match(/^(.*)\/api\/runs\/([^/]+)\/viewer$/);
+  const API_ROUTES={"report.html":"report","viewer.html":"viewer"};
+  const to=name=>{
+    if(name.charAt(0)==="/")return name;       // already an absolute API path
+    if(!api)return name;                       // opened as a file: sibling path
+    const route=API_ROUTES[name];
+    return route?`${api[1]}/api/runs/${api[2]}/${route}`
+                :`${api[1]}/runs/${api[2]}/${name}`;
+  };
+  const rows=[];
+  if((r.artifacts||{}).report)rows.push(["리포트 열기",to("report.html")]);
+  if((r.artifacts||{}).summary)rows.push(["요약 JSON",to("pipeline_summary.json")]);
+  if((r.artifacts||{}).csv)rows.push(["하중–변위 CSV",to("force_displacement.csv")]);
+  for(const [text,href] of rows){
+    const a=document.createElement("a");
+    a.href=href; a.textContent=text; box.append(a);
+  }
+  if(!rows.length){
+    const p=document.createElement("p");
+    p.className="note"; p.textContent="연결된 산출물 "+UNKNOWN;
+    box.append(p);
+  }
+})();
+
 let vmMax=0, psMax=0;
 for(const a of vm) for(let i=0;i<a.length;i++) if(a[i]>vmMax) vmMax=a[i];
 for(const a of ps) for(let i=0;i<a.length;i++) if(a[i]>psMax) psMax=a[i];
@@ -248,61 +524,53 @@ for(let i=0;i<pos[0].length;i+=3) for(let k=0;k<3;k++){const v=pos[0][i+k]; if(v
 const center=[(bmin[0]+bmax[0])/2,(bmin[1]+bmax[1])/2,(bmin[2]+bmax[2])/2];
 const diag=Math.hypot(bmax[0]-bmin[0],bmax[1]-bmin[1],bmax[2]-bmin[2]);
 
-// ---------- WebGL ----------
+// ---------- WebGL (render3d.js, inlined above) ----------
 const canvas=document.getElementById("gl");
 // Some in-app preview webviews (a file opened inside a messaging or mail app,
-// iOS Quick Look) render HTML but refuse WebGL. Without this guard the very
-// next line throws, the page keeps its panel but the model never appears and
-// no control responds - so say what happened instead of failing silently.
-const gl=canvas.getContext("webgl",{antialias:true})
-       ||canvas.getContext("experimental-webgl",{antialias:true});
-if(!gl){
-  const msg=document.createElement("div");
-  msg.style.cssText="position:absolute;inset:0;display:flex;align-items:center;"
-    +"justify-content:center;padding:24px;text-align:center;line-height:1.6;color:var(--muted)";
-  msg.innerHTML="<div><b style='color:var(--ink)'>3D 뷰를 표시할 수 없습니다</b><br>"
-    +"이 화면은 WebGL을 지원하지 않습니다.<br>"
-    +"파일을 저장한 뒤 <b>Safari·Chrome 같은 브라우저에서 직접 열어</b> 주세요.<br>"
-    +"<span style='font-size:11px'>(앱 안의 첨부파일 미리보기에서는 3D가 동작하지 않습니다)</span></div>";
-  canvas.parentNode.appendChild(msg);
-  canvas.style.display="none";
+// iOS Quick Look) render HTML but refuse WebGL. Render3D.create returns null
+// there instead of throwing, so say what happened rather than leaving a panel
+// whose controls do nothing.
+const R=Render3D.create(canvas,{clearColor:()=>
+  getComputedStyle(document.documentElement).getPropertyValue("--viewport").trim()});
+if(!R){
+  // U38: no WebGL is not the end of the result. The judgement, the trust
+  // block and the metrics are already in the header above; here we add the
+  // last computed frame (embedded as a data URI, so it works offline) and
+  // the report link, instead of a black rectangle.
+  const still=D.fallback&&D.fallback.data_uri
+    ? "<img src='"+D.fallback.data_uri+"' alt='마지막 계산 프레임' "
+      +"style='max-width:min(560px,86%);border-radius:8px;border:1px solid var(--line)'><br>"
+      +"<span style='font-size:11px'>"+(D.fallback.label||"")+"</span><br>"
+    : "";
+  Render3D.showUnavailable(canvas,{
+    style:"position:absolute;inset:0;display:flex;align-items:center;justify-content:center;"
+      +"padding:20px;text-align:center;line-height:1.6;color:var(--muted);overflow:auto",
+    html:"<div>"+still
+      +"<b style='color:var(--ink)'>3D 뷰를 표시할 수 없습니다</b><br>"
+      +"이 화면은 WebGL을 지원하지 않습니다. 판단 문장과 핵심 지표는 위에 있고, "
+      +"리포트 링크는 오른쪽 <b>산출물</b>에 있습니다.<br>"
+      +"파일을 저장한 뒤 <b>Safari·Chrome 같은 브라우저에서 직접 열면</b> 3D도 동작합니다.<br>"
+      +"<span style='font-size:11px'>(앱 안의 첨부파일 미리보기에서는 3D가 동작하지 않습니다)</span></div>"});
+  const card=document.getElementById("chartCard");
+  if(card)card.style.display="none";
+  // Everything below this point needs the renderer, so those controls would
+  // sit there doing nothing. Hide them and leave what still works: the
+  // header's judgement/metrics and the 산출물 links (rendered above).
+  for(const id of ["timeSec","viewSec","partsSec","clipSec","eventSec"]){
+    const sec=document.getElementById(id); if(sec)sec.hidden=true;
+  }
   throw new Error("WebGL unavailable");
 }
-const VS=`attribute vec3 aPos; attribute vec3 aNrm; attribute vec4 aCol;
-uniform mat4 uMVP; uniform mat3 uNrm; varying vec3 vN; varying vec4 vC; varying vec3 vW;
-void main(){ gl_Position=uMVP*vec4(aPos,1.0); vN=uNrm*aNrm; vC=aCol; vW=aPos; }`;
-const FS=`precision mediump float; varying vec3 vN; varying vec4 vC; varying vec3 vW;
-uniform vec4 uClip; uniform float uClipOn; uniform vec3 uLight;
-void main(){
-  if(uClipOn>0.5 && dot(vW,uClip.xyz)>uClip.w) discard;
-  float d=abs(dot(normalize(vN),normalize(uLight)));
-  float shade=0.45+0.55*d;
-  gl_FragColor=vec4(vC.rgb*shade, vC.a);
-}`;
-function mkProg(vs,fs){
-  const p=gl.createProgram();
-  for(const [t,src] of [[gl.VERTEX_SHADER,vs],[gl.FRAGMENT_SHADER,fs]]){
-    const s=gl.createShader(t); gl.shaderSource(s,src); gl.compileShader(s);
-    if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw gl.getShaderInfoLog(s);
-    gl.attachShader(p,s);
-  }
-  gl.linkProgram(p); return p;
-}
-const prog=mkProg(VS,FS);
-const loc={aPos:gl.getAttribLocation(prog,"aPos"),aNrm:gl.getAttribLocation(prog,"aNrm"),aCol:gl.getAttribLocation(prog,"aCol"),
-  uMVP:gl.getUniformLocation(prog,"uMVP"),uNrm:gl.getUniformLocation(prog,"uNrm"),uClip:gl.getUniformLocation(prog,"uClip"),
-  uClipOn:gl.getUniformLocation(prog,"uClipOn"),uLight:gl.getUniformLocation(prog,"uLight")};
+R.setBounds(bmin,bmax);
+R.setView("iso");
+const requestDraw=()=>R.requestDraw();
 
-// per-part expanded triangle buffers (rebuilt on frame/color change)
+// per-part element lists; the triangle soup itself is rebuilt per frame below
 const partIds=[1,2,3,4,5];
 const quadsByPart={};
 for(const pid of partIds){
   const idx=[]; for(let q=0;q<NQ;q++) if(part[q]===pid) idx.push(q);
   quadsByPart[pid]=idx;
-}
-const buffers={}; // pid -> {vbo,nbo,cbo,ebo(lines),nTri,nLine}
-for(const pid of partIds){
-  buffers[pid]={vbo:gl.createBuffer(),nbo:gl.createBuffer(),cbo:gl.createBuffer(),lbo:gl.createBuffer(),nTri:0,nLine:0};
 }
 
 // colormaps
@@ -315,14 +583,14 @@ const partColor={1:[0.78,0.31,0.24],2:[0.62,0.66,0.72],3:[0.35,0.42,0.55],4:[0.4
 // The vent-foil row only shows when the run actually has one.
 if(quadsByPart[5]&&quadsByPart[5].length){const r=document.getElementById("prow5");if(r)r.hidden=false;}
 
+// The camera (rotation, distance, pan) belongs to the renderer; this object
+// keeps only what the viewer itself owns.
 const state={t:0, playing:false, speed:1, wire:false, ghost:false, colorMode:"part",
   vis:{1:true,2:true,3:true,4:true,5:true}, opa:{1:1,2:0.35,3:0.6,4:0.35,5:1},
-  clipAxis:-1, clipPos:0.5, clipFlip:false,
-  rotX:-1.05, rotZ:0.7, dist:diag*1.9, pan:[0,0]};
+  clipAxis:-1, clipPos:0.5, clipFlip:false};
 
 // Undeformed reference: the CAN part at frame 0 (the meshed STP shape),
 // drawn as a translucent grey ghost so deformation reads against the original.
-let ghostB=null;
 function buildGhost(){
   const pid=1; if(!quadsByPart[pid]) return;
   const idx=quadsByPart[pid], nq=idx.length, P0=pos[0];
@@ -334,9 +602,7 @@ function buildGhost(){
     for(const t3 of [0,1,2, 0,2,3]){V[vp]=p[t3][0];V[vp+1]=p[t3][1];V[vp+2]=p[t3][2];vp+=3;}
     for(const e of [0,1, 1,2, 2,3, 3,0]){L[lp]=p[e][0];L[lp+1]=p[e][1];L[lp+2]=p[e][2];lp+=3;}
   }
-  ghostB={vbo:gl.createBuffer(), lbo:gl.createBuffer(), nTri:nq*6, nLine:nq*8};
-  gl.bindBuffer(gl.ARRAY_BUFFER,ghostB.vbo); gl.bufferData(gl.ARRAY_BUFFER,V,gl.STATIC_DRAW);
-  gl.bindBuffer(gl.ARRAY_BUFFER,ghostB.lbo); gl.bufferData(gl.ARRAY_BUFFER,L,gl.STATIC_DRAW);
+  R.setOverlay({positions:V,lines:L});
 }
 
 function frameLerp(){
@@ -385,151 +651,19 @@ function rebuild(){
         L[lp]=p[e][0];L[lp+1]=p[e][1];L[lp+2]=p[e][2];lp+=3;
       }
     }
-    const B=buffers[pid];
-    gl.bindBuffer(gl.ARRAY_BUFFER,B.vbo); gl.bufferData(gl.ARRAY_BUFFER,V,gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER,B.nbo); gl.bufferData(gl.ARRAY_BUFFER,N,gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER,B.cbo); gl.bufferData(gl.ARRAY_BUFFER,C,gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER,B.lbo); gl.bufferData(gl.ARRAY_BUFFER,L,gl.DYNAMIC_DRAW);
-    B.nTri=nq*6; B.nLine=nq*8;
+    R.setGroup(pid,{positions:V,normals:N,colors:C,lines:L,
+                    visible:state.vis[pid],opacity:state.opa[pid]});
   }
 }
 
-// mat helpers
-function persp(fov,asp,near,far){
-  const f=1/Math.tan(fov/2), o=new Float32Array(16);
-  o[0]=f/asp;o[5]=f;o[10]=(far+near)/(near-far);o[11]=-1;o[14]=2*far*near/(near-far);
-  return o;
-}
-function mul(a,b){
-  const o=new Float32Array(16);
-  for(let i=0;i<4;i++)for(let j2=0;j2<4;j2++){let s=0;for(let k=0;k<4;k++)s+=a[k*4+j2]*b[i*4+k];o[i*4+j2]=s;}
-  return o;
-}
-function camera(){
-  const cz=Math.cos(state.rotZ),sz=Math.sin(state.rotZ),cx=Math.cos(state.rotX),sx=Math.sin(state.rotX);
-  // world -> view: translate(-center-pan), rotZ, rotX, translate(0,0,-dist)
-  const T=(x,y,z)=>new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, x,y,z,1]);
-  const RZ=new Float32Array([cz,sz,0,0, -sz,cz,0,0, 0,0,1,0, 0,0,0,1]);
-  const RX=new Float32Array([1,0,0,0, 0,cx,sx,0, 0,-sx,cx,0, 0,0,0,1]);
-  let M=T(-center[0],-center[1],-center[2]);
-  M=mul(RZ,M); M=mul(RX,M); M=mul(T(state.pan[0],state.pan[1],-state.dist),M);
-  return M;
-}
-// A phone reports devicePixelRatio 3: rendering this many elements at 3x
-// costs ~9x the fill of 1x for no visible gain on a small screen, and it is
-// what makes a big model stutter there. Cap the backing store at 2x.
-const RENDER_DPR=Math.min(devicePixelRatio||1, 2);
-function draw(){
-  const w=Math.round(canvas.clientWidth*RENDER_DPR), h=Math.round(canvas.clientHeight*RENDER_DPR);
-  if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;}
-  gl.viewport(0,0,w,h);
-  const cs=getComputedStyle(document.documentElement);
-  const bg=cs.getPropertyValue("--viewport").trim();
-  const r=parseInt(bg.slice(1,3),16)/255,g=parseInt(bg.slice(3,5),16)/255,b2=parseInt(bg.slice(5,7),16)/255;
-  gl.clearColor(r,g,b2,1);
-  gl.enable(gl.DEPTH_TEST); gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
-  gl.useProgram(prog);
-  const V=camera(), P=persp(0.6,w/h,diag*0.02,diag*10), MVP=mul(P,V);
-  gl.uniformMatrix4fv(loc.uMVP,false,MVP);
-  // normal matrix ~ rotation part of V
-  const nm=new Float32Array([V[0],V[1],V[2],V[4],V[5],V[6],V[8],V[9],V[10]]);
-  gl.uniformMatrix3fv(loc.uNrm,false,nm);
-  gl.uniform3f(loc.uLight,0.4,0.35,0.85);
-  // clip plane
-  if(state.clipAxis>=0){
-    const n=[0,0,0]; n[state.clipAxis]=state.clipFlip?-1:1;
-    const lo=bmin[state.clipAxis], hi=bmax[state.clipAxis];
-    let d=lo+(hi-lo)*state.clipPos; if(state.clipFlip) d=-d;
-    gl.uniform4f(loc.uClip,n[0],n[1],n[2],d); gl.uniform1f(loc.uClipOn,1);
-  } else gl.uniform1f(loc.uClipOn,0);
-
-  const order=partIds.filter(p=>state.vis[p]).sort((a,b3)=>state.opa[b3]-state.opa[a]);
-  for(const pid of order){
-    const B=buffers[pid], transparent=state.opa[pid]<0.999;
-    if(transparent){gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.depthMask(false);}
-    else {gl.disable(gl.BLEND);gl.depthMask(true);}
-    gl.bindBuffer(gl.ARRAY_BUFFER,B.vbo);gl.enableVertexAttribArray(loc.aPos);gl.vertexAttribPointer(loc.aPos,3,gl.FLOAT,false,0,0);
-    gl.bindBuffer(gl.ARRAY_BUFFER,B.nbo);gl.enableVertexAttribArray(loc.aNrm);gl.vertexAttribPointer(loc.aNrm,3,gl.FLOAT,false,0,0);
-    gl.bindBuffer(gl.ARRAY_BUFFER,B.cbo);gl.enableVertexAttribArray(loc.aCol);gl.vertexAttribPointer(loc.aCol,4,gl.FLOAT,false,0,0);
-    gl.drawArrays(gl.TRIANGLES,0,B.nTri);
-    if(state.wire){
-      gl.disableVertexAttribArray(loc.aCol);
-      gl.vertexAttrib4f(loc.aCol,0.25,0.28,0.33,Math.min(0.5,state.opa[pid]+0.2));
-      gl.disableVertexAttribArray(loc.aNrm); gl.vertexAttrib3f(loc.aNrm,0,0,1);
-      gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
-      gl.bindBuffer(gl.ARRAY_BUFFER,B.lbo);gl.enableVertexAttribArray(loc.aPos);gl.vertexAttribPointer(loc.aPos,3,gl.FLOAT,false,0,0);
-      gl.drawArrays(gl.LINES,0,B.nLine);
-      gl.enableVertexAttribArray(loc.aNrm); gl.enableVertexAttribArray(loc.aCol);
-    }
-  }
-  gl.depthMask(true);
-  if(state.ghost && ghostB){
-    gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.depthMask(false);
-    gl.bindBuffer(gl.ARRAY_BUFFER,ghostB.vbo);gl.enableVertexAttribArray(loc.aPos);gl.vertexAttribPointer(loc.aPos,3,gl.FLOAT,false,0,0);
-    gl.disableVertexAttribArray(loc.aNrm); gl.vertexAttrib3f(loc.aNrm,0,0,1);
-    gl.disableVertexAttribArray(loc.aCol); gl.vertexAttrib4f(loc.aCol,0.45,0.50,0.60,0.25);
-    gl.drawArrays(gl.TRIANGLES,0,ghostB.nTri);
-    gl.vertexAttrib4f(loc.aCol,0.40,0.45,0.55,0.55);
-    gl.bindBuffer(gl.ARRAY_BUFFER,ghostB.lbo);gl.vertexAttribPointer(loc.aPos,3,gl.FLOAT,false,0,0);
-    gl.drawArrays(gl.LINES,0,ghostB.nLine);
-    gl.enableVertexAttribArray(loc.aNrm); gl.enableVertexAttribArray(loc.aCol);
-    gl.depthMask(true);
-  }
-}
+// The projection, the camera matrix and the draw loop live in render3d.js.
+// What stays here is what knows about *this* data: quads, parts, colour maps.
 
 // ---------- interaction ----------
-// Pointer events cover mouse, pen and touch alike. Two live pointers are a
-// pinch: their distance zooms and their midpoint pans, which is the only way
-// to zoom or pan on a touchscreen (there is no wheel and no shift key).
-const clampDist=d=>Math.max(diag*0.25,Math.min(diag*6,d));
-const pointers=new Map();
-let drag=null, pinch=null;
-function pinchState(){
-  const [a,b]=[...pointers.values()];
-  return {d:Math.hypot(a.x-b.x,a.y-b.y), cx:(a.x+b.x)/2, cy:(a.y+b.y)/2};
-}
-canvas.addEventListener("pointerdown",e=>{
-  pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
-  canvas.setPointerCapture(e.pointerId);
-  if(pointers.size===2){ drag=null; pinch=Object.assign(pinchState(),{dist:state.dist}); }
-  else if(pointers.size===1){
-    drag={x:e.clientX,y:e.clientY,pan:e.shiftKey||e.button===2};
-    canvas.classList.add("dragging");
-  }
-});
-canvas.addEventListener("pointermove",e=>{
-  if(!pointers.has(e.pointerId))return;
-  pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
-  if(pinch&&pointers.size===2){
-    const now=pinchState();
-    state.dist=clampDist(pinch.dist*(pinch.d/Math.max(now.d,1e-6)));
-    const s=state.dist*0.0011;
-    state.pan[0]+=(now.cx-pinch.cx)*s; state.pan[1]-=(now.cy-pinch.cy)*s;
-    pinch.cx=now.cx; pinch.cy=now.cy; pinch.d=now.d; pinch.dist=state.dist;
-    requestDraw();
-    return;
-  }
-  if(!drag)return;
-  const dx=e.clientX-drag.x, dy=e.clientY-drag.y; drag.x=e.clientX;drag.y=e.clientY;
-  if(drag.pan){const s=state.dist*0.0011; state.pan[0]+=dx*s; state.pan[1]-=dy*s;}
-  else {state.rotZ+=dx*0.008; state.rotX+=dy*0.008; state.rotX=Math.max(-Math.PI,Math.min(0,state.rotX));}
-  requestDraw();
-});
-function endPointer(e){
-  pointers.delete(e.pointerId);
-  if(pointers.size<2)pinch=null;
-  if(pointers.size===0){drag=null;canvas.classList.remove("dragging");}
-  else if(!pinch){ // one finger left after a pinch: keep orbiting from here
-    const [p]=[...pointers.values()];
-    drag={x:p.x,y:p.y,pan:false};
-  }
-}
-canvas.addEventListener("pointerup",endPointer);
-canvas.addEventListener("pointercancel",endPointer);
-canvas.addEventListener("wheel",e=>{e.preventDefault();state.dist=clampDist(state.dist*Math.exp(e.deltaY*0.0012));requestDraw();},{passive:false});
-canvas.addEventListener("contextmenu",e=>e.preventDefault());
-// iOS Safari still fires its own page zoom on a double tap over the canvas.
-canvas.addEventListener("dblclick",e=>e.preventDefault());
+// Orbit, pan, pinch and wheel zoom all live in render3d.js: mouse, pen and
+// touch go through the same pointer handlers there, and the workshop preview
+// gets the identical gestures for free.
+R.attachControls();
 
 // ---------- UI ----------
 const $=id=>document.getElementById(id);
@@ -538,8 +672,22 @@ function setTime(t,fromSlider){
   state.t=Math.max(0,Math.min(1,t));
   if(!fromSlider) timeEl.value=Math.round(state.t*1000);
   const {i,a}=frameLerp();
-  $("frameno").textContent="f "+String(i+ (a>0.5?1:0)).padStart(2,"0")+" / "+(NF-1);
+  const near=a<1e-6?i:(a>1-1e-6?i+1:null);
+  $("frameno").textContent="f "+String(near==null?i+(a>0.5?1:0):near).padStart(2,"0")+" / "+(NF-1);
+  // §10.3: a frame drawn between two saved frames is interpolation, and the
+  // reader has to be able to tell. No metric is ever taken from it.
+  $("sampleTag").textContent=near!=null
+    ? "계산 샘플 프레임 (저장된 해석 결과)"
+    : "보간 표시 — 저장 프레임 사이를 선형 보간한 화면입니다. 지표는 계산 샘플에서만 나옵니다.";
   updateReadout(); drawChart(); rebuild(); requestDraw();
+}
+// Frame stepping: one saved frame at a time, never a fractional step.
+function stepFrame(delta){
+  const {i,a}=frameLerp();
+  const current=a<1e-6?i:(a>1-1e-6?i+1:(delta>0?i:i+1));
+  const next=Math.max(0,Math.min(NF-1,current+delta));
+  state.playing=false; playEl.textContent="▶";
+  setTime(NF>1?next/(NF-1):0);
 }
 timeEl.addEventListener("input",()=>setTime(timeEl.value/1000,true));
 let raf=null, lastTs=null;
@@ -558,20 +706,66 @@ playEl.addEventListener("click",()=>{
   lastTs=null; if(state.playing) raf=requestAnimationFrame(tick); else cancelAnimationFrame(raf);
 });
 $("speed").addEventListener("input",e=>{state.speed=+e.target.value;$("speedVal").textContent=state.speed.toFixed(2).replace(/0+$/,"").replace(/\.$/,"")+"×";});
-$("viewIso").addEventListener("click",()=>{state.rotX=-1.05;state.rotZ=0.7;state.pan=[0,0];state.dist=diag*1.9;requestDraw();});
-$("viewFront").addEventListener("click",()=>{state.rotX=-Math.PI/2;state.rotZ=0;state.pan=[0,0];state.dist=diag*1.9;requestDraw();});
-$("viewTop").addEventListener("click",()=>{state.rotX=0;state.rotZ=0;state.pan=[0,0];state.dist=diag*1.9;requestDraw();});
-$("wire").addEventListener("click",e=>{state.wire=!state.wire;e.target.classList.toggle("on",state.wire);requestDraw();});
-$("ghost").addEventListener("click",e=>{if(!ghostB)buildGhost();state.ghost=!state.ghost;e.target.classList.toggle("on",state.ghost);requestDraw();});
+$("first").addEventListener("click",()=>{state.playing=false;playEl.textContent="▶";setTime(0);});
+$("prev").addEventListener("click",()=>stepFrame(-1));
+$("next").addEventListener("click",()=>stepFrame(1));
+// Equivalent buttons for every gesture (§12.4): a phone user who cannot
+// drag precisely, and a keyboard user, get the same camera.
+$("rotL").addEventListener("click",()=>{R.orbit(-0.25,0);requestDraw();});
+$("rotR").addEventListener("click",()=>{R.orbit(0.25,0);requestDraw();});
+$("rotU").addEventListener("click",()=>{R.orbit(0,-0.25);requestDraw();});
+$("rotD").addEventListener("click",()=>{R.orbit(0,0.25);requestDraw();});
+$("zoomIn").addEventListener("click",()=>{R.zoom(0.8);requestDraw();});
+$("zoomOut").addEventListener("click",()=>{R.zoom(1.25);requestDraw();});
+$("fitView").addEventListener("click",()=>{R.fit();requestDraw();});
+$("viewIso").addEventListener("click",()=>{R.setView("iso");requestDraw();});
+$("viewFront").addEventListener("click",()=>{R.setView("front");requestDraw();});
+$("viewTop").addEventListener("click",()=>{R.setView("top");requestDraw();});
+$("wire").addEventListener("click",e=>{state.wire=!state.wire;R.setWireframe(state.wire);e.target.classList.toggle("on",state.wire);requestDraw();});
+$("ghost").addEventListener("click",e=>{if(!R.hasOverlay())buildGhost();state.ghost=!state.ghost;R.showOverlay(state.ghost);e.target.classList.toggle("on",state.ghost);requestDraw();});
 $("colorMode").addEventListener("change",e=>{state.colorMode=e.target.value;updateCbar();rebuild();requestDraw();});
 for(const pid of partIds){
   if(!$("v"+pid)) continue;
-  $("v"+pid).addEventListener("change",e=>{state.vis[pid]=e.target.checked;requestDraw();});
+  $("v"+pid).addEventListener("change",e=>{state.vis[pid]=e.target.checked;R.setGroupState(pid,{visible:state.vis[pid]});requestDraw();});
   $("o"+pid).addEventListener("input",e=>{state.opa[pid]=+e.target.value;$("ov"+pid).textContent=Math.round(state.opa[pid]*100)+"%";rebuild();requestDraw();});
   const c=partColor[pid]; $("sw"+pid).style.background=`rgb(${c[0]*255|0},${c[1]*255|0},${c[2]*255|0})`;
+  const solo=$("solo"+pid);
+  if(solo)solo.addEventListener("click",()=>showOnly(pid));
 }
+// "선택 부품 보기" (§10.3): show one part alone, and a way back.
+function setVisible(pid,on){
+  state.vis[pid]=on;
+  const box=$("v"+pid); if(box)box.checked=on;
+  R.setGroupState(pid,{visible:on});
+}
+function showOnly(pid){
+  for(const id of partIds) setVisible(id, id===pid);
+  requestDraw();
+}
+$("showAll").addEventListener("click",()=>{
+  for(const id of partIds) setVisible(id,true);
+  requestDraw();
+});
+(function legend(){
+  const rows=[["캔",partColor[1]],["공구",partColor[3]],["바닥",partColor[2]],["지지대",partColor[4]]];
+  if(quadsByPart[5]&&quadsByPart[5].length)rows.splice(1,0,["벤트 포일",partColor[5]]);
+  if(score)rows.push(["스코어(각인) — 색과 함께 얇은 두께로 구분",[0.52,0.30,0.05]]);
+  rows.push(["캡은 별도 파트가 아니라 캔 파트에 포함됩니다",null]);
+  const box=$("legend");
+  for(const [name,c] of rows){
+    const row=document.createElement("span");
+    if(c){
+      const sw=document.createElement("span");
+      sw.className="sw";
+      sw.style.background=`rgb(${c[0]*255|0},${c[1]*255|0},${c[2]*255|0})`;
+      row.append(sw);
+    }
+    row.append(document.createTextNode(name));
+    box.append(row);
+  }
+})();
 function setClip(ax){
-  state.clipAxis=ax;
+  state.clipAxis=ax; R.setClip({axis:ax});
   for(const [id,v] of [["clipOff",-1],["clipX",0],["clipY",1],["clipZ",2]])
     $(id).classList.toggle("on",ax===v);
   requestDraw();
@@ -580,8 +774,8 @@ $("clipOff").addEventListener("click",()=>setClip(-1));
 $("clipX").addEventListener("click",()=>setClip(0));
 $("clipY").addEventListener("click",()=>setClip(1));
 $("clipZ").addEventListener("click",()=>setClip(2));
-$("clipFlip").addEventListener("click",e=>{state.clipFlip=!state.clipFlip;e.target.classList.toggle("on",state.clipFlip);requestDraw();});
-$("clipPos").addEventListener("input",e=>{state.clipPos=+e.target.value;$("clipVal").textContent=Math.round(state.clipPos*100)+"%";requestDraw();});
+$("clipFlip").addEventListener("click",e=>{state.clipFlip=!state.clipFlip;R.setClip({flip:state.clipFlip});e.target.classList.toggle("on",state.clipFlip);requestDraw();});
+$("clipPos").addEventListener("input",e=>{state.clipPos=+e.target.value;R.setClip({pos:state.clipPos});$("clipVal").textContent=Math.round(state.clipPos*100)+"%";requestDraw();});
 
 function updateCbar(){
   const on=state.colorMode!=="part";
@@ -634,18 +828,127 @@ function updateReadout(){
   else
     $("readout").innerHTML=`t <b>${(t*1000).toFixed(2)} ms</b> &nbsp; d <b>${x.toFixed(2)} mm</b> &nbsp; F <b>${y.toFixed(1)} N</b>`;
 }
+// ---------- events: frame and curve move together (U35) ----------
+// The mark carries a solver time; the frame is found by inverting D.times,
+// so the 3D and the curve cursor land on the same instant. Nothing is
+// recomputed from this - the mark's own numbers come from the pipeline.
+function timeToNorm(T){
+  const times=D.times;
+  if(times.length<2)return 0;
+  if(T<=times[0])return 0;
+  if(T>=times[times.length-1])return 1;
+  for(let i=1;i<times.length;i++) if(times[i]>=T){
+    const span=times[i]-times[i-1]||1e-12;
+    return (i-1+(T-times[i-1])/span)/(times.length-1);
+  }
+  return 1;
+}
+function seekTime(T){
+  state.playing=false; playEl.textContent="▶";
+  setTime(timeToNorm(T));
+}
+(function events(){
+  if(!CMARKS.length)return;
+  const box=$("eventList"), last=D.times[D.times.length-1];
+  for(const mark of CMARKS){
+    const b=document.createElement("button");
+    const name=document.createElement("span");
+    name.textContent=mark.label;
+    const when=document.createElement("span");
+    when.className="t";
+    when.textContent=(mark.t*1000).toFixed(2)+" ms";
+    b.append(name,when);
+    // A ramp can peak after the run's end time; that mark belongs on the
+    // curve but there is no frame to jump to, and pretending otherwise
+    // (clamping to the last frame) would show the wrong deformation.
+    if(mark.t>last+1e-12||mark.beyond_frames){
+      b.disabled=true;
+      b.title="해석 종료(" + (last*1000).toFixed(2) + " ms) 이후 시점이라 프레임이 없습니다";
+      when.textContent+=" · 프레임 없음";
+    }else{
+      b.addEventListener("click",()=>seekTime(mark.t));
+    }
+    box.append(b);
+  }
+  $("eventSec").hidden=false;
+})();
+
 // chart
 const chart=$("chart"),ctx=chart.getContext("2d");
+// Display-only downsampling (§10.4): buckets keep their min and max, and
+// every event's nearest sample survives. The full arrays stay untouched for
+// the readout, the CSV and every number shown - nothing is recomputed from
+// the thinned set.
+const DRAW_MAX_POINTS=1200;
+const CIDX=(function(){
+  const n=CX.length, all=[];
+  for(let i=0;i<n;i++)all.push(i);
+  if(n<=DRAW_MAX_POINTS)return all;
+  const keep=new Set([0,n-1]);
+  for(const mark of CMARKS){
+    let best=0,bd=Infinity;
+    for(let i=0;i<n;i++){const d=Math.abs(CT[i]-mark.t);if(d<bd){bd=d;best=i;}}
+    keep.add(best);
+  }
+  const buckets=Math.max(2,Math.floor(DRAW_MAX_POINTS/2));
+  const size=n/buckets;
+  for(let b=0;b<buckets;b++){
+    const lo=Math.floor(b*size), hi=Math.min(n-1,Math.floor((b+1)*size)-1);
+    if(hi<lo)continue;
+    let iMin=lo,iMax=lo;
+    for(let i=lo;i<=hi;i++){if(CY[i]<CY[iMin])iMin=i;if(CY[i]>CY[iMax])iMax=i;}
+    keep.add(iMin);keep.add(iMax);
+  }
+  return [...keep].sort((a,b)=>a-b);
+})();
+const DOWNSAMPLED=CIDX.length<CX.length;
 const yMax=Math.max(...CY), xMax=Math.max(...CX);
+// U36: the x axis of a pressure run is SOLVER time, not test time. The
+// analysis is numerically accelerated, so the label says 해석 시간 and never
+// invites a comparison with a stopwatch on a bench.
+const XAXIS=CKIND==="pressure"?"해석 시간 t [ms]":(D.curve&&D.curve.xlabel)||"변위 d [mm]";
+const YAXIS=(D.curve&&D.curve.ylabel)||(CKIND==="pressure"?"내압 P [MPa]":"하중 F [N]");
 if(HASCURVE){
+  $("chartTitle").textContent=YAXIS+" – "+XAXIS;
+  $("chartXAxis").textContent="가로: "+XAXIS;
+  $("chartYAxis").textContent="세로: "+YAXIS;
+  const legend=$("chartLegend");
+  const chip=(color,text)=>{
+    const span=document.createElement("span");
+    const bar=document.createElement("i"); bar.style.background=color;
+    span.append(bar,document.createTextNode(text)); legend.append(span);
+  };
+  chip("#c0392b",YAXIS.split(" [")[0]+" (현재 위치까지)");
+  if(CAREA)chip("#1e8e8e",CAREA.label||"개구 면적 [% 벤트]");
+  if(CMARKS.length)chip("#667085","이벤트 (파단·개방·최대 가압)");
   if(CKIND==="pressure"){
-    $("chartTitle").textContent=(D.curve.ylabel||"내압")+" – "+(D.curve.xlabel||"시간");
     $("chartNote").textContent=CMARKS.length
       ? CMARKS.map(m=>`${m.label} P=${(curveAt(m.t)[1]).toFixed(2)} MPa (t=${(m.t*1000).toFixed(2)} ms)`).join(" · ")
       : `피크 ${yMax.toFixed(2)} MPa`;
   }else{
     $("chartNote").textContent=`피크 ${yMax.toFixed(0)} N @ ${CX[CY.indexOf(yMax)].toFixed(1)} mm`;
   }
+  if(DOWNSAMPLED){
+    $("chartNote").textContent+=` · 표시용 다운샘플 ${CIDX.length}/${CX.length}점 (극값·이벤트 보존, 원시 데이터는 CSV)`;
+  }
+  // Click the curve to move both the cursor and the frame (U35).
+  chart.addEventListener("click",e=>{
+    const box=chart.getBoundingClientRect();
+    const ml=40, mr=CAREA?34:10;
+    const frac=(e.clientX-box.left-ml)/Math.max(1,box.width-ml-mr);
+    const xv=Math.max(0,Math.min(1,frac))*(xMax||1);
+    let best=0,bd=Infinity;
+    for(let i=0;i<CX.length;i++){const d=Math.abs(CX[i]-xv);if(d<bd){bd=d;best=i;}}
+    seekTime(CT[best]);
+  });
+  // The raw curve, not the drawn one: CSV is data, not a picture (§10.4).
+  const link=document.createElement("a");
+  link.textContent="곡선 CSV 내려받기";
+  link.download=(D.meta.case||"curve")+"_curve.csv";
+  const head=CKIND==="pressure"?"time_s,pressure_MPa":"time_s,displacement_mm,force_N";
+  const body=CT.map((t,i)=>CKIND==="pressure"?`${t},${CY[i]}`:`${t},${CX[i]},${CY[i]}`).join("\n");
+  link.href=URL.createObjectURL(new Blob([head+"\n"+body+"\n"],{type:"text/csv"}));
+  $("links").prepend(link);
 }else{const cc=$("chartCard");if(cc)cc.style.display="none";}
 // key dimensions panel
 (function(){
@@ -727,12 +1030,12 @@ function drawChart(){
   }
   // full curve faint, swept part strong, live dot + value
   ctx.strokeStyle=muted;ctx.lineWidth=1.2*DP;ctx.globalAlpha=0.5;
-  ctx.beginPath();for(let i=0;i<CX.length;i++){const X=px(CX[i]),Y=py(CY[i]);i?ctx.lineTo(X,Y):ctx.moveTo(X,Y);}ctx.stroke();
+  ctx.beginPath();for(let k=0;k<CIDX.length;k++){const i=CIDX[k],X=px(CX[i]),Y=py(CY[i]);k?ctx.lineTo(X,Y):ctx.moveTo(X,Y);}ctx.stroke();
   ctx.globalAlpha=1;
   const t=simTime();
   ctx.strokeStyle=acc;ctx.lineWidth=2*DP;
   ctx.beginPath();let started=false;
-  for(let i=0;i<CX.length;i++){if(CT[i]>t)break;const X=px(CX[i]),Y=py(CY[i]);started?ctx.lineTo(X,Y):ctx.moveTo(X,Y);started=true;}
+  for(let k=0;k<CIDX.length;k++){const i=CIDX[k];if(CT[i]>t)break;const X=px(CX[i]),Y=py(CY[i]);started?ctx.lineTo(X,Y):ctx.moveTo(X,Y);started=true;}
   ctx.stroke();
   const [x,y]=curveAt(t);
   ctx.fillStyle=acc;ctx.beginPath();ctx.arc(px(x),py(y),4*DP,0,7);ctx.fill();
@@ -743,8 +1046,6 @@ function drawChart(){
   ctx.fillText(tag,Math.min(px(x)+6*DP,w-mr-tagW-2*DP),Math.max(py(y)-6*DP,mt+10*DP));
 }
 
-let drawQueued=false;
-function requestDraw(){if(drawQueued)return;drawQueued=true;requestAnimationFrame(()=>{drawQueued=false;draw();});}
 // Name the gestures the device actually has.
 if(matchMedia("(pointer:coarse)").matches)
   $("navHint").textContent="한 손가락: 회전 · 두 손가락: 확대·이동";
@@ -760,6 +1061,13 @@ addEventListener("resize",()=>{requestDraw();drawChart();});
 addEventListener("orientationchange",()=>setTimeout(()=>{requestDraw();drawChart();},250));
 matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change",()=>{requestDraw();drawChart();});
 
+// The size policy is recorded where the reader is, not only in metadata.
+if(D.meta.frame_reduction){
+  const p=document.createElement("p");
+  p.className="note";
+  p.textContent=D.meta.frame_reduction.message;
+  $("genNote").parentNode.insertBefore(p,$("genNote"));
+}
 updateCbar(); setTime(0);
 if(!reduceMotion){ /* start paused; user presses play */ }
 </script>

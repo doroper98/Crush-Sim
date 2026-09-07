@@ -14,6 +14,7 @@ import json
 import math
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -85,6 +86,8 @@ class PipelineResult:
     post: dict[str, Any] = field(default_factory=dict)
     report_path: Path | None = None
     stages_completed: list[str] = field(default_factory=list)
+    timings: dict[str, float] = field(default_factory=dict)
+    """Wall-clock seconds per completed stage, plus ``total`` (UI_001 §11)."""
     notices: list[str] = field(default_factory=list)
 
     @property
@@ -107,6 +110,7 @@ class PipelineResult:
             "post": self.post,
             "report": str(self.report_path) if self.report_path else None,
             "stages_completed": list(self.stages_completed),
+            "timings": dict(self.timings),
             "notices": list(self.notices),
         }
 
@@ -526,6 +530,23 @@ def run_pipeline(
             progress(f"[{time.monotonic() - started:6.0f}s] {message}")
 
     result = PipelineResult(case=case, material=material, run_dir=run_dir)
+    stage_started = started
+
+    def done(stage: str) -> None:
+        """Close a stage: record it and how long it took.
+
+        The report has to say where the wall clock went (UI_001 §11: 준비 ·
+        솔버 · 후처리 · 총 실행) and the solver's own stage durations cover
+        only the solver. Measured here so every caller of the pipeline gets
+        them, not just the UI.
+        """
+        nonlocal stage_started
+        now = time.monotonic()
+        result.timings[stage] = round(now - stage_started, 1)
+        result.timings["total"] = round(now - started, 1)
+        stage_started = now
+        result.stages_completed.append(stage)
+
     if not material.is_verified:
         result.notices.append(
             f"UNVERIFIED MATERIAL: '{material.key}' has verified: false "
@@ -537,12 +558,12 @@ def run_pipeline(
 
     emit(f"[1/{total}] geometry")
     result.geometry = build_geometry(case)
-    result.stages_completed.append("geometry")
+    done("geometry")
 
     emit(f"[2/{total}] meshing (target {case.mesh.target_size or MESH_TARGET_SIZE_DEFAULT_MM:g} mm)")
     mesh_dir = run_dir / "mesh"
     result.meshes = build_meshes(case, result.geometry, outdir=mesh_dir, enforce_gate=enforce_gate)
-    result.stages_completed.append("meshing")
+    done("meshing")
     for label, mesh_result in result.meshes.items():
         emit(
             f"  {label}: {mesh_result.mesh.n_elements} elements, "
@@ -625,7 +646,7 @@ def run_pipeline(
         outdir=run_dir / "deck",
         solver_version_tag=_solver_tag(solver_cfg),
     )
-    result.stages_completed.append("deck")
+    done("deck")
 
     if skip_solver:
         result.notices.append(
@@ -644,14 +665,14 @@ def run_pipeline(
             run_name=result.deck.run_name,
             progress=(lambda message: emit(message)) if progress is not None else None,
         )
-        result.stages_completed.append("solver")
+        done("solver")
         emit(f"[5/{total}] post-processing (convert, curves{', render' if not skip_render else ''})")
         result.post = _post_process(result, skip_render=skip_render, solver_config=solver_cfg)
-        result.stages_completed.append("post")
+        done("post")
 
     emit(f"[{total}/{total}] report")
     result.report_path = _write_report(result)
-    result.stages_completed.append("report")
+    done("report")
 
     (run_dir / "pipeline_summary.json").write_text(
         json.dumps(result.summary(), indent=2, default=str), encoding="utf-8"
@@ -800,6 +821,47 @@ def _render_in_subprocess(run_dir: Path) -> dict[str, Any]:
     }
 
 
+def _result_contract(result: PipelineResult) -> dict[str, Any] | None:
+    """The §2.6 result contract for this run, or None.
+
+    The report must not write its own judgement sentence (UI_001 §10.1), so it
+    asks :mod:`crushsim.ui.results` for one. The summary is passed in because
+    ``pipeline_summary.json`` is written *after* the report - reading the file
+    here would either find nothing or find the previous run's numbers.
+    """
+    try:
+        from .ui import results as ui_results  # noqa: PLC0415 - optional UI layer
+
+        return ui_results.build_for_run(
+            ui_results.repo_root_for(result.run_dir),
+            result.run_dir,
+            summary=result.summary(),
+            # The pipeline knows when this run finished; the summary file it
+            # would otherwise be read from does not exist yet (it is written
+            # after the report), and a re-run's directory still holds the
+            # previous run's file.
+            executed_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        )
+    except Exception:  # noqa: BLE001 - the report is still written without it
+        return None
+
+
+def _execution_snapshot(run_dir: Path) -> dict[str, Any]:
+    """The UI execution snapshot for this run, when it was started from the UI.
+
+    Resolved through :func:`crushsim.ui.results.execution_snapshot` so the
+    report, the viewer and ``/api/executions/<id>/result`` look it up the same
+    way (the legacy adapter's exec id is not the run directory's name). A run
+    started from the CLI has none and the report prints 정보 없음.
+    """
+    try:
+        from .ui import results as ui_results  # noqa: PLC0415 - optional UI layer
+
+        return ui_results.execution_snapshot(ui_results.repo_root_for(run_dir), run_dir)
+    except Exception:  # noqa: BLE001 - the report is still written without it
+        return {}
+
+
 def _write_report(result: PipelineResult) -> Path:
     """Render the HTML report for a pipeline run (FR-08)."""
     artifacts: dict[str, Path] = {}
@@ -842,6 +904,9 @@ def _write_report(result: PipelineResult) -> Path:
     context = build_context(
         case=result.case,
         material=result.material,
+        result=_result_contract(result),
+        execution=_execution_snapshot(result.run_dir),
+        timings=result.timings,
         geometry=result.geometry.summary() if result.geometry else {},
         mesh_summaries=[m.mesh.summary() for m in result.meshes.values()],
         gates=gates,
@@ -852,5 +917,6 @@ def _write_report(result: PipelineResult) -> Path:
         artifacts=artifacts,
         report_dir=result.run_dir,
         notices=result.notices,
+        stages_completed=list(result.stages_completed),
     )
     return render_report(context, result.run_dir / "report.html")

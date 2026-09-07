@@ -12,6 +12,8 @@ from __future__ import annotations
 import base64
 import json
 import re
+import warnings
+from html import escape
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,11 @@ import numpy as np
 from ..errors import PostProcessError
 
 _TEMPLATE = Path(__file__).parent / "static" / "viewer_template.html"
+#: The shared WebGL renderer (UI_002 §1.1). It is *inlined* into the generated
+#: viewer rather than fetched at run time: a file the user downloads has to
+#: open from disk with no server behind it (UI_001 §15), and a <script src>
+#: pointing at /static would leave the 3D view blank the moment the file moves.
+_RENDER3D = Path(__file__).parent / "static" / "render3d.js"
 
 _VTK_QUAD = 9
 _VTK_TRIANGLE = 5
@@ -178,6 +185,15 @@ def _pressure_curve(run: Path, summary: dict) -> dict | None:
         "xunit": " ms",
         "yunit": " MPa",
     }
+    # The pressure the deck actually applied peaks here; the viewer marks it
+    # so "not reached at max pressure" (U29) has a place on the curve. First
+    # time the ramp reaches its maximum - a plateau is reached once.
+    peak = max(ps)
+    peak_mark = (
+        {"t": ts[ps.index(peak)], "label": "최대 가압", "id": "max_pressure"}
+        if peak > 0.0
+        else None
+    )
     # Vent milestones + open-area overlay for foil-vent runs; plain
     # first-rupture marker otherwise.
     metrics = None
@@ -188,10 +204,20 @@ def _pressure_curve(run: Path, summary: dict) -> dict | None:
     except Exception:  # noqa: BLE001 - metrics are an extra, never a blocker
         metrics = None
     if metrics is not None:
-        marks = [{"t": metrics["t_initiation_s"], "label": "파단 개시"}]
+        marks = [
+            {"t": metrics["t_initiation_s"], "label": "파단 개시", "id": "initiation"}
+        ]
         if metrics["t_opening_s"] is not None:
             pct = int(round(100 * metrics.get("opening_area_fraction", 0.25)))
-            marks.append({"t": metrics["t_opening_s"], "label": f"벤트 개방 ({pct}%)"})
+            marks.append(
+                {
+                    "t": metrics["t_opening_s"],
+                    "label": f"벤트 개방 ({pct}%)",
+                    "id": "opening",
+                }
+            )
+        if peak_mark is not None:
+            marks.append(peak_mark)
         curve["marks"] = marks
         vent_area = metrics["vent_area_mm2"] or 1.0
         curve["area"] = {
@@ -215,7 +241,9 @@ def _pressure_curve(run: Path, summary: dict) -> dict | None:
                 t_first = t_cur
                 break
         if t_first is not None:
-            curve["marks"] = [{"t": t_first, "label": "파단 개시"}]
+            curve["marks"] = [{"t": t_first, "label": "파단 개시", "id": "initiation"}]
+    if peak_mark is not None:
+        curve.setdefault("marks", []).append(peak_mark)
     return curve
 
 
@@ -260,6 +288,118 @@ def _dims_lines(summary: dict) -> list[list[str]]:
     return rows
 
 
+#: UI_001 §10.3 / U39 - a standalone viewer must stay under 16 MB.
+VIEWER_MAX_BYTES = 16 * 1024 * 1024
+
+
+class ViewerSizeWarning(UserWarning):
+    """The finished viewer is over the size budget even at the frame floor."""
+
+#: A still frame is a fallback, not an album: anything larger is dropped
+#: rather than spent against the 16 MB budget.
+_FALLBACK_IMAGE_MAX_BYTES = 3 * 1024 * 1024
+
+
+def _subsample(indices: list[int], keep: set[int], target: int) -> list[int]:
+    """``target`` frames evenly spaced out of ``indices``, ``keep`` always in.
+
+    ``keep`` holds the first and last frame and the frames the events land on
+    (U39: dropping the frame that shows the vent opening would be the one
+    reduction a reader would notice).
+    """
+    if target >= len(indices):
+        return list(indices)
+    picks = {indices[int(round(i))] for i in np.linspace(0, len(indices) - 1, max(target, 2))}
+    picks |= {i for i in keep if i in set(indices)}
+    return sorted(picks)
+
+
+def _fit_to_limit(
+    indices: list[int],
+    keep: set[int],
+    render: Any,
+    *,
+    limit: int = VIEWER_MAX_BYTES,
+) -> tuple[str, list[int], bool]:
+    """Render, and while the page is over ``limit`` halve the frames kept.
+
+    ``render(indices, over_limit=…) -> str`` builds the whole page; only the
+    number of displayed frames is reduced. Metrics and curves are never
+    touched (U39) - they are computed by the pipeline from every saved frame,
+    and a viewer that quietly recomputed them from a thinned sequence would
+    report different numbers than the report next to it.
+
+    Returns (html, kept indices, over_limit). ``over_limit`` is True when even
+    the floor - first, last and the event frames - does not fit: the geometry
+    itself is bigger than the budget. The page is still written (a reader with
+    a 20 MB file is better served than one with none), but it must not claim
+    to have been reduced to fit, so the final pass is rendered again with the
+    honest note.
+    """
+    current = list(indices)
+    html = render(current, False)
+    floor = max(2, len(keep))
+    while len(html.encode("utf-8")) > limit and len(current) > floor:
+        reduced = _subsample(current, keep, max(floor, len(current) // 2))
+        if len(reduced) >= len(current):
+            break  # cannot thin any further without dropping a kept frame
+        current = reduced
+        html = render(current, False)
+    if len(html.encode("utf-8")) > limit:
+        html = render(current, True)
+        return html, current, True
+    return html, current, False
+
+
+def _event_frames(curve: dict | None, times: list[float]) -> set[int]:
+    """Frame index nearest each event mark, so a reduction keeps those frames."""
+    out: set[int] = set()
+    for mark in (curve or {}).get("marks") or []:
+        t = mark.get("t")
+        if t is None or not times:
+            continue
+        out.add(min(range(len(times)), key=lambda i: abs(times[i] - float(t))))
+    return out
+
+
+def _fallback_image(run: Path) -> dict[str, Any] | None:
+    """``anim/front_last.png`` as a data URI - what a WebGL-less viewer shows.
+
+    U38: without WebGL the page used to end at a black rectangle. The last
+    rendered frame is already on disk for every run the pipeline animated, so
+    it is embedded (the page must work with no server behind it).
+    """
+    for name in ("front_last.png", "iso_last.png", "section_last.png"):
+        path = run / "anim" / name
+        if not path.is_file():
+            continue
+        raw = path.read_bytes()
+        if len(raw) > _FALLBACK_IMAGE_MAX_BYTES:
+            continue
+        return {
+            "name": name,
+            "data_uri": "data:image/png;base64," + base64.b64encode(raw).decode(),
+            "label": "마지막 계산 프레임 (정지 화면)",
+        }
+    return None
+
+
+def _result_contract(run: Path, summary: dict) -> dict[str, Any] | None:
+    """The §2.6 result body for this run, or None if it cannot be built.
+
+    Built by :mod:`crushsim.ui.results` - the viewer never writes its own
+    judgement sentence (UI_001 §10.1).
+    """
+    try:
+        from . import results  # noqa: PLC0415 - avoids an import cycle at module load
+
+        return results.build_for_run(
+            results.repo_root_for(run), run, summary=summary or None
+        )
+    except Exception:  # noqa: BLE001 - a missing contract shows 정보 없음, never a crash
+        return None
+
+
 def generate_viewer(
     run_dir: str | Path,
     *,
@@ -268,6 +408,8 @@ def generate_viewer(
     out_path: str | Path | None = None,
     max_frames: int | None = None,
     include_plastic: bool = True,
+    result: dict[str, Any] | None = None,
+    max_bytes: int = VIEWER_MAX_BYTES,
 ) -> Path:
     """Build the standalone viewer for ``run_dir`` and return its path.
 
@@ -276,6 +418,16 @@ def generate_viewer(
     size levers for very fine meshes, where the full page can exceed what a
     browser (or an artifact host) will take. The slider still interpolates
     between the frames that remain.
+
+    Whatever ``max_frames`` says, the finished page is measured and thinned
+    further until it fits ``max_bytes`` (16 MB, UI_001 §10.3 / U39); the
+    reduction is recorded in the page's note and in ``meta.frame_reduction``.
+    Metrics, curves and the judgement are never touched by it.
+
+    Args:
+        result: The §2.6 result contract to show in the header. Built from the
+            run directory when omitted; ``None`` when it cannot be built, and
+            the header then shows ``정보 없음``.
 
     Raises:
         PostProcessError: If the run has no VTK sequence or curve.
@@ -362,28 +514,16 @@ def generate_viewer(
         except Exception:  # noqa: BLE001 - the curve is an extra, never a blocker
             curve_payload = None
 
-    n_points = int(first_mesh.n_points)
-    index_type: Any = np.uint16 if n_points < 65536 else np.uint32
-    data = {
-        "meta": {
-            "case": title,
-            "elements": int(quads.shape[0]),
-            "nodes": n_points,
-            "frames": len(files),
-            "end_time_s": times[-1],
-            "parts": {"1": "CAN", "2": "FLOOR", "3": "TOOL", "4": "SUPPORT", "5": "VENT"},
-            "dims": _dims_lines(summary),
-        },
-        "quads": _b64(quads.astype(index_type)),
-        "quads_dtype": "u2" if n_points < 65536 else "u4",
-        "part": _b64(part_canon),
-        "score": _b64(score_mask) if score_mask.any() else None,
-        "times": times,
-        "pos": [_b64(p) for p in positions],
-        "vm": [_b64(v) for v in von_mises],
-        "ps": [_b64(p) for p in plastic],
-        "curve": curve_payload,
-    }
+    if result is None:
+        result = _result_contract(run, summary)
+    key_metric_keys: list[str] = []
+    if result:
+        try:
+            from . import results as _results  # noqa: PLC0415 - optional import cycle
+
+            key_metric_keys = [m["key"] for m in _results.key_metrics(result)]
+        except Exception:  # noqa: BLE001 - the header falls back to its own order
+            key_metric_keys = []
 
     # The viewer draws the shell mid-surface, so the wall looks paper-thin;
     # state explicitly that the thickness is a solved property, not omitted.
@@ -402,11 +542,113 @@ def generate_viewer(
     except Exception:  # noqa: BLE001 - a broken summary must not block the viewer
         pass
 
-    html = _TEMPLATE.read_text(encoding="utf-8")
-    html = html.replace("__TITLE__", title)
-    html = html.replace("__NOTE__", (note or f"{title} 런의 실제 프레임 데이터로") + thickness_note)
-    html = html.replace("__DATA__", json.dumps(data))
+    n_points = int(first_mesh.n_points)
+    index_type: Any = np.uint16 if n_points < 65536 else np.uint32
+    quads_b64 = _b64(quads.astype(index_type))
+    part_b64 = _b64(part_canon)
+    # Encoded once. The size loop below may render the page several times, and
+    # base64-encoding every frame again on each pass was the expensive half of
+    # a 41-frame regeneration for data that never changes.
+    pos_b64 = [_b64(p) for p in positions]
+    vm_b64 = [_b64(v) for v in von_mises]
+    ps_b64 = [_b64(p) for p in plastic]
+    score_b64 = _b64(score_mask) if score_mask.any() else None
+    fallback = _fallback_image(run)
+    template = _TEMPLATE.read_text(encoding="utf-8")
+    # Renderer first: everything substituted after it is run-derived text, and
+    # a case named "__RENDER3D__" must not be able to inject a script body.
+    template = template.replace("__RENDER3D__", _RENDER3D.read_text(encoding="utf-8"))
+    n_all = len(files)
+    keep_frames = {0, n_all - 1} | _event_frames(curve_payload, times)
+
+    def render(indices: list[int], over_limit: bool) -> str:
+        reduction = None
+        if len(indices) < n_all or over_limit:
+            limit_mb = max_bytes / (1024 * 1024)
+            message = (
+                f"파일 크기 제한({limit_mb:g} MB)으로 표시 프레임을 "
+                f"{n_all}→{len(indices)}개로 줄였습니다. "
+                "이벤트 프레임과 처음·마지막은 남겼고, 지표·곡선 데이터는 그대로입니다."
+            )
+            if over_limit:
+                # Never claim a reduction that did not achieve the budget: the
+                # floor (first, last, events) plus the mesh itself is already
+                # bigger than the limit.
+                message = (
+                    f"표시 프레임을 {n_all}→{len(indices)}개까지 줄였지만 "
+                    f"파일이 여전히 {limit_mb:g} MB 제한을 넘습니다 "
+                    "(형상 자체가 큽니다). 지표·곡선 데이터는 그대로입니다."
+                )
+            reduction = {
+                "original_frames": n_all,
+                "kept_frames": len(indices),
+                "limit_bytes": max_bytes,
+                "over_limit": over_limit,
+                "reason": "SIZE_LIMIT",
+                "message": message,
+            }
+        data = {
+            "meta": {
+                "case": title,
+                "elements": int(quads.shape[0]),
+                "nodes": n_points,
+                "frames": len(indices),
+                "end_time_s": times[indices[-1]],
+                "parts": {"1": "CAN", "2": "FLOOR", "3": "TOOL", "4": "SUPPORT", "5": "VENT"},
+                "dims": _dims_lines(summary),
+                "frame_reduction": reduction,
+                "deformation_scale": 1.0,
+            },
+            "quads": quads_b64,
+            "quads_dtype": "u2" if n_points < 65536 else "u4",
+            "part": part_b64,
+            "score": score_b64,
+            "times": [times[i] for i in indices],
+            "pos": [pos_b64[i] for i in indices],
+            "vm": [vm_b64[i] for i in indices],
+            "ps": [ps_b64[i] for i in indices] if ps_b64 else [],
+            "curve": curve_payload,
+            "result": result,
+            # item: the ≤3 headline metrics are chosen by the server, once
+            # (results.key_metrics), so the viewer and the workshop cannot
+            # drift apart on which three they are.
+            "key_metrics": key_metric_keys,
+            "fallback": fallback,
+        }
+        text = note or f"{title} 런의 실제 프레임 데이터로"
+        if reduction:
+            text += " · " + reduction["message"]
+        html = template.replace("__TITLE__", escape(title))
+        html = html.replace("__NOTE__", escape(text + thickness_note))
+        return html.replace("__DATA__", _json_for_script(data))
+
+    html, kept, over_limit = _fit_to_limit(
+        list(range(n_all)), keep_frames, render, limit=max_bytes
+    )
 
     target = Path(out_path) if out_path else run / "viewer.html"
     target.write_text(html, encoding="utf-8")
+    if over_limit:
+        # The caller decides what to do about it (the server logs a notice);
+        # silently handing back an oversized "standalone" file is what U39
+        # exists to prevent.
+        warnings.warn(
+            f"{target.name}: {target.stat().st_size / 1024 / 1024:.1f} MB "
+            f"(limit {max_bytes / 1024 / 1024:g} MB) with {len(kept)} of {n_all} frames - "
+            "the mesh alone exceeds the budget; the page says so in its note.",
+            ViewerSizeWarning,
+            stacklevel=2,
+        )
     return target
+
+
+def _json_for_script(data: dict[str, Any]) -> str:
+    """JSON safe to drop inside ``<script type="application/json">``.
+
+    A case name or part label is user text (U42): a literal ``</script>``
+    inside it would close the block and the rest of the page would be parsed
+    as HTML. JSON escapes nothing of the sort, so every ``</`` is written with
+    an escaped slash here - the same string to a JSON parser, inert to the
+    HTML tokenizer.
+    """
+    return json.dumps(data).replace("</", "<\\/")
