@@ -183,6 +183,36 @@ def _vent_checks(case: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _asset_records(graph: dict[str, Any], assets: AssetStore) -> list[dict[str, Any]]:
+    """What the report has to say about every geometry file used (UI_001 §11).
+
+    Display name, content hash, declared units and the read dimensions - the
+    reader of a report must be able to tell which file produced it. Kept to
+    what the asset store already holds; an asset that cannot be read is
+    listed with its id alone rather than dropped.
+    """
+    out: list[dict[str, Any]] = []
+    for node_id, asset_id in (graph.get("asset_refs") or {}).items():
+        try:
+            record = assets.get(str(asset_id))
+        except UiError:
+            out.append({"node_id": node_id, "asset_id": str(asset_id), "status": "missing"})
+            continue
+        out.append(
+            {
+                "node_id": node_id,
+                "asset_id": str(asset_id),
+                "display_name": record.get("display_name"),
+                "content_hash": record.get("content_hash"),
+                "bytes": record.get("bytes"),
+                "status": record.get("status"),
+                "units": record.get("units"),
+                "dimensions_mm": record.get("dimensions_mm"),
+            }
+        )
+    return out
+
+
 def _asset_checks(graph: dict[str, Any], assets: AssetStore) -> tuple[list[dict[str, Any]], list[str]]:
     """Asset readiness, unit confirmation - and the content hashes for the input hash."""
     out: list[dict[str, Any]] = []
@@ -519,6 +549,11 @@ def build(
         "preset_id": sample_id,
         "graph_revision": resolved.get("revision"),
         "targets": list(resolved.get("targets") or []),
+        # Carried into the execution snapshot so the report can state where
+        # each condition came from and which file the geometry is (UI_001 §11).
+        "provenance": dict(resolved.get("provenance") or {}),
+        "confirmations": dict(resolved.get("confirmations") or {}),
+        "assets": _asset_records(resolved, assets),
         "cases": [
             {
                 "exec_id": exec_id_for(c["name"], hash_value, c.get("solver_node_id")),
