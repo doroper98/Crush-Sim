@@ -356,3 +356,124 @@ def test_u44_records_first_paint(page) -> None:
         json.dumps({"first_paint_ms": round(float(paint), 1)}, ensure_ascii=False), encoding="utf-8"
     )
     assert float(paint) < 5000, f"첫 화면이 너무 느립니다: {paint} ms"
+
+
+# ---------------------------------------------------------------- U32 (조건 복제)
+
+
+def test_u32_compare_one_condition_makes_a_second_case(page) -> None:
+    """값 하나를 복제하면 두 번째 케이스가 생기고 차이표에 그 한 줄만 나온다."""
+    _start_parametric(page)
+    page.click("button.step-btn:has-text('알고 싶은 것')")
+    page.click(".purpose-card:has-text('벤트 개방')")
+    page.wait_for_selector("#confirmAll")
+    page.click("#confirmAll")
+    page.click("button.step-btn:has-text('실행 확인')")
+    page.wait_for_selector("#btnCompareOne")
+    page.click("#btnCompareOne")
+    page.wait_for_selector("dialog.modal[open] #cmpField")
+    label = page.evaluate(
+        """() => [...document.querySelectorAll('#cmpField option')]
+                 .find(o => o.textContent.includes('스코어 잔여 두께')).textContent"""
+    )
+    page.select_option("#cmpField", label=label)
+    page.fill("#cmpValue", "0.04")
+    page.click("dialog.modal button:has-text('비교안 만들기')")
+    # 두 번째 케이스가 사전 검사에 나타난다.
+    page.wait_for_function(
+        "() => App.preflight && (App.preflight.combinations || {}).total === 2", timeout=30_000
+    )
+    inspector = page.inner_text("#inspector")
+    assert "2건" in inspector
+    assert "score_thickness" in inspector
+    assert "0.04" in inspector
+    _shot(page, "09_compare_setup.png")
+
+
+# ------------------------------------------------------- U32·U33·U34 (A/B 패널)
+
+# 서버 계약(§2.6)의 모양을 그대로 흉내낸 두 결과. 솔버 없이 표시 규칙만 검사한다.
+_RESULT_A = {
+    "schema_version": 1, "execution_id": "case_a", "state": "completed", "case_name": "case_a",
+    "changed_vs_first": {},
+    "metrics": [
+        {"key": "vent_opening_pressure", "label": "개방 압력", "value": 0.385, "unit": "MPa",
+         "kind": "scalar", "definition_id": "vent_open_area_25pct_v1", "definition_version": 1,
+         "unavailable_reason": None},
+        {"key": "peak_load_N", "label": "최대 반력", "value": 0.0, "unit": "N", "kind": "scalar",
+         "definition_id": "peak_load_v1", "definition_version": 1, "unavailable_reason": None},
+        {"key": "vent_open_area_curve", "label": "개방 면적", "value": None, "unit": "mm2",
+         "kind": "curve", "definition_id": "vent_open_area_v1", "definition_version": 1,
+         "unavailable_reason": None, "x_unit": "s", "y_unit": "mm2",
+         "points": [[0.0, 0.0], [0.001, 4.0], [0.002, 9.0]]},
+        {"key": "pressure_time_curve", "label": "압력", "value": None, "unit": "MPa",
+         "kind": "curve", "definition_id": "pressure_ramp_v1", "definition_version": 1,
+         "unavailable_reason": None, "x_unit": "s", "y_unit": "MPa",
+         "points": [[0.0, 0.0], [0.002, 0.85]]},
+    ],
+    "target": {"metric_key": "vent_opening_pressure", "lower": 0.3, "upper": 0.5, "unit": "MPa",
+               "inclusive": True},
+    "target_status": "within",
+    "judgement": {"sentence": "개방 압력은 0.385 MPa로, 목표 0.30-0.50 MPa 안에 있습니다.",
+                  "status": "within", "caveat": "재료 모델이 검증되지 않아 참고용으로 표시합니다."},
+    "validation": {"model_validity": "valid", "scope_status": "unverified",
+                   "diagnostics": [{"code": "MATERIAL_NOT_VALIDATED", "severity": "review",
+                                    "message": "재료가 검증되지 않았습니다."}],
+                   "references": ["lc6_preset_30min 실측 14.4분"]},
+    "timing": {"queue_seconds": 0, "execution_seconds": 864},
+}
+
+_RESULT_B = json.loads(json.dumps(_RESULT_A))
+_RESULT_B.update(execution_id="case_b", case_name="case_b",
+                 changed_vs_first={"geometry.vent.score_thickness": [0.03, 0.04]})
+_RESULT_B["metrics"][0]["value"] = 0.462
+_RESULT_B["metrics"][1]["value"] = 12.0
+_RESULT_B["metrics"][2]["points"] = [[0.0, 0.0], [0.001, 2.0], [0.002, 7.0]]
+# B의 압력 곡선은 정의 버전이 다르다: 중첩하면 안 된다(U33).
+_RESULT_B["metrics"][3]["definition_id"] = "pressure_ramp_v2"
+
+
+def _completed_run(exec_id: str, finished: str) -> dict:
+    return {
+        "exec_id": exec_id, "case_name": exec_id, "state": "completed", "stage": None,
+        "queue_position": None, "legacy": False,
+        "timestamps": {"submitted": None, "started": None, "finished": finished},
+        "timing": {"queue_seconds": 0, "execution_seconds": 864, "stage_seconds": {}},
+        "artifacts": {"report": None, "viewer": None, "csv": None, "summary": None},
+        "snapshot": {"input_hash": "sha256:" + exec_id},
+    }
+
+
+_RUNS = {"items": [_completed_run("case_a", "2026-09-07T10:00:00Z"),
+                   _completed_run("case_b", "2026-09-07T10:20:00Z")]}
+
+
+def test_ab_panel_overlays_only_matching_definitions(page) -> None:
+    """A/B: 변경 조건 표, (B−A)/A, 기준 0이면 절대 차이, 정의가 다르면 중첩 금지."""
+    def _json(route, payload):
+        route.fulfill(status=200, content_type="application/json",
+                      body=json.dumps(payload, ensure_ascii=False))
+
+    page.route("**/api/executions", lambda route: _json(route, _RUNS))
+    page.route("**/api/executions/case_a/result", lambda route: _json(route, _RESULT_A))
+    page.route("**/api/executions/case_b/result", lambda route: _json(route, _RESULT_B))
+    _start_parametric(page)
+    page.click("#btnRunPanel")
+    page.wait_for_selector(".run-row")
+    for label in ("case_a", "case_b"):
+        page.check(f"input[aria-label='{label} A/B 비교에 넣기']")
+    page.wait_for_selector("text=A/B 비교")
+    panel = page.inner_text("#runPanel")
+    assert "geometry.vent.score_thickness" in panel        # 변경 조건 한 줄
+    assert "+20.0 %" in panel                              # (0.462-0.385)/0.385
+    assert "절대 12" in panel                              # 기준값 0 -> 절대 차이(U34)
+    assert "정의나 단위가 달라 중첩하지 않았습니다" in panel     # U33
+    assert page.eval_on_selector_all("canvas.ab-chart", "els => els.length") == 1
+    assert "목표 범위 내" in panel                          # 목표 판정과
+    assert "일부 조건 미검증" in panel                       # 신뢰 정보는 따로 표시된다
+    page.eval_on_selector("canvas.ab-chart", "el => el.scrollIntoView({block: 'center'})")
+    page.wait_for_timeout(200)
+    _shot(page, "10_ab_compare.png")
+    page.unroute("**/api/executions")
+    page.unroute("**/api/executions/case_a/result")
+    page.unroute("**/api/executions/case_b/result")

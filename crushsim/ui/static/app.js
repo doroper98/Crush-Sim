@@ -1679,6 +1679,13 @@ const Inspector = {
 
     panel.appendChild(el("h3", { class: "section-title", text: "사전 검사" }));
     panel.appendChild(this.preflightBlock());
+    // 초보자의 기본 비교 동작은 첫 실행보다 쉬워야 한다(§1.2, §7.3): 결과가
+    // 아직 없어도 여기서 두 번째 케이스를 만들 수 있다.
+    panel.appendChild(el("button", {
+      class: "btn", id: "btnCompareOne", text: "조건 하나 바꿔 비교",
+      onclick: () => UI.showCompareDialog()
+    }));
+    panel.appendChild(el("p", { class: "small muted", text: "조건 하나를 바꿔 차이를 확인하세요." }));
   },
 
   preflightBlock() {
@@ -2203,11 +2210,13 @@ const ResultPresenter = {
     ctx.strokeRect(pad.l, pad.t, canvas.width - pad.l - pad.r, canvas.height - pad.t - pad.b);
     ctx.fillStyle = "#526176";
     ctx.font = "12px sans-serif";
-    ctx.fillText(String(curveA.x_unit || ""), canvas.width - pad.r - 24, canvas.height - 8);
+    // 축 라벨은 값과 단위를 한 덩어리로 그린다(따로 그리면 오른쪽 끝에서 겹친다).
+    const xMax = num(x1) + " " + String(curveA.x_unit || "");
     ctx.fillText(String(curveA.y_unit || ""), 6, pad.t + 10);
-    ctx.fillText(num(x0), pad.l, canvas.height - 10);
-    ctx.fillText(num(x1), canvas.width - pad.r - 30, canvas.height - 10);
     ctx.fillText(num(y1), 6, pad.t + 24);
+    ctx.fillText(num(y0), 6, canvas.height - pad.b);
+    ctx.fillText(num(x0), pad.l, canvas.height - 10);
+    ctx.fillText(xMax, canvas.width - pad.r - ctx.measureText(xMax).width, canvas.height - 10);
     const line = (points, color, dash) => {
       ctx.beginPath();
       ctx.setLineDash(dash);
