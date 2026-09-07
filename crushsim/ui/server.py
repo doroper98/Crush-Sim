@@ -138,6 +138,11 @@ def create_app(root: str | Path = ".") -> FastAPI:
                 "graph_revision": preflight.get("graph_revision"),
                 "estimate": preflight.get("estimate"),
                 "policy_version": preflight.get("policy_version"),
+                # UI_001 §11: the report states the provenance of every
+                # condition and the identity of the geometry file.
+                "provenance": preflight.get("provenance") or {},
+                "confirmations": preflight.get("confirmations") or {},
+                "assets": preflight.get("assets") or [],
             },
         )
         return {

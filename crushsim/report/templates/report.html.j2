@@ -1,9 +1,14 @@
 <!doctype html>
-<html lang="en">
+{# UI_001 §11: the section order below is mandatory. 판단 요약 → 입력·가정 →
+   형상 처리 → 재료 → 메쉬·수치 조건 → 진단·게이트 → 검증 범위 → 지표·곡선 →
+   산출물. Fields a run does not carry print as 정보 없음 (the `orunknown`
+   filter); nothing here computes a judgement of its own - the verdicts come
+   from crushsim.ui.results through `result`. #}
+<html lang="ko">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{ title }} - Crush-Sim report</title>
+<title>{{ title }} - Crush-Sim 리포트</title>
 <style>
   :root {
     --bg: #f7f8fa; --panel: #ffffff; --ink: #14181f; --muted: #5b6472;
@@ -18,21 +23,22 @@
   .wrap { max-width: 1080px; margin: 0 auto; padding: 28px 20px 64px; }
   header { border-bottom: 2px solid var(--accent); padding-bottom: 12px; margin-bottom: 22px; }
   h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
-  h2 { font-size: 15px; margin: 26px 0 10px; text-transform: uppercase;
-       letter-spacing: 0.06em; color: var(--accent); }
+  h2 { font-size: 15px; margin: 26px 0 10px; letter-spacing: 0.04em; color: var(--accent); }
+  h2 .en { color: var(--muted); font-weight: 400; font-size: 12px; letter-spacing: 0.02em; }
   .sub { color: var(--muted); font-size: 12.5px; }
   .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
            padding: 14px 16px; margin-bottom: 14px; }
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
-  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); }
-  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase;
-       letter-spacing: 0.04em; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line);
+           vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; letter-spacing: 0.03em; }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11.5px;
            font-weight: 700; letter-spacing: 0.03em; }
   .badge.pass { background: #e3f4ea; color: var(--pass); }
   .badge.fail { background: #fdeae8; color: var(--fail); }
   .badge.warn { background: #fdf3e0; color: var(--warn); }
+  .badge.none { background: #eef1f5; color: var(--muted); }
   .stamp { border: 3px solid var(--fail); color: var(--fail); font-weight: 800;
            letter-spacing: 0.14em; padding: 8px 14px; border-radius: 6px;
            display: inline-block; transform: rotate(-2deg); margin-bottom: 14px; }
@@ -42,25 +48,43 @@
   .kv div { display: flex; justify-content: space-between; gap: 12px;
             border-bottom: 1px dotted var(--line); padding: 3px 0; }
   .kv span:first-child { color: var(--muted); }
-  .kv span:last-child { font-variant-numeric: tabular-nums; }
+  .kv span:last-child { font-variant-numeric: tabular-nums; text-align: right; }
+  .verdict { font-size: 19px; line-height: 1.45; font-weight: 600; margin: 0 0 6px; }
+  .caveat { color: var(--warn); font-size: 13px; margin: 0 0 10px; }
+  .axes { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; }
+  .axes .axis span:first-child { color: var(--muted); margin-right: 6px; }
   img.curve { max-width: 100%; border: 1px solid var(--line); border-radius: 4px; }
   ul.links { list-style: none; padding: 0; margin: 0; }
   ul.links li { padding: 3px 0; }
   a { color: var(--accent); }
   .note { font-size: 12.5px; color: var(--warn); background: #fdf7ea;
           border-left: 3px solid var(--warn); padding: 8px 12px; margin: 8px 0; border-radius: 3px; }
+  .unknown { color: var(--muted); }
   footer { margin-top: 34px; color: var(--muted); font-size: 12px;
            border-top: 1px solid var(--line); padding-top: 12px; }
-  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px;
+         word-break: break-all; }
 </style>
 </head>
 <body>
 <div class="wrap">
 
+{% set res = result or {} %}
+{% set validation = res.get('validation') or {} %}
+{% set judgement = res.get('judgement') or {} %}
+{% set ex = execution or {} %}
+{% set target = res.get('target') %}
+{% set target_labels = {'within': '목표 범위 내', 'below': '하한 미달', 'above': '상한 초과',
+                        'none': '목표 없음', 'unavailable': '판정 불가'} %}
+{% set validity_labels = {'valid': '유효', 'invalid': '무효', 'unknown': '확인 불가'} %}
+{% set scope_labels = {'verified': '검증 범위 내', 'unverified': '일부 조건 미검증',
+                       'out_of_scope': '검증 범위 밖'} %}
+
 <header>
   <h1>{{ title }}</h1>
   <div class="sub">
-    Crush-Sim automated report &middot; units {{ unit_system }} &middot; generated {{ generated_at }}
+    Crush-Sim 해석 리포트 &middot; 단위계 {{ unit_system }} &middot; 생성 {{ generated_at }}
+    {% if ex.get('exec_id') %}&middot; 실행 ID <code>{{ ex['exec_id'] }}</code>{% endif %}
   </div>
 </header>
 
@@ -73,49 +97,208 @@
 </ul>
 {% endif %}
 
-<h2>Input summary</h2>
-<div class="panel grid">
-  <div class="kv">
-    {% for key, value in case.items() %}
-    <div><span>{{ key }}</span><span>{{ value }}</span></div>
-    {% endfor %}
-  </div>
-  <div class="kv">
-    {% for key, value in geometry.items() %}
-    <div><span>{{ key }}</span><span>{{ value }}</span></div>
-    {% endfor %}
-  </div>
-  <div class="kv">
-    <div><span>material</span><span>{{ material.get('name', '-') }}</span></div>
-    <div><span>key</span><span>{{ material.get('key', '-') }}</span></div>
-    <div><span>E [MPa]</span><span>{{ material.get('E', '-') }}</span></div>
-    <div><span>nu</span><span>{{ material.get('nu', '-') }}</span></div>
-    <div><span>rho [t/mm3]</span><span>{{ material.get('rho', '-') }}</span></div>
-    <div><span>sigma_y [MPa]</span><span>{{ material.get('sigma_y', '-') }}</span></div>
-    <div><span>K [MPa]</span><span>{{ material.get('K', '-') }}</span></div>
-    <div><span>n</span><span>{{ material.get('n', '-') }}</span></div>
-    <div><span>verified</span>
-      <span>
-        {% if material.get('is_verified') %}
-        <span class="badge pass">VERIFIED</span>
-        {% else %}
-        <span class="badge fail">UNVERIFIED</span>
-        {% endif %}
+<h2>1. 판단 요약 <span class="en">judgement</span></h2>
+<div class="panel">
+  {% if judgement.get('sentence') %}
+  <p class="verdict">{{ judgement['sentence'] }}</p>
+  {% if judgement.get('caveat') %}
+  <p class="caveat">{{ judgement['caveat'] }}</p>
+  {% endif %}
+  {% else %}
+  <p class="verdict unknown">판단 문장 {{ '정보 없음' }} — 이 실행에는 결과 계약이 없습니다.</p>
+  {% endif %}
+  <div class="axes">
+    <div class="axis"><span>설계 목표</span>
+      <span class="badge {{ 'pass' if res.get('target_status') == 'within'
+                            else ('fail' if res.get('target_status') in ('below', 'above') else 'none') }}">
+        {{ target_labels.get(res.get('target_status'), '정보 없음') }}
+      </span>
+      {% if target %}
+      <span class="sub">
+        {{ target.get('metric_key') }} {{ target.get('lower')|orunknown }} – {{ target.get('upper')|orunknown }}
+        {{ target.get('unit', '') }}
+      </span>
+      {% endif %}
+    </div>
+    <div class="axis"><span>계산 유효성</span>
+      <span class="badge {{ 'pass' if validation.get('model_validity') == 'valid'
+                            else ('fail' if validation.get('model_validity') == 'invalid' else 'none') }}">
+        {{ validity_labels.get(validation.get('model_validity'), '정보 없음') }}
       </span>
     </div>
-    <div><span>source</span><span>{{ material.get('source', '-') }}</span></div>
+    <div class="axis"><span>검증 근거</span>
+      <span class="badge {{ 'pass' if validation.get('scope_status') == 'verified'
+                            else ('fail' if validation.get('scope_status') == 'out_of_scope' else 'warn') }}">
+        {{ scope_labels.get(validation.get('scope_status'), '정보 없음') }}
+      </span>
+    </div>
+    <div class="axis"><span>진단</span>
+      <span>{{ (validation.get('diagnostics') or [])|length }}건</span>
+    </div>
   </div>
 </div>
 
+<h2>2. 입력·가정 <span class="en">inputs and assumptions</span></h2>
+<div class="panel grid">
+  <div class="kv">
+    <div><span>해석 목적</span><span>{{ ex.get('purpose')|orunknown }}</span></div>
+    <div><span>하중 케이스</span><span>{{ case.get('load_case')|orunknown }}</span></div>
+    <div><span>공구</span><span>{{ case.get('tool')|orunknown }}</span></div>
+    <div><span>스트로크 [mm]</span><span>{{ case.get('stroke_mm')|orunknown }}</span></div>
+    <div><span>속도 [m/s]</span><span>{{ case.get('velocity_m_s')|orunknown }}</span></div>
+    <div><span>하중 방향</span><span>{{ case.get('direction')|orunknown }}</span></div>
+    <div><span>마찰계수</span><span>{{ case.get('friction')|orunknown }}</span></div>
+    <div><span>케이스 파일</span><span>{{ case.get('path')|orunknown }}</span></div>
+    <div><span>설명</span><span>{{ case.get('description')|orunknown }}</span></div>
+  </div>
+  <div class="kv">
+    <div><span>설계 목표 범위</span>
+      <span>
+        {% if target %}
+          {{ target.get('metric_key') }}: {{ target.get('lower')|orunknown }} – {{ target.get('upper')|orunknown }}
+          {{ target.get('unit', '') }}
+        {% else %}정보 없음{% endif %}
+      </span>
+    </div>
+    {% if ex.get('confirmations') %}
+    {% for key, value in ex['confirmations'].items() %}
+    <div><span>확인: {{ key }}</span><span>{{ value|orunknown }}</span></div>
+    {% endfor %}
+    {% else %}
+    <div><span>필수 확인</span><span class="unknown">정보 없음</span></div>
+    {% endif %}
+  </div>
+</div>
+<div class="panel">
+  <table>
+    <thead><tr><th>조건</th><th>출처</th></tr></thead>
+    <tbody>
+      {% if ex.get('provenance') %}
+      {% for field_path, origin in ex['provenance'].items() %}
+      <tr><td><code>{{ field_path }}</code></td><td>{{ origin|orunknown }}</td></tr>
+      {% endfor %}
+      {% else %}
+      <tr><td class="unknown" colspan="2">
+        조건별 출처(형상/추천/직접 입력) 정보 없음 — 작업실 밖에서 실행된 케이스입니다.
+      </td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
+<h2>3. 형상 처리 <span class="en">geometry</span></h2>
+<div class="panel">
+  <table>
+    <thead><tr><th>원본 파일</th><th>자산 해시</th><th>단위</th><th>읽은 치수 [mm]</th></tr></thead>
+    <tbody>
+      {% if ex.get('assets') %}
+      {% for asset in ex['assets'] %}
+      <tr>
+        <td>{{ asset.get('display_name')|orunknown }}</td>
+        <td><code>{{ asset.get('content_hash')|orunknown }}</code></td>
+        <td>{{ (asset.get('units') or {}).get('declared')|orunknown }}
+            {% if (asset.get('units') or {}).get('confirmed') %}(확인됨){% endif %}</td>
+        <td>{{ asset.get('dimensions_mm')|orunknown }}</td>
+      </tr>
+      {% endfor %}
+      {% elif geometry.get('step_path') %}
+      <tr>
+        <td>{{ geometry.get('step_path') }}</td>
+        <td class="unknown">정보 없음</td>
+        <td>{{ unit_system }}</td>
+        <td class="unknown">정보 없음</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4">파라메트릭 형상 — 업로드 파일 없음</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+<div class="panel grid">
+  <div class="kv">
+    {% for key, value in geometry.items() %}
+    {% if value is not mapping and value is not none %}
+    <div><span>{{ key }}</span><span>{{ value }}</span></div>
+    {% endif %}
+    {% endfor %}
+  </div>
+  {% if geometry.get('box') %}
+  <div class="kv">
+    {% for key, value in geometry['box'].items() %}
+    {% if value is not mapping %}
+    <div><span>box.{{ key }}</span><span>{{ value }}</span></div>
+    {% endif %}
+    {% endfor %}
+    {% if geometry['box'].get('vent') %}
+    {% for key, value in geometry['box']['vent'].items() %}
+    <div><span>vent.{{ key }}</span><span>{{ value }}</span></div>
+    {% endfor %}
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+
+<h2>4. 재료 <span class="en">material</span></h2>
+<div class="panel grid">
+  <div class="kv">
+    <div><span>카드 ID</span><span>{{ material.get('key')|orunknown }}</span></div>
+    <div><span>이름</span><span>{{ material.get('name')|orunknown }}</span></div>
+    <div><span>검증 상태</span>
+      <span>
+        {% if material.get('is_verified') %}
+        <span class="badge pass">검증됨</span>
+        {% else %}
+        <span class="badge fail">미검증</span>
+        {% endif %}
+      </span>
+    </div>
+    <div><span>검증 방식</span><span>{{ material.get('verification')|orunknown }}</span></div>
+    <div><span>출처</span><span>{{ material.get('source')|orunknown }}</span></div>
+    <div><span>단위계</span><span>{{ material.get('unit_system')|orunknown }}</span></div>
+  </div>
+  <div class="kv">
+    <div><span>E [MPa]</span><span>{{ material.get('E')|orunknown }}</span></div>
+    <div><span>nu</span><span>{{ material.get('nu')|orunknown }}</span></div>
+    <div><span>rho [t/mm³]</span><span>{{ material.get('rho')|orunknown }}</span></div>
+    <div><span>sigma_y [MPa]</span><span>{{ material.get('sigma_y')|orunknown }}</span></div>
+    <div><span>uts [MPa]</span><span>{{ material.get('uts')|orunknown }}</span></div>
+    <div><span>K [MPa]</span><span>{{ material.get('K')|orunknown }}</span></div>
+    <div><span>n</span><span>{{ material.get('n')|orunknown }}</span></div>
+  </div>
+</div>
+
+<h2>5. 메쉬·수치 조건 <span class="en">mesh and numerical settings</span></h2>
+<div class="panel grid">
+  <div class="kv">
+    <div><span>메쉬 프리셋</span><span>{{ ex.get('preset_id') or res.get('preset_id')|orunknown }}</span></div>
+    <div><span>목표 요소 크기 [mm]</span><span>{{ case.get('target_mesh_size_mm')|orunknown }}</span></div>
+    <div><span>솔버 버전 태그</span><span>{{ (solver or {}).get('solver_version_tag')|orunknown }}</span></div>
+    <div><span>스레드</span><span>{{ (res.get('timing') or {}).get('threads')|orunknown }}</span></div>
+    <div><span>종료 시각 [s]</span><span>{{ (deck or {}).get('end_time_s')|orunknown }}</span></div>
+    <div><span>정책 버전</span><span>{{ res.get('policy_version')|orunknown }}</span></div>
+  </div>
+  <div class="kv">
+    <div><span>준비 (형상·메쉬·덱) [s]</span><span>{{ stage_timings.get('prep_s')|orunknown }}</span></div>
+    <div><span>솔버 [s]</span><span>{{ stage_timings.get('solver_s')|orunknown }}</span></div>
+    <div><span>후처리 [s]</span><span>{{ stage_timings.get('post_s')|orunknown }}</span></div>
+    <div><span>총 실행 [s]</span><span>{{ stage_timings.get('total_s')|orunknown }}</span></div>
+    <div><span>대기 [s]</span><span>{{ stage_timings.get('queue_s')|orunknown }}</span></div>
+    <div><span>예상 시간 [분]</span><span>{{ stage_timings.get('estimate_min')|orunknown }}</span></div>
+    <div><span>실측 [분]</span><span>{{ stage_timings.get('actual_min')|orunknown }}</span></div>
+  </div>
+</div>
+{% if stage_timings.get('estimate_basis') %}
+<div class="panel sub">예상 근거: {{ stage_timings['estimate_basis'] }}</div>
+{% endif %}
+
 {% if meshes %}
-<h2>Mesh statistics</h2>
 <div class="panel">
   <table>
     <thead>
       <tr>
-        <th>Part</th><th class="num">Nodes</th><th class="num">Elements</th>
-        <th class="num">Quads</th><th class="num">Tris</th><th class="num">Tri fraction</th>
-        <th class="num">Free edges</th><th class="num">Non-manifold</th>
+        <th>파트</th><th class="num">절점</th><th class="num">요소</th>
+        <th class="num">쿼드</th><th class="num">삼각형</th><th class="num">삼각형 비율</th>
+        <th class="num">자유 모서리</th><th class="num">비다양체 모서리</th>
       </tr>
     </thead>
     <tbody>
@@ -136,7 +319,7 @@
 </div>
 {% endif %}
 
-<h2>Quality gates</h2>
+<h2>6. 진단·게이트 <span class="en">diagnostics and gates</span></h2>
 {% if gates %}
 {% for gate in gates %}
 <div class="panel">
@@ -150,7 +333,7 @@
   </div>
   <table>
     <thead>
-      <tr><th>Metric</th><th class="num">Value</th><th>Limit</th><th>Verdict</th></tr>
+      <tr><th>지표</th><th class="num">값</th><th>한계</th><th>판정</th></tr>
     </thead>
     <tbody>
       {% for metric in gate.metrics %}
@@ -175,33 +358,28 @@
 </div>
 {% endfor %}
 {% else %}
-<div class="panel sub">No gate results recorded for this run.</div>
+<div class="panel sub">이 실행에는 기록된 게이트 결과가 없습니다.</div>
 {% endif %}
 
-{% if metrics %}
-<h2>Load-displacement results</h2>
-<div class="panel grid">
-  <div class="kv">
-    {% for key, value in metrics.items() %}
-    <div><span>{{ key }}</span>
-      <span>{% if value is number %}{{ '%.6g'|format(value) }}{% else %}{{ value }}{% endif %}</span>
-    </div>
-    {% endfor %}
-  </div>
-</div>
-{% endif %}
-
-{% if artifacts.get('curve_png') %}
-<div class="panel">
-  <img class="curve" src="{{ artifacts['curve_png'] }}" alt="Force-displacement curve">
-</div>
-{% endif %}
-
-{% if energy %}
-<h2>Energy balance</h2>
 <div class="panel">
   <table>
-    <thead><tr><th>Quantity</th><th class="num">Value</th></tr></thead>
+    <thead><tr><th>진단 코드</th><th>등급</th><th>내용</th></tr></thead>
+    <tbody>
+      {% if validation.get('diagnostics') %}
+      {% for d in validation['diagnostics'] %}
+      <tr><td><code>{{ d.get('code') }}</code></td><td>{{ d.get('severity') }}</td><td>{{ d.get('message') }}</td></tr>
+      {% endfor %}
+      {% else %}
+      <tr><td colspan="3" class="unknown">결과 계약의 진단 없음</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
+{% if energy %}
+<div class="panel">
+  <table>
+    <thead><tr><th>에너지 항목</th><th class="num">값</th></tr></thead>
     <tbody>
       {% for key, value in energy.items() %}
       {% if key != 'gate' %}
@@ -218,32 +396,86 @@
 </div>
 {% endif %}
 
-{% if deck or solver %}
-<h2>Deck and solver</h2>
+<h2>7. 검증 범위 <span class="en">validation scope</span></h2>
+<div class="panel">
+  <p>
+    검증 근거:
+    <span class="badge {{ 'pass' if validation.get('scope_status') == 'verified'
+                          else ('fail' if validation.get('scope_status') == 'out_of_scope' else 'warn') }}">
+      {{ scope_labels.get(validation.get('scope_status'), '정보 없음') }}
+    </span>
+  </p>
+  <table>
+    <thead><tr><th>근거</th><th>내용</th></tr></thead>
+    <tbody>
+      {% if validation.get('references') %}
+      {% for ref in validation['references'] %}
+      <tr><td>{{ ref.get('id') }}</td><td>{{ ref.get('title') }} — {{ ref.get('detail') or ref.get('path') }}</td></tr>
+      {% endfor %}
+      {% else %}
+      <tr><td colspan="2" class="unknown">정보 없음</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+  <div class="note">
+    메쉬 수렴 근거와 실측 시험 검증은 다른 근거입니다. 위 근거에 실물 시험이 없으면
+    이 결과는 경향 비교용이며, 모든 조건에서 ±10 %를 보장하지 않습니다.
+  </div>
+</div>
+
+<h2>8. 지표·곡선 <span class="en">metrics and curves</span></h2>
+<div class="panel">
+  <table>
+    <thead>
+      <tr><th>지표</th><th>정의</th><th>단위</th><th class="num">원값</th><th class="num">표시값</th></tr>
+    </thead>
+    <tbody>
+      {% if res.get('metrics') %}
+      {% for m in res['metrics'] %}
+      <tr>
+        <td>{{ m.get('label') }}<br><span class="sub">{{ m.get('key') }}</span></td>
+        <td><code>{{ m.get('definition_id') }}</code>
+            {% if m.get('criterion') %}<br><span class="sub">{{ m['criterion'] }}</span>{% endif %}</td>
+        <td>{{ m.get('unit') }}</td>
+        <td class="num">
+          {% if m.get('kind') == 'curve' %}{{ (m.get('points') or [])|length }} 점
+          {% elif m.get('value') is none %}<span class="unknown">{{ m.get('unavailable_reason') or '정보 없음' }}</span>
+          {% else %}{{ m['value'] }}{% endif %}
+        </td>
+        <td class="num">
+          {% if m.get('kind') != 'curve' and m.get('value') is not none %}{{ m['value']|sig }}{% else %}-{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      {% else %}
+      <tr><td colspan="5" class="unknown">결과 지표 정보 없음</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
+{% if metrics %}
 <div class="panel grid">
-  {% if deck %}
   <div class="kv">
-    {% for key, value in deck.items() %}
-    {% if value is not mapping and value is not sequence or value is string or value is number %}
-    <div><span>{{ key }}</span><span>{{ value }}</span></div>
+    {% for key, value in metrics.items() %}
+    {% if key != 'points' %}
+    <div><span>{{ key }}</span>
+      <span>{% if value is number %}{{ '%.6g'|format(value) }}{% else %}{{ value }}{% endif %}</span>
+    </div>
     {% endif %}
     {% endfor %}
   </div>
-  {% endif %}
-  {% if solver %}
-  <div class="kv">
-    {% for key, value in solver.items() %}
-    {% if value is not mapping and value is not sequence or value is string or value is number %}
-    <div><span>{{ key }}</span><span>{{ value }}</span></div>
-    {% endif %}
-    {% endfor %}
-  </div>
-  {% endif %}
 </div>
 {% endif %}
 
+{% if artifacts.get('curve_png') %}
+<div class="panel">
+  <img class="curve" src="{{ artifacts['curve_png'] }}" alt="하중-변위 곡선">
+</div>
+{% endif %}
+
+<h2>9. 산출물 <span class="en">artefacts and reproduction</span></h2>
 {% if artifacts %}
-<h2>Artefacts</h2>
 <div class="panel">
   <ul class="links">
     {% for name, href in artifacts.items() %}
@@ -251,18 +483,28 @@
     {% endfor %}
   </ul>
 </div>
+{% else %}
+<div class="panel sub">기록된 산출물 없음</div>
 {% endif %}
+<div class="panel kv">
+  <div><span>실행 ID</span><span><code>{{ ex.get('exec_id') or res.get('execution_id')|orunknown }}</code></span></div>
+  <div><span>입력 스냅샷 해시</span><span><code>{{ ex.get('input_hash') or res.get('snapshot_hash')|orunknown }}</code></span></div>
+  <div><span>그래프 개정</span><span>{{ ex.get('graph_revision') or res.get('graph_revision')|orunknown }}</span></div>
+  <div><span>실행 시각</span><span>{{ res.get('executed_at')|orunknown }}</span></div>
+  <div><span>완료 단계</span><span>{{ stages_completed|join(' → ')|orunknown }}</span></div>
+  <div><span>런 이름</span><span>{{ (deck or {}).get('run_name')|orunknown }}</span></div>
+</div>
 
 {% if notices %}
-<h2>Notices</h2>
+<h2>참고 <span class="en">notices</span></h2>
 {% for notice in notices %}
 <div class="note">{{ notice }}</div>
 {% endfor %}
 {% endif %}
 
 <footer>
-  Crush-Sim automated report. Results are for trend analysis until calibrated
-  against physical can tests (spec §8). Units: {{ unit_system }}.
+  Crush-Sim 자동 리포트. 실물 캔 시험으로 보정하기 전까지 결과는 경향 분석용입니다 (spec §8).
+  단위계: {{ unit_system }}.
 </footer>
 
 </div>
