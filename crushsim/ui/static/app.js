@@ -2815,6 +2815,9 @@ const AssetImport = {
   },
 
   async adopt(asset) {
+    // STEP만 넣고 끝내면 형상 노드 하나뿐인 그래프가 남아 다음 단계로 갈 수
+    // 없다. 뼈대(메쉬·재료·하중·솔버·결과)를 먼저 세우고 형상만 STEP으로 바꾼다.
+    if (!App.graph.solver()) Guided.startParametric("parametric_can");
     Guided.attachAsset(asset);
     UI.hideStart();
     App.step = 1;
@@ -2836,6 +2839,36 @@ const AssetImport = {
     } catch (error) { /* 자산이 사라졌어도 그래프는 열린다 */ }
   }
 };
+
+/* ------------------------------------------------- 좁은 화면의 결과 목록 */
+
+/** 768 px 아래에서는 제출을 지원하지 않는다. 그래도 완료된 해석의 결과·뷰어·
+    리포트는 열 수 있어야 한다(§3.2: 모바일에서 결과 열람은 필수). */
+async function renderMobileRuns() {
+  const host = $("mobileRuns");
+  if (!host) return;
+  try {
+    const body = await Api.get("/api/executions");
+    const done = (body.items || []).filter((r) => r.state === "completed");
+    clear(host);
+    if (!done.length) {
+      host.appendChild(el("p", { class: "muted", text: "완료된 해석이 아직 없습니다." }));
+      return;
+    }
+    for (const run of done) {
+      const artifacts = run.artifacts || {};
+      host.appendChild(el("div", { class: "run-row" }, [
+        el("div", { class: "rname", text: run.case_name || run.exec_id }),
+        el("div", { class: "ractions" }, [
+          artifacts.viewer ? el("a", { class: "btn small", href: artifacts.viewer, text: "3D 뷰어" }) : null,
+          artifacts.report ? el("a", { class: "btn small", href: artifacts.report, text: "리포트" }) : null
+        ])
+      ]));
+    }
+  } catch (error) {
+    clear(host).appendChild(el("p", { class: "muted", text: "결과 목록을 읽지 못했습니다." }));
+  }
+}
 
 /* --------------------------------------------------------------- 분할선 */
 
@@ -2959,6 +2992,7 @@ async function boot() {
   } catch (error) {
     UI.toastError("서버 기능 목록을 읽지 못했습니다. 화면을 새로 고쳐 보세요.");
   }
+  renderMobileRuns();
   UI.renderAll();
   RunStore.start();
   const paint = performance.now() - t0;

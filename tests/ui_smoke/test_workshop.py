@@ -177,6 +177,11 @@ def test_u02_step_import_shows_units_and_parts(page, server) -> None:
     assert "외형 치수" in card
     assert "솔리드" in card
     assert "cylin_can.stp" in card
+    # 가져오기만 하고 끝나지 않는다: 다음 단계로 갈 수 있는 그래프가 함께 선다.
+    assert page.evaluate("() => !!App.graph.solver()")
+    assert page.evaluate("() => Object.values(App.graph.meta.asset_refs).length") == 1
+    # 서버 경로는 기본 UI에서 만들지 않는다(고급 가져오기 전용).
+    assert page.evaluate("() => App.graph.geometryNode().params.step_path") in (None, "")
     _shot(page, "02_step_import.png")
 
 
@@ -210,6 +215,14 @@ def test_u07_click_path_from_dimensions_to_queued_execution(page, server) -> Non
     _shot(page, "04_running.png")
     listed = app.state.executions.list()["items"]
     assert listed, "실행이 큐에 등록되지 않았습니다"
+
+    # U22: 탭을 다시 열어도 exec_id로 상태가 복원된다.
+    exec_id = listed[0]["exec_id"]
+    page.reload()
+    page.wait_for_function("() => window.__firstPaintMs !== undefined", timeout=20000)
+    page.click("#btnRunPanel")
+    page.wait_for_selector(".run-row", timeout=20_000)
+    assert exec_id in page.inner_text("#runPanel")
 
 
 # ---------------------------------------------------------------- U12
