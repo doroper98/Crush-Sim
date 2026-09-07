@@ -28,3 +28,6 @@ Thumbs.db
 # Scratch
 *.tmp
 t.png
+
+# Claude Code agent worktrees (local only)
+.claude/worktrees/
