@@ -313,3 +313,98 @@ fine 대비 +5.7/+5.3 %). writer가 명시 end_time에서 램프 테이블은 �
 
 **게이트 메모**: 프리셋의 에너지 오차 6.7 %는 5 % 밖(요소 삭제). 정지가 아니라
 "경향 참고" 등급으로 둘지는 `analysis_005.md` §4·§6.
+
+## 13. UI WP1 백엔드 — 스레드에서 gmsh, 덮어쓰는 프리셋, 뒤집힌 순서 (2026-09-07)
+
+`docs/UI_002.md` §3 WP1(백엔드 P0)을 구현하며 부딪힌 것들. 솔버는 한 번도 돌리지
+않았다(큐는 `/bin/sh -c sleep`으로 시험한다).
+
+**1. gmsh는 워커 스레드에서 초기화되지 않는다.** 업로드한 STEP의 미리보기 메쉬를
+자산 검사 스레드에서 만들려 했더니 `mesh_step_surfaces`가
+`ValueError: signal only works in main thread of the main interpreter`로 죽었다.
+원인은 `gmsh.initialize()`가 SIGINT 핸들러를 설치하는 것
+(`gmsh.py`: `interruptible=True`이면 `signal.signal(...)`). `gmsh_session`은
+`crushsim/meshing/mesher.py`에 있고 WP1 범위 밖이라 `interruptible=False`를
+넘기도록 고칠 수 없었다. → 미리보기만 **자식 프로세스**로 분리했다
+(`python -m crushsim.ui.assets <asset dir>`; `crushsim/ui/assets.py`
+`build_preview`). 파이프라인이 VTK 렌더를 서브프로세스로 돌리는 것과 같은 이유가
+하나 더 붙는다: 네이티브 크래시가 서버를 죽이지 않는다.
+**OCP(`inspect_step`, `extract_shell_skins`)는 스레드에서 잘 돈다** — 문제는 gmsh뿐.
+
+**2. 프리셋이 사용자 값을 덮으면 스윕이 사라진다.** "purpose가 vent_burst면
+`mesh.vent_size`와 `solver.end_time`을 프리셋 값으로 설정"을 문자 그대로 구현했더니
+`configs/graphs/vent_burst_study.json`의 0.3 mm(fine) 가지가 프리셋의 0.5 mm로 덮여
+두 케이스가 완전히 같아졌다(`changed_vs_first`가 빈 딕셔너리로 나와서 발견). 프리셋은
+**비어 있는 값만 채우는 기본값**으로 바꿨고, 사용자 값이 이긴 항목은
+`preset_overridden`으로 돌려준다. 이때는 실측 표본(14.4분)이 그 모델을 설명하지
+않으므로 추정을 `available:false`로 내린다 — 안 그러면 측정한 적 없는 구성에
+실측 시간을 붙여 광고하게 된다(§12에서 한 번 당한 실수의 재발 경로다).
+
+**3. idempotency는 "같은 응답"이지 "같은 집합"이 아니다.** 같은 키로 두 번 제출하면
+같은 실행을 돌려주도록 `runs/_ui/executions/*/state.json`을 훑었는데, 디렉터리
+글롭이 알파벳순이라 medium/fine 제출이 fine/medium 순으로 돌아왔다. `state.json`에
+`batch_index`를 저장해 제출 순서로 정렬한다.
+
+**4. 테스트 fixture는 진짜 재료 카드를 복사해야 한다.** 지어낸 카드로는
+`MATERIAL_NOT_VALIDATED`도 결과의 "재료 모델이 검증되지 않아…" caveat도 검증되지
+않는다(둘 다 카드의 `verified` 비트에서 나온다). `tests/test_ui.py`의 `ui_root`가
+`configs/materials`를 통째로 복사한다.
+
+**5. 레거시 `POST /api/runs/{case_file}`의 `output.dir`는 바꾸지 않는다.** 새 실행은
+`runs/<exec_id>`에 쓰지만, 옛 경로로 시작한 런까지 exec_id 디렉터리로 옮기면 기존
+화면의 결과 행(케이스 이름으로 런을 찾는다)이 전부 빈다. 스냅샷만 뜨고 출력 위치는
+케이스에 적힌 그대로 둔다.
+
+**6. `Path.write_text`는 워커 스레드와 요청 핸들러 사이에서 빈 파일을 보여준다.**
+전체 스위트를 돌리면 `test_execution_snapshot_is_frozen_and_written`이 가끔
+`JSONDecodeError: Expecting value: line 1 column 1`로 죽었다(6회 중 1~2회).
+`write_text`가 먼저 truncate하기 때문에 워커가 `state.json`을 다시 쓰는 순간
+읽으면 0바이트다. `crushsim/ui/storage.py`(임시 파일 + `os.replace`)로 바꿔
+state/snapshot/inspect/preview/preflight를 전부 원자적으로 쓴다. 8회 연속 통과.
+
+### §13 이어서 — 코드 리뷰가 잡은 것들 (WP1 2차, 2026-09-07)
+
+리뷰가 잡아낸 결함 10개 중 다음 다섯은 "다음 사람이 모르면 같은 방식으로 다시
+짤" 종류다.
+
+**7. 런 디렉터리에 남은 이전 요약이 실행을 '완료'로 만든다.** 같은 케이스를 다시
+돌리면 `runs/<id>/pipeline_summary.json`이 이미 있다. 죽은 실행을 복원할 때 그
+파일의 존재만 보고 `completed`로 판정했고, 결과 화면은 **이전 런의 숫자**를
+새 실행 id로 보여줬다. 두 겹으로 고쳤다: (a) 실행 시작 시 그 디렉터리의
+`pipeline_summary.json`·`ui_curves.json`을 지우고, (b) 요약 파일의 mtime이
+`timestamps.started`보다 이전이면 이 실행의 산출물로 인정하지 않는다
+(`_own_summary`). artifacts 링크와 `results.build`도 같은 판정을 쓴다.
+
+**8. 취소는 큐에서 꺼낸 순간부터 Popen까지의 창에서 사라진다.** 워커가
+`_pending.pop()` 한 뒤 아직 `_processes`에 등록하기 전에 취소가 오면, 취소는
+"대기도 실행도 아님"으로 처리돼 상태만 `cancelled`가 되고 워커가 곧바로
+`running`으로 덮어썼다 — **솔버는 계속 돌았다**. 꺼낸 즉시 `_starting`에
+등록하고, 워커는 Popen 직전과 직후에 취소 플래그를 다시 확인한다(직전이면 아예
+띄우지 않고, 직후면 바로 죽인다). 취소 요청은 5초를 기다리지 않는다 — 강제
+종료 승격은 데몬 스레드가 맡는다(요청은 즉시 `cancelling`으로 답해야 한다).
+
+**9. 캐시에 무효화 키가 없으면 재실행이 옛 곡선을 그린다.** `ui_curves.json`을
+"있으면 쓴다"로 읽었더니 같은 디렉터리에 다시 돌린 런이 이전 곡선을 새 지표
+옆에 붙였다. 요약 파일의 mtime+size를 키로 저장하고 다르면 다시 만든다.
+
+**10. 목록이 로그를 두 번씩 읽는다.** `list()`가 모든 실행에 대해 `status()`를
+부르고, `status()`는 `progress()`와 `log_tail()`에서 같은 로그를 두 번 읽었다.
+5초 폴링이 런 이력에 비례해 무거워진다. 종료된 실행은 끝날 때 로그를 **한 번**
+파싱해 `final_progress`/`final_log_tail`로 state.json에 저장하고, 이후에는
+로그를 아예 열지 않는다. `list(states=…)`로 살아 있는 실행만 고르게 했다.
+
+**11. 예상 못한 예외는 계약 밖으로 샌다.** `Exception` 핸들러가 없어서
+Starlette의 text/plain 500이 그대로 나갔다 — 브라우저가 읽을 수 있는 것은
+`{code,message,severity,…}` 하나뿐인데. `INTERNAL`로 매핑하는 핸들러를 추가했다.
+테스트는 `TestClient(raise_server_exceptions=False)`가 필요하다(기본값은 예외를
+다시 던져서 응답을 볼 수 없다).
+
+**12. CI(윈도우·OCP 없음)에서 깨진 것들.** (a) `os.killpg`/`start_new_session`은
+Windows에 없다 → `CREATE_NEW_PROCESS_GROUP` + `terminate()`로 분기. (b) 테스트의
+가짜 명령 `/bin/sh -c sleep`은 Windows에서 즉시 실패해 취소 테스트가 `failed`로
+끝났다 → `sys.executable -c "time.sleep(60)"`. (c) `output.dir`은 항상 POSIX
+문자열로 쓰고, 테스트는 `Path`로 비교한다(`runs\x` != `runs/x`). (d)
+`tests/test_assembly.py`·`tests/test_skin.py`는 모듈 상단에
+`pytest.importorskip("OCP")`가 없어 CI에서 12 failed + 13 errors였다 — `cad`
+extra는 CI에 설치되지 않는다.
+
