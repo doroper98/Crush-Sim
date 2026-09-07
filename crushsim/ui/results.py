@@ -178,19 +178,37 @@ def _load_curve_csv(path: Path) -> list[list[float]]:
     return points
 
 
-def _curves(run_dir: Path, summary: dict[str, Any]) -> dict[str, list[list[float]]]:
+def _cache_key(summary_path: Path) -> dict[str, Any]:
+    """What the cached curves were built from: this summary, this version."""
+    try:
+        stat = summary_path.stat()
+    except OSError:
+        return {"mtime": None, "size": None}
+    return {"mtime": round(stat.st_mtime, 3), "size": stat.st_size}
+
+
+def _curves(
+    run_dir: Path, summary: dict[str, Any], summary_path: Path
+) -> dict[str, list[list[float]]]:
     """Pressure and open-area curves, read from the deck/listing (cached).
 
     Parsing a multi-megabyte starter on every poll is what the pipeline cache
-    exists to avoid, so the parsed curves are written next to the run once.
+    exists to avoid, so the parsed curves are written next to the run once -
+    keyed on the summary's mtime and size. A re-run into the same directory
+    writes a new summary, which invalidates the cache; without that key the
+    result served the *previous* run's curves next to the new run's numbers.
     """
     cache = run_dir / "ui_curves.json"
+    key = _cache_key(summary_path)
+    empty: dict[str, list[list[float]]] = {"pressure_time_curve": [], "vent_open_area_curve": []}
     if cache.is_file():
         try:
-            return json.loads(cache.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
+            cached = json.loads(cache.read_text(encoding="utf-8"))
+            if isinstance(cached, dict) and cached.get("summary") == key:
+                return {**empty, **(cached.get("curves") or {})}
+        except (json.JSONDecodeError, OSError):
             pass
-    out: dict[str, list[list[float]]] = {"pressure_time_curve": [], "vent_open_area_curve": []}
+    out: dict[str, list[list[float]]] = dict(empty)
     try:
         from .viewergen import _pressure_curve  # noqa: PLC0415 - pulls numpy/pyvista
 
@@ -211,7 +229,7 @@ def _curves(run_dir: Path, summary: dict[str, Any]) -> dict[str, list[list[float
             ]
     if out["pressure_time_curve"] or out["vent_open_area_curve"]:
         try:
-            write_json_atomic(cache, out, indent=None)
+            write_json_atomic(cache, {"summary": key, "curves": out}, indent=None)
         except OSError:
             pass
     return out
@@ -427,7 +445,9 @@ def validation_block(
     }
 
 
-def _metrics_for(run_dir: Path, summary: dict[str, Any] | None) -> list[dict[str, Any]]:
+def _metrics_for(
+    run_dir: Path, summary: dict[str, Any] | None, summary_path: Path
+) -> list[dict[str, Any]]:
     """The metrics this run actually produced, in display order."""
     if summary is None:
         return []
@@ -465,7 +485,7 @@ def _metrics_for(run_dir: Path, summary: dict[str, Any] | None) -> list[dict[str
         out.append(
             _metric("absorbed_energy_J", float(post_metrics["absorbed_energy_mJ"]) / 1000.0)
         )
-    curves = _curves(run_dir, summary)
+    curves = _curves(run_dir, summary, summary_path)
     if is_vent:
         out.append(
             _metric("pressure_time_curve", None, points=curves["pressure_time_curve"])
@@ -517,15 +537,21 @@ def build(base: Path, exec_id: str, manager: Any) -> dict[str, Any]:
     snapshot = manager.read_snapshot(exec_id)
     status = manager.status(exec_id)
     run_dir = Path(base) / state.get("run_dir", f"runs/{exec_id}")
-    summary_path = run_dir / "pipeline_summary.json"
+    # Only the summary THIS execution wrote counts: a run directory can still
+    # hold the previous run's file, and reporting its numbers under a new
+    # execution id is the worst kind of wrong answer.
+    own_summary = getattr(manager, "summary_path", None)
+    summary_path = own_summary(exec_id) if own_summary else run_dir / "pipeline_summary.json"
     summary: dict[str, Any] | None = None
-    if summary_path.is_file():
+    if summary_path is not None and summary_path.is_file():
         try:
             summary = json.loads(summary_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             summary = None
+    else:
+        summary_path = run_dir / "pipeline_summary.json"
 
-    metrics = _metrics_for(run_dir, summary)
+    metrics = _metrics_for(run_dir, summary, summary_path)
     execution_seconds = (status.get("timing") or {}).get("execution_seconds")
     validation = validation_block(
         Path(base),

@@ -14,14 +14,19 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from crushsim.errors import GeometryError
-from crushsim.geometry.skin import (
+# Shell idealisation reads STEP solids through OCP (the optional `cad` extra).
+# CI does not install it, so the module skips instead of erroring out with
+# OptionalDependencyError (same pattern as tests/test_meshing.py).
+pytest.importorskip("OCP")
+
+from crushsim.errors import GeometryError  # noqa: E402
+from crushsim.geometry.skin import (  # noqa: E402
     HOLLOW_AREA_SHARE_MAX,
     extract_shell_skins,
     offset_to_mid_surface,
     shell_mass_error,
 )
-from crushsim.meshing.mesh_data import ShellMesh
+from crushsim.meshing.mesh_data import ShellMesh  # noqa: E402
 
 HONDA = Path("examples/step/Honda_Can.stp")
 ASSEMBLY = Path("can/test.stp")

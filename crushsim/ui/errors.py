@@ -242,6 +242,14 @@ def install_error_handlers(app: FastAPI) -> None:
         )
         return JSONResponse(status_code=422, content=wrapped.body())
 
+    @app.exception_handler(Exception)
+    async def _unexpected(_request: Any, exc: Exception) -> JSONResponse:  # noqa: RUF029
+        # Without this, an unexpected error escapes as Starlette's plain-text
+        # 500 and the browser gets no code, no severity and no Korean
+        # sentence - the one shape the front-end is built to read.
+        wrapped = UiError("INTERNAL", detail=f"{type(exc).__name__}: {exc}")
+        return JSONResponse(status_code=500, content=wrapped.body())
+
     @app.exception_handler(StarletteHTTPException)
     async def _http_error(_request: Any, exc: StarletteHTTPException) -> JSONResponse:  # noqa: RUF029
         # FastAPI's own 404/405 (and any legacy raise) still have to speak the

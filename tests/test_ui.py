@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -250,7 +252,10 @@ def test_prebuilt_graphs_compile_to_valid_cases(tmp_path) -> None:
             )
             loaded = load_case(target)
             assert loaded.name == case["name"], path.name
-            assert str(loaded.output.dir) == f"runs/{case['name']}", path.name
+            # Compared as a Path: the yaml carries POSIX separators, and
+            # load_case turns them into the platform's own (this assertion
+            # failed on the windows-latest CI leg as a string compare).
+            assert loaded.output.dir == Path("runs") / case["name"], path.name
             if (case["yaml"]["geometry"]).get("vent"):
                 assert loaded.geometry.closed_top is True, path.name
                 assert loaded.geometry.vent["pattern"] in ("perimeter", "petal_x")
@@ -429,14 +434,18 @@ def test_preflight_compiles_the_vent_study_graph(client: TestClient) -> None:
     assert body["policy_version"]
     assert body["input_hash"].startswith("sha256:")
     assert body["combinations"] == {"mesh": 2, "material": 1, "load": 1, "total": 2}
-    # Names come from the solver prefix + the branch tags, and the exec id
-    # carries the first six characters of the input hash (UI_002 §1.2).
-    short = body["input_hash"].split(":")[1][:6]
+    # Names come from the solver prefix + the branch tags; the exec id adds
+    # six characters derived from the input hash and the solver node (§1.2).
+    from crushsim.ui.preflight import exec_id_for
+
     assert [c["name"] for c in body["cases"]] == [
         "lc6_pris_vent_burst_v5_medium",
         "lc6_pris_vent_burst_v5_fine",
     ]
-    assert body["cases"][0]["exec_id"] == f"lc6_pris_vent_burst_v5_medium_{short}"
+    assert body["cases"][0]["exec_id"] == exec_id_for(
+        "lc6_pris_vent_burst_v5_medium", body["input_hash"], body["cases"][0]["solver_node_id"]
+    )
+    assert body["cases"][0]["exec_id"] != body["cases"][1]["exec_id"]
     # The 30-minute preset fills the end time the graph leaves open, but the
     # user's own 0.3 mm branch is never overwritten by the preset's 0.5 mm.
     assert body["cases"][0]["yaml"]["solver"]["end_time"] == 0.0018
@@ -554,6 +563,14 @@ def test_preflight_blocks_a_score_thicker_than_the_foil(client: TestClient) -> N
 # ---------------------------------------------------------------------------
 
 
+#: Fake pipeline commands. They go through sys.executable rather than
+#: /bin/sh so the queue tests run on Windows too (the CI matrix has a
+#: windows-latest leg, where /bin/sh does not exist and every cancel test
+#: reported "failed" instead of "cancelled").
+_SLEEP_LONG = [sys.executable, "-c", "import time; time.sleep(60)"]
+_EXIT_NOW = [sys.executable, "-c", "raise SystemExit(0)"]
+
+
 def _fake_queue(client: TestClient, command: list[str]) -> None:
     """Point the queue at a harmless command - no solver ever runs in tests."""
     client.app.state.executions.command_builder = lambda exec_id: command
@@ -571,7 +588,7 @@ def _wait_for(client: TestClient, exec_id: str, states: set[str], timeout: float
 
 
 def test_execution_rejects_a_stale_input_hash(client: TestClient) -> None:
-    _fake_queue(client, ["/bin/sh", "-c", "exit 0"])
+    _fake_queue(client, _EXIT_NOW)
     preflight = client.post("/api/preflights", json={"graph": _vent_graph()}).json()
     response = client.post(
         "/api/executions",
@@ -587,7 +604,7 @@ def test_execution_rejects_a_stale_input_hash(client: TestClient) -> None:
 
 
 def test_execution_is_idempotent_per_key(client: TestClient) -> None:
-    _fake_queue(client, ["/bin/sh", "-c", "sleep 5"])
+    _fake_queue(client, _SLEEP_LONG)
     preflight = client.post("/api/preflights", json={"graph": _vent_graph()}).json()
     payload = {
         "preflight_id": preflight["id"],
@@ -609,7 +626,7 @@ def test_execution_is_idempotent_per_key(client: TestClient) -> None:
 
 
 def test_execution_snapshot_is_frozen_and_written(client: TestClient, ui_root: Path) -> None:
-    _fake_queue(client, ["/bin/sh", "-c", "sleep 5"])
+    _fake_queue(client, _SLEEP_LONG)
     preflight = client.post("/api/preflights", json={"graph": _vent_graph()}).json()
     started = client.post(
         "/api/executions",
@@ -636,7 +653,7 @@ def test_execution_snapshot_is_frozen_and_written(client: TestClient, ui_root: P
 
 
 def test_cancel_moves_running_to_cancelling_then_cancelled(client: TestClient) -> None:
-    _fake_queue(client, ["/bin/sh", "-c", "sleep 30"])
+    _fake_queue(client, _SLEEP_LONG)
     preflight = client.post("/api/preflights", json={"graph": _vent_graph()}).json()
     started = client.post(
         "/api/executions",
@@ -761,10 +778,13 @@ def _finished_execution(
                 "input_hash": "sha256:abc123",
                 "state": "completed",
                 "returncode": 0,
+                # Well in the past: the summary written by the fixture must
+                # look NEWER than the start, which is how results.py tells
+                # this execution's output from a previous run's leftovers.
                 "timestamps": {
-                    "submitted": "2026-09-07T10:00:00+00:00",
-                    "started": "2026-09-07T10:00:00+00:00",
-                    "finished": "2026-09-07T10:14:24+00:00",
+                    "submitted": "2020-01-01T10:00:00+00:00",
+                    "started": "2020-01-01T10:00:00+00:00",
+                    "finished": "2020-01-01T10:14:24+00:00",
                 },
             }
         ),
@@ -872,14 +892,393 @@ def test_target_evaluation_uses_raw_values() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_graph_save_detects_a_revision_conflict(client: TestClient) -> None:
-    graph = {"nodes": [], "edges": [], "schema_version": 2, "revision": 4}
-    graph["nodes"] = [{"id": "n1", "type": "geometry", "x": 0, "y": 0, "params": {}}]
-    assert client.put("/api/graphs/draft.json", json=graph).json()["revision"] == 4
-    stale = dict(graph, base_revision=2, revision=3)
-    response = client.put("/api/graphs/draft.json", json=stale)
+def test_graph_save_detects_a_revision_conflict(client: TestClient, ui_root: Path) -> None:
+    graph: dict[str, Any] = {
+        "nodes": [{"id": "n1", "type": "geometry", "x": 0, "y": 0, "params": {}}],
+        "edges": [],
+        "schema_version": 2,
+        # The client's own revision is ignored: the counter is the server's,
+        # or a tab that re-saves what it loaded never advances it and the
+        # conflict below could never be detected (U41).
+        "revision": 41,
+    }
+    assert client.put("/api/graphs/draft.json", json=graph).json()["revision"] == 1
+    assert client.put("/api/graphs/draft.json", json=dict(graph, base_revision=1)).json()[
+        "revision"
+    ] == 2
+    stored = json.loads((ui_root / "configs" / "graphs" / "draft.json").read_text())
+    assert stored["revision"] == 2
+    response = client.put("/api/graphs/draft.json", json=dict(graph, base_revision=1))
     assert response.status_code == 409
     assert response.json()["code"] == "REVISION_CONFLICT"
-    # An up-to-date save still goes through and bumps the revision.
-    fresh = dict(graph, base_revision=4, revision=5)
-    assert client.put("/api/graphs/draft.json", json=fresh).json()["revision"] == 5
+    # An up-to-date save still goes through and bumps the revision again.
+    assert client.put("/api/graphs/draft.json", json=dict(graph, base_revision=2)).json()[
+        "revision"
+    ] == 3
+    # A non-integer base_revision is a 422 in the contract, not a 500.
+    bad = client.put("/api/graphs/draft.json", json=dict(graph, base_revision="soon"))
+    assert bad.status_code == 422
+    assert bad.json()["code"] == "INVALID_VALUE"
+    assert bad.json()["field_path"] == "base_revision"
+
+
+# ---------------------------------------------------------------------------
+# Review fixes: what the first pass got wrong
+# ---------------------------------------------------------------------------
+
+
+def test_a_previous_runs_summary_never_counts_as_this_execution(
+    client: TestClient, ui_root: Path
+) -> None:
+    """Review 1: a killed run must not inherit the last run's numbers."""
+    from crushsim.ui.executions import ExecutionManager
+
+    exec_dir = ui_root / "runs" / "_ui" / "executions" / "rerun_case"
+    exec_dir.mkdir(parents=True)
+    run_dir = ui_root / "runs" / "rerun_case"
+    run_dir.mkdir(parents=True)
+    # The previous run's output, on disk before this execution ever started.
+    (run_dir / "pipeline_summary.json").write_text(json.dumps(_VENT_SUMMARY), encoding="utf-8")
+    (exec_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "exec_id": "rerun_case",
+                "case_name": "rerun_case",
+                "case_file": "rerun_case.yaml",
+                "run_dir": "runs/rerun_case",
+                "state": "running",
+                # Started *after* the old summary was written.
+                "timestamps": {
+                    "submitted": "2099-01-01T00:00:00+00:00",
+                    "started": "2099-01-01T00:00:00+00:00",
+                    "finished": None,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    manager = ExecutionManager(ui_root)
+    status = manager.status("rerun_case")
+    assert status["state"] == "interrupted"  # not "completed" off a stale file
+    assert status["artifacts"]["summary"] is None
+    assert status["artifacts"]["viewer"] is None
+    assert manager.summary_path("rerun_case") is None
+    # And the result contract refuses to serve the old numbers.
+    result = client.get("/api/executions/rerun_case/result").json()
+    assert result["metrics"] == []
+    assert result["validation"]["model_validity"] == "unknown"
+
+
+def test_launch_clears_a_previous_runs_outputs(client: TestClient, ui_root: Path) -> None:
+    """Review 1: relaunching wipes the stale summary and curve cache."""
+    _fake_queue(client, _EXIT_NOW)
+    run_dir = ui_root / "runs" / "ui_case"
+    run_dir.mkdir(parents=True)
+    (run_dir / "pipeline_summary.json").write_text("{}", encoding="utf-8")
+    (run_dir / "ui_curves.json").write_text("{}", encoding="utf-8")
+    client.post("/api/runs/ui_case.yaml")
+    deadline = time.time() + 20
+    while time.time() < deadline and (run_dir / "pipeline_summary.json").is_file():
+        time.sleep(0.05)
+    assert not (run_dir / "pipeline_summary.json").exists()
+    assert not (run_dir / "ui_curves.json").exists()
+
+
+def test_cancel_between_queue_pop_and_launch_is_not_lost(ui_root: Path) -> None:
+    """Review 2: the race window between popping the queue and Popen."""
+    import threading
+
+    from crushsim.ui.executions import ExecutionManager
+
+    manager = ExecutionManager(ui_root)
+    gate = threading.Event()
+    entered = threading.Event()
+
+    def builder(exec_id: str) -> list[str]:
+        entered.set()
+        gate.wait(20)
+        return _SLEEP_LONG
+
+    manager.command_builder = builder
+    manager.submit(
+        [{"exec_id": "raced_run", "name": "raced", "yaml": {"name": "raced"}}],
+        input_hash="sha256:abc",
+        idempotency_key="race",
+    )
+    assert entered.wait(10)  # the worker is inside _run_one, before Popen
+    cancelling = manager.cancel("raced_run")
+    assert cancelling["state"] == "cancelling"
+    gate.set()
+    deadline = time.time() + 20
+    while time.time() < deadline and manager.read_state("raced_run")["state"] != "cancelled":
+        time.sleep(0.05)
+    # The launch that was already under way is killed at once - it never runs
+    # to completion behind the user's back (which is what used to happen: the
+    # worker's state='running' overwrote the cancel and the solver carried on).
+    assert manager.read_state("raced_run")["state"] == "cancelled"
+    assert manager._processes == {}  # noqa: SLF001 - the point of the test
+
+
+def test_cancel_before_the_launch_skips_the_process_entirely(ui_root: Path) -> None:
+    """Review 2: the other half of the window - cancelled before Popen."""
+    from crushsim.ui.executions import ExecutionManager
+
+    manager = ExecutionManager(ui_root)
+
+    def never(exec_id: str) -> list[str]:
+        raise AssertionError("a cancelled execution must not be launched")
+
+    manager.command_builder = never
+    exec_dir = ui_root / "runs" / "_ui" / "executions" / "prelaunch"
+    exec_dir.mkdir(parents=True)
+    (exec_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "exec_id": "prelaunch",
+                "case_name": "prelaunch",
+                "case_file": "prelaunch.yaml",
+                "run_dir": "runs/prelaunch",
+                "state": "queued",
+                "timestamps": {"submitted": "2020-01-01T00:00:00+00:00"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    manager._cancelling.add("prelaunch")  # noqa: SLF001 - the window under test
+    manager._run_one("prelaunch")  # noqa: SLF001
+    assert manager.read_state("prelaunch")["state"] == "cancelled"
+    assert manager.read_state("prelaunch")["timestamps"].get("started") is None
+
+
+def test_curve_cache_is_rebuilt_when_the_summary_changes(ui_root: Path) -> None:
+    """Review 3: a re-run must not be served the previous run's curves."""
+    from crushsim.ui.results import _cache_key, _curves
+
+    run_dir = ui_root / "runs" / "curve_case"
+    run_dir.mkdir(parents=True)
+    summary_path = run_dir / "pipeline_summary.json"
+    summary_path.write_text(json.dumps(_VENT_SUMMARY), encoding="utf-8")
+    cache = run_dir / "ui_curves.json"
+    stale = {"pressure_time_curve": [[0.0, 9.9]], "vent_open_area_curve": []}
+    cache.write_text(
+        json.dumps({"summary": _cache_key(summary_path), "curves": stale}), encoding="utf-8"
+    )
+    # Same summary -> the cache is used.
+    assert _curves(run_dir, _VENT_SUMMARY, summary_path)["pressure_time_curve"] == [[0.0, 9.9]]
+    # A new run writes a new summary -> the cache is invalid, not reused.
+    summary_path.write_text(json.dumps({**_VENT_SUMMARY, "case": "again"}), encoding="utf-8")
+    os.utime(summary_path, (time.time() + 10, time.time() + 10))
+    assert _curves(run_dir, _VENT_SUMMARY, summary_path)["pressure_time_curve"] == []
+
+
+def test_preflight_blocks_two_cases_with_the_same_name(client: TestClient) -> None:
+    """Review 4: colliding names would share one execution directory."""
+    graph = _vent_graph()
+    # Two mesh branches with the SAME tag compile to the same case name.
+    for node in graph["nodes"]:
+        if node["type"] == "mesh":
+            node["params"]["tag"] = "same"
+    body = client.post("/api/preflights", json={"graph": graph}).json()
+    assert body["runnable"] is False
+    duplicate = [c for c in body["checks"] if c["code"] == "DUPLICATE_CASE_NAME"]
+    assert duplicate and duplicate[0]["severity"] == "block"
+    assert "lc6_pris_vent_burst_v5_same" in duplicate[0]["message"]
+    # And the run is refused even if the client submits it anyway.
+    refused = client.post(
+        "/api/executions",
+        json={
+            "preflight_id": body["id"],
+            "input_hash": body["input_hash"],
+            "idempotency_key": "dup",
+        },
+    )
+    assert refused.status_code == 409
+    assert refused.json()["code"] == "PREFLIGHT_NOT_RUNNABLE"
+
+
+def test_preflight_forwards_a_failed_asset_error(client: TestClient, ui_root: Path) -> None:
+    """Review 6: a failed import is not "still importing"."""
+    asset_dir = ui_root / "runs" / "_ui" / "assets" / "dead1234beef"
+    asset_dir.mkdir(parents=True)
+    (asset_dir / "original.stp").write_text("nope", encoding="utf-8")
+    (asset_dir / "inspect.json").write_text(
+        json.dumps(
+            {
+                "id": "dead1234beef",
+                "display_name": "broken.stp",
+                "content_hash": "sha256:dead",
+                "status": "failed",
+                "error": {
+                    "code": "CAD_BACKEND_MISSING",
+                    "message": "이 서버에는 STEP 처리 기능(CAD 백엔드)이 설치되어 있지 않습니다.",
+                    "detail": "OCP is not installed",
+                },
+                "units": {"declared": "mm", "confirmed": False, "plausible": True},
+                "parts": [],
+                "diagnostics": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    graph = _vent_graph()
+    graph["asset_refs"] = {"n1": "dead1234beef"}
+    body = client.post("/api/preflights", json={"graph": graph}).json()
+    codes = {c["code"]: c for c in body["checks"]}
+    assert "ASSET_NOT_READY" not in codes
+    failed = codes["CAD_BACKEND_MISSING"]
+    assert failed["severity"] == "block"
+    assert failed["node_id"] == "n1"
+    assert "wait_and_retry" not in failed["actions"]
+    assert body["runnable"] is False
+
+
+def test_thickness_check_uses_only_the_case_own_asset(client: TestClient, ui_root: Path) -> None:
+    """Review 9: one chain's asset must not block the other chain's case."""
+    assets_root = ui_root / "runs" / "_ui" / "assets"
+    for asset_id, gauge in (("aaaa11112222", 0.38), ("bbbb33334444", 0.05)):
+        directory = assets_root / asset_id
+        directory.mkdir(parents=True)
+        (directory / "original.stp").write_text("ISO-10303-21;", encoding="utf-8")
+        (directory / "inspect.json").write_text(
+            json.dumps(
+                {
+                    "id": asset_id,
+                    "display_name": f"{asset_id}.stp",
+                    "content_hash": f"sha256:{asset_id}",
+                    "status": "ready",
+                    "units": {"declared": "mm", "confirmed": False, "plausible": True},
+                    "dimensions_mm": [120.0, 13.0, 65.0],
+                    "parts": [
+                        {
+                            "index": 1,
+                            "kind": "hollow",
+                            "volume_mm3": 100.0,
+                            "wall_thickness_mm": gauge,
+                            "uniformity": 0.9,
+                            "role_suggestion": "can",
+                        }
+                    ],
+                    "diagnostics": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+    # Two independent chains, each with its own geometry node and asset.
+    graph: dict[str, Any] = {
+        "schema_version": 2,
+        "purpose": None,
+        "asset_refs": {"gA": "aaaa11112222", "gB": "bbbb33334444"},
+        "nodes": [
+            {"id": "gA", "type": "geometry", "params": {"kind": "step", "thickness": 0.38}},
+            {"id": "gB", "type": "geometry", "params": {"kind": "step", "thickness": 0.05}},
+            {"id": "mA", "type": "mesh", "params": {"target_size": 1.5, "tag": "a"}},
+            {"id": "mB", "type": "mesh", "params": {"target_size": 1.5, "tag": "b"}},
+            {"id": "mat", "type": "material", "params": {"key": "aluminum_3003"}},
+            {"id": "ld", "type": "loading", "params": {"tool": "platen", "stroke": 10.0}},
+            {
+                "id": "sv",
+                "type": "solver",
+                "params": {"prefix": "twochain", "load_case": "LC-2", "threads": 4},
+            },
+        ],
+        "edges": [
+            {"from": "gA", "to": "mA", "port": "geom"},
+            {"from": "gB", "to": "mB", "port": "geom"},
+            {"from": "mA", "to": "sv", "port": "mesh"},
+            {"from": "mB", "to": "sv", "port": "mesh"},
+            {"from": "mat", "to": "sv", "port": "mat"},
+            {"from": "ld", "to": "sv", "port": "load"},
+        ],
+    }
+    body = client.post("/api/preflights", json={"graph": graph}).json()
+    # Both cases match their own asset's gauge, so nothing is flagged even
+    # though each case's thickness differs wildly from the other's asset.
+    assert [c["code"] for c in body["checks"] if c["code"] == "THICKNESS_MISMATCH"] == []
+    # Now break exactly one chain.
+    graph["nodes"][1]["params"]["thickness"] = 0.38  # gB's asset gauges 0.05
+    broken = client.post("/api/preflights", json={"graph": graph}).json()
+    mismatches = [c for c in broken["checks"] if c["code"] == "THICKNESS_MISMATCH"]
+    assert len(mismatches) == 1
+    assert mismatches[0]["node_id"] == "gB"
+
+
+def test_an_unexpected_error_still_speaks_the_contract(
+    ui_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review 8: no bare text/plain 500 escapes to the browser."""
+    from crushsim.ui import capabilities as caps_mod
+
+    def boom(_base: Path) -> dict[str, Any]:
+        raise RuntimeError("capability table exploded")
+
+    monkeypatch.setattr(caps_mod, "capabilities", boom)
+    client = TestClient(create_app(ui_root), raise_server_exceptions=False)
+    response = client.get("/api/capabilities")
+    assert response.status_code == 500
+    body = response.json()
+    assert body["code"] == "INTERNAL"
+    assert body["severity"] == "block"
+    assert "capability table exploded" in body["detail"]
+
+
+def test_list_filters_by_state_without_reading_finished_logs(
+    client: TestClient, ui_root: Path
+) -> None:
+    """Review 7: the live poll never walks the whole run history."""
+    _finished_execution(ui_root, "old_done", _VENT_SUMMARY, targets=[])
+    manager = client.app.state.executions
+    live = manager.list(states={"queued", "running", "cancelling"}, include_legacy=False)
+    assert live["items"] == []
+    everything = manager.list()
+    assert "old_done" in {i["exec_id"] for i in everything["items"]}
+
+
+def test_finished_status_reads_stored_progress_not_the_log(
+    client: TestClient, ui_root: Path
+) -> None:
+    """Review 7: a finished execution answers from state.json."""
+    _fake_queue(client, _EXIT_NOW)
+    client.post("/api/runs/ui_case.yaml")
+    manager = client.app.state.executions
+    deadline = time.time() + 20
+    while time.time() < deadline and manager.read_state("ui_case")["state"] not in (
+        "completed",
+        "failed",
+    ):
+        time.sleep(0.05)
+    state = manager.read_state("ui_case")
+    assert state["state"] in ("completed", "failed")
+    assert "final_progress" in state
+    manager.log_path("ui_case").unlink()  # the log is no longer needed
+    status = manager.status("ui_case")
+    assert status["state"] == state["state"]
+    assert status["timing"]["stage_seconds"] == state["final_progress"]["stage_seconds"]
+
+
+def test_compiled_case_names_satisfy_the_exec_id_grammar() -> None:
+    """Review (cosmetic): a runnable preflight must never 404 on submit."""
+    from crushsim.ui.executions import _EXEC_ID
+    from crushsim.ui.graphc import compile_graph
+
+    graph = json.loads(Path("configs/graphs/vent_burst_study.json").read_text(encoding="utf-8"))
+    for node in graph["nodes"]:
+        if node["type"] == "solver":
+            node["params"]["prefix"] = "-- 초안 (draft) --"
+    for case in compile_graph(graph)["cases"]:
+        assert _EXEC_ID.fullmatch(case["name"]), case["name"]
+
+
+def test_legacy_launch_records_a_real_digest(client: TestClient, ui_root: Path) -> None:
+    """Review (cosmetic): 'sha256:' must mean sha256, not a salted hash()."""
+    import hashlib
+
+    _fake_queue(client, _EXIT_NOW)
+    response = client.post("/api/runs/ui_case.yaml")
+    exec_id = response.json()["exec_id"]
+    state = json.loads(
+        (ui_root / "runs" / "_ui" / "executions" / exec_id / "state.json").read_text()
+    )
+    expected = hashlib.sha256(
+        (ui_root / "configs" / "cases" / "ui_case.yaml").read_text(encoding="utf-8").encode()
+    ).hexdigest()
+    assert state["input_hash"] == f"sha256:{expected}"

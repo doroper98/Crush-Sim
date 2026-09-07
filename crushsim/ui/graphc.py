@@ -30,6 +30,10 @@ from . import capabilities
 GRAPH_SCHEMA_VERSION = 2
 
 _NAME_SAFE = re.compile(r"[^A-Za-z0-9_\-]")
+#: ``executions._EXEC_ID`` demands an alphanumeric first character, so a
+#: prefix like "-draft" would compile into a runnable preflight and then 404
+#: on submit. The two grammars are aligned here.
+_NAME_LEAD = re.compile(r"^[^A-Za-z0-9]+")
 
 #: Geometry keys copied from the 캔 node onto ``geometry``.
 _GEOMETRY_KEYS = (
@@ -307,7 +311,8 @@ def _compile_one(
         return _error("GRAPH_INCOMPLETE", "벤트 노드는 캡 노드 뒤에 연결하세요", node_id=vent["id"])
 
     geo = _params(chain[0])
-    name = _NAME_SAFE.sub("_", str(sv.get("prefix") or "graph_case"))
+    name = _NAME_LEAD.sub("", _NAME_SAFE.sub("_", str(sv.get("prefix") or "graph_case")))
+    name = name or "graph_case"
     if combos > 1:
         parts = []
         if len(meshes) > 1:
@@ -374,6 +379,9 @@ def _compile_one(
         solver_out["animation_frames"] = sv["animation_frames"]
     case["solver"] = solver_out
     case["output"] = {
+        # Always POSIX: the case yaml is compared byte-for-byte across
+        # machines, and a Windows backslash made the shipped-graph test fail
+        # on the windows-latest CI leg.
         "dir": f"runs/{name}",
         "render": bool(sv.get("render")),
         "report": bool(sv.get("report")),
@@ -386,6 +394,8 @@ def _compile_one(
         "name": name,
         "yaml": case,
         "solver_node_id": solver["id"],
+        "geometry_node_id": chain[0]["id"],
+        "mesh_node_id": mesh["id"],
         "preset_id": preset["id"] if preset else None,
         "preset_applied": preset_result["applied"],
         "preset_overridden": preset_result["overridden"],

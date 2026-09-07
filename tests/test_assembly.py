@@ -13,8 +13,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from crushsim.errors import MeshingError
-from crushsim.meshing.assembly import mesh_step_assembly
+# Every test here reads a STEP file, which needs the optional `cad` extra
+# (OCP). CI does not install it, so without this the whole module errors out
+# with OptionalDependencyError instead of skipping (same pattern as
+# tests/test_meshing.py's per-test guards).
+pytest.importorskip("OCP")
+
+from crushsim.errors import MeshingError  # noqa: E402
+from crushsim.meshing.assembly import mesh_step_assembly  # noqa: E402
 
 ASSEMBLY = Path("can/test.stp")
 

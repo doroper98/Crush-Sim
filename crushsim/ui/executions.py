@@ -14,11 +14,14 @@ parallelism here is not a tuning knob, it is a defect.
 
 State restore after a server restart follows U25: a queued/running execution
 whose process is gone is ``interrupted`` unless the run directory actually
-holds a ``pipeline_summary.json``. A log file is never evidence of a live run.
+holds a ``pipeline_summary.json`` **written by this execution**. A log file is
+never evidence of a live run, and neither is a summary left behind by an
+earlier run of the same case - both are checked against the start timestamp.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -37,6 +40,8 @@ from .storage import write_json_atomic, write_text_atomic
 
 #: Terminal states - an execution in one of these never changes again.
 FINAL_STATES = ("completed", "failed", "cancelled", "interrupted")
+#: States an execution can still leave on its own.
+LIVE_STATES = ("queued", "running", "cancelling")
 
 _PROGRESS = re.compile(r"engine\s+([0-9.]+)%.*?energy error\s+(-?[0-9.]+)%")
 #: ``[  123s] [2/6] meshing (target 1.2 mm)`` - the pipeline's own banner.
@@ -53,6 +58,15 @@ _STAGE_NAMES = {
 }
 
 _EXEC_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_\-]*")
+
+#: Outputs of a *previous* run of the same case, wiped before this one starts.
+#: Without this a killed run leaves the old summary in place and the execution
+#: reads as "completed" with somebody else's numbers.
+_STALE_OUTPUTS = ("pipeline_summary.json", "ui_curves.json")
+
+_WINDOWS = os.name == "nt"
+#: Seconds a terminated process is given to exit before it is killed outright.
+_TERMINATE_GRACE_S = 5.0
 
 
 def _now() -> str:
@@ -71,6 +85,46 @@ def _parse(stamp: str | None) -> datetime | None:
         return None
 
 
+def _launch_kwargs() -> dict[str, Any]:
+    """Start the pipeline in its own process group, on either platform.
+
+    POSIX: ``start_new_session`` so ``killpg`` takes the solver engine down
+    with the pipeline. Windows has neither call; ``CREATE_NEW_PROCESS_GROUP``
+    is the equivalent handle for terminating the group.
+    """
+    if _WINDOWS:  # pragma: no cover - exercised on the Windows CI leg
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
+def _terminate(process: subprocess.Popen[bytes]) -> None:
+    """Ask the run to stop, then insist - without blocking the caller.
+
+    The cancel request must answer immediately with ``cancelling`` (UI_001
+    §9.3), so the escalation to a hard kill waits on a daemon thread instead
+    of inside the request. ``Popen.wait`` is safe to call from both this
+    thread and the queue worker.
+    """
+    try:
+        if _WINDOWS:  # pragma: no cover - exercised on the Windows CI leg
+            process.terminate()
+        else:
+            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        return
+
+    def _escalate() -> None:
+        try:
+            process.wait(timeout=_TERMINATE_GRACE_S)
+        except subprocess.TimeoutExpired:
+            try:
+                process.kill()
+            except OSError:  # pragma: no cover - already gone
+                pass
+
+    threading.Thread(target=_escalate, daemon=True, name="csim-ui-kill").start()
+
+
 class ExecutionManager:
     """The process-wide serial run queue and the state on disk behind it."""
 
@@ -82,6 +136,10 @@ class ExecutionManager:
         self._pending: list[str] = []
         self._processes: dict[str, subprocess.Popen[bytes]] = {}
         self._cancelling: set[str] = set()
+        #: Popped from the queue but not yet holding a process. A cancel that
+        #: lands in this window must not be lost (the worker checks the flag
+        #: before and right after Popen).
+        self._starting: set[str] = set()
         self._worker: threading.Thread | None = None
         #: Test seam: what to run for one snapshot. Overridden in tests so the
         #: queue can be exercised without OpenRadioss.
@@ -103,6 +161,9 @@ class ExecutionManager:
 
     def _state_path(self, exec_id: str) -> Path:
         return self.dir_for(exec_id) / "state.json"
+
+    def run_dir_for(self, state: dict[str, Any]) -> Path:
+        return self.base / str(state.get("run_dir") or f"runs/{state.get('exec_id')}")
 
     def _default_command(self, exec_id: str) -> list[str]:
         # Exactly the command a user would type, pointed at the snapshot
@@ -137,6 +198,41 @@ class ExecutionManager:
         except json.JSONDecodeError:
             return {}
 
+    # -- run outputs ---------------------------------------------------------
+
+    def _own_summary(self, state: dict[str, Any]) -> Path | None:
+        """``pipeline_summary.json`` **of this execution**, or None.
+
+        A run directory can already hold the summary of an earlier run of the
+        same case. Treating that as this execution's output reports a killed
+        run as completed and serves the previous run's numbers, so the file
+        only counts when it was written after this execution started.
+        """
+        summary = self.run_dir_for(state) / "pipeline_summary.json"
+        if not summary.is_file():
+            return None
+        started = _parse((state.get("timestamps") or {}).get("started"))
+        if started is None:
+            # Never started (queued when the server died): any summary present
+            # belongs to something else.
+            return None if state.get("state") in ("queued", *LIVE_STATES) else summary
+        written = datetime.fromtimestamp(summary.stat().st_mtime, tz=timezone.utc)
+        # 2 s of slack: the state file and the summary are written by two
+        # processes whose clocks agree only to the filesystem's resolution.
+        return summary if written >= started.replace(microsecond=0) else None
+
+    def summary_path(self, exec_id: str) -> Path | None:
+        """The summary this execution produced, or None (used by results.py)."""
+        return self._own_summary(self.read_state(exec_id))
+
+    def _clear_stale_outputs(self, run_dir: Path) -> None:
+        """Remove a previous run's summary/curve cache before relaunching."""
+        for name in _STALE_OUTPUTS:
+            try:
+                (run_dir / name).unlink(missing_ok=True)
+            except OSError:  # pragma: no cover - a locked file is not fatal
+                pass
+
     def restore(self) -> None:
         """U25: reconcile stored states with reality after a restart."""
         if not self.root.is_dir():
@@ -148,15 +244,13 @@ class ExecutionManager:
                 continue
             if state.get("state") in FINAL_STATES:
                 continue
-            run_dir = self.base / state.get("run_dir", "")
-            if (run_dir / "pipeline_summary.json").is_file():
+            if self._own_summary(state) is not None:
                 state["state"] = "completed"
-                state.setdefault("timestamps", {})["finished"] = _now()
             else:
-                # No process of ours survives a restart, and a log file is not
-                # evidence that one is running.
+                # No process of ours survives a restart, and neither a log file
+                # nor an older run's summary is evidence that one finished.
                 state["state"] = "interrupted"
-                state.setdefault("timestamps", {})["finished"] = _now()
+            state.setdefault("timestamps", {})["finished"] = _now()
             write_json_atomic(state_file, state)
 
     # -- submit --------------------------------------------------------------
@@ -223,12 +317,15 @@ class ExecutionManager:
         queue. Its ``output.dir`` is kept as written, so runs started the old
         way still land where the old UI looks for them.
         """
-        case = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        text = path.read_text(encoding="utf-8")
+        case = yaml.safe_load(text) or {}
         run_dir = str((case.get("output") or {}).get("dir") or f"runs/{path.stem}")
-        digest = f"sha256:{abs(hash((case_file, run_dir))):016x}"
+        # A real digest of the case text: Python's hash() is salted per process,
+        # so labelling it "sha256:" made the snapshot hash meaningless.
+        digest = f"sha256:{hashlib.sha256(text.encode('utf-8')).hexdigest()}"
         exec_id = path.stem
         state = self._state_or_none(exec_id)
-        if state and state.get("state") in ("queued", "running", "cancelling"):
+        if state and state.get("state") in LIVE_STATES:
             raise UiError("ALREADY_RUNNING", f"{case_file}은(는) 이미 실행 중이거나 대기 중입니다.")
         return self._enqueue(
             exec_id,
@@ -291,6 +388,7 @@ class ExecutionManager:
         }
         with self._lock:
             self._write_state(state)
+            self._cancelling.discard(exec_id)
             if exec_id not in self._pending:
                 self._pending.append(exec_id)
         self._ensure_worker()
@@ -313,7 +411,14 @@ class ExecutionManager:
                     self._worker = None
                     return
                 exec_id = self._pending.pop(0)
-            self._run_one(exec_id)
+                # Claim it before releasing the lock: a cancel arriving now
+                # must be able to see that this run is on its way up.
+                self._starting.add(exec_id)
+            try:
+                self._run_one(exec_id)
+            finally:
+                with self._lock:
+                    self._starting.discard(exec_id)
 
     def _run_one(self, exec_id: str) -> None:
         log_path = self.log_path(exec_id)
@@ -321,16 +426,25 @@ class ExecutionManager:
         state = self._state_or_none(exec_id)
         if state is None or state.get("state") in FINAL_STATES:
             return
+        with self._lock:
+            cancelled_before_launch = exec_id in self._cancelling
+            if cancelled_before_launch:
+                self._cancelling.discard(exec_id)
+        if cancelled_before_launch:
+            # Cancelled between the queue pop and the launch: never start it.
+            self._finish(exec_id, "cancelled", returncode=None)
+            return
+        run_dir = self.run_dir_for(state)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        self._clear_stale_outputs(run_dir)
         try:
             with log_path.open("w", encoding="utf-8") as log:
-                # Own process group: a cancel must take the solver engine down
-                # with the pipeline process, not orphan it on the cores.
                 process = subprocess.Popen(
                     self.command_builder(exec_id),
                     cwd=self.base,
                     stdout=log,
                     stderr=subprocess.STDOUT,
-                    start_new_session=True,
+                    **_launch_kwargs(),
                 )
         except Exception as exc:  # noqa: BLE001 - a broken launch must not kill the worker
             log_path.write_text(f"launch failed: {exc}\n", encoding="utf-8")
@@ -338,9 +452,13 @@ class ExecutionManager:
             return
         with self._lock:
             self._processes[exec_id] = process
+            cancel_now = exec_id in self._cancelling
         timestamps = dict(state.get("timestamps") or {})
         timestamps["started"] = _now()
-        self._update(exec_id, state="running", timestamps=timestamps)
+        self._update(exec_id, state="cancelling" if cancel_now else "running", timestamps=timestamps)
+        if cancel_now:
+            # The cancel landed while we were starting: honour it at once.
+            _terminate(process)
         returncode = process.wait()
         with self._lock:
             self._processes.pop(exec_id, None)
@@ -349,36 +467,55 @@ class ExecutionManager:
         if cancelled:
             self._finish(exec_id, "cancelled", returncode=returncode)
         else:
-            self._finish(exec_id, "completed" if returncode == 0 else "failed", returncode=returncode)
+            self._finish(
+                exec_id, "completed" if returncode == 0 else "failed", returncode=returncode
+            )
 
     def _finish(self, exec_id: str, state_name: str, *, returncode: int | None) -> None:
         state = self._state_or_none(exec_id)
         timestamps = dict((state or {}).get("timestamps") or {})
         timestamps["finished"] = _now()
-        self._update(exec_id, state=state_name, returncode=returncode, timestamps=timestamps)
+        # Parse the log ONCE, here, and store what a finished execution reports:
+        # status() then answers from state.json instead of re-reading (and
+        # re-parsing) the log on every poll and every list().
+        lines = self._log_lines(exec_id)
+        self._update(
+            exec_id,
+            state=state_name,
+            returncode=returncode,
+            timestamps=timestamps,
+            final_progress=self._progress_from(lines),
+            final_log_tail=self._tail_from(lines),
+        )
 
     # -- cancel --------------------------------------------------------------
 
     def cancel(self, exec_id: str) -> dict[str, Any]:
         """Dequeue a waiting run, or ask a running one to stop (U21/§9.3)."""
         state = self.read_state(exec_id)
+        process: subprocess.Popen[bytes] | None = None
+        starting = False
         with self._lock:
-            if exec_id in self._pending:
+            queued = exec_id in self._pending
+            if queued:
                 self._pending.remove(exec_id)
-                queued = True
+                self._cancelling.discard(exec_id)
             else:
-                queued = False
-            process = self._processes.get(exec_id)
+                process = self._processes.get(exec_id)
+                starting = exec_id in self._starting
+                if process is not None or starting:
+                    self._cancelling.add(exec_id)
         if queued:
             self._finish(exec_id, "cancelled", returncode=None)
             return self.status(exec_id)
-        if process is not None and process.poll() is None:
-            self._cancelling.add(exec_id)
+        if process is None and starting:
+            # Between the pop and the launch: the worker sees the flag and
+            # either skips the launch or kills the process it just started.
             self._update(exec_id, state="cancelling")
-            try:
-                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-            except (ProcessLookupError, PermissionError):
-                pass
+            return self.status(exec_id)
+        if process is not None and process.poll() is None:
+            self._update(exec_id, state="cancelling")
+            _terminate(process)
             # 'cancelled' is only confirmed once the process is actually gone -
             # the worker sets it after wait() returns (UI_001 §9.3).
             return self.status(exec_id)
@@ -399,31 +536,34 @@ class ExecutionManager:
                 return self._pending.index(exec_id) + 1
         return None
 
-    def log_tail(self, exec_id: str, lines: int = 25) -> str:
+    def _log_lines(self, exec_id: str) -> list[str]:
+        """The log's lines, read once per caller."""
         path = self.log_path(exec_id)
         if not path.is_file():
-            return ""
-        text = path.read_text(encoding="utf-8", errors="replace")
-        kept = [ln for ln in text.splitlines() if "WARN|" not in ln]
-        return "\n".join(kept[-lines:])
+            return []
+        return path.read_text(encoding="utf-8", errors="replace").splitlines()
 
-    def progress(self, exec_id: str) -> dict[str, Any]:
-        """Stage, engine percentage and per-stage seconds, read from the log."""
-        path = self.log_path(exec_id)
+    @staticmethod
+    def _tail_from(lines: list[str], count: int = 25) -> str:
+        kept = [ln for ln in lines if "WARN|" not in ln]
+        return "\n".join(kept[-count:])
+
+    @staticmethod
+    def _progress_from(lines: list[str]) -> dict[str, Any]:
+        """Stage, engine percentage and per-stage seconds from log lines."""
         out: dict[str, Any] = {
             "stage": None,
             "engine_progress_pct": None,
             "console_energy_error_pct": None,
             "stage_seconds": {},
         }
-        if not path.is_file():
-            return out
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         banners: list[tuple[float, str]] = []
         for line in lines:
             match = _STAGE.search(line)
             if match:
-                banners.append((float(match.group(1)), _STAGE_NAMES.get(match.group(4), match.group(4))))
+                banners.append(
+                    (float(match.group(1)), _STAGE_NAMES.get(match.group(4), match.group(4)))
+                )
         if banners:
             out["stage"] = banners[-1][1]
             for (start, name), (end, _next) in zip(banners, banners[1:]):
@@ -436,54 +576,77 @@ class ExecutionManager:
                 break
         return out
 
-    def artifacts(self, run_dir: Path, exec_id: str) -> dict[str, Any]:
-        """Only what actually exists on disk gets a link (UI_001 §11)."""
-        summary = run_dir / "pipeline_summary.json"
+    def log_tail(self, exec_id: str, lines: int = 25) -> str:
+        state = self._state_or_none(exec_id) or {}
+        if state.get("state") in FINAL_STATES and state.get("final_log_tail") is not None:
+            return "\n".join(str(state["final_log_tail"]).splitlines()[-lines:])
+        return self._tail_from(self._log_lines(exec_id), lines)
+
+    def progress(self, exec_id: str) -> dict[str, Any]:
+        """Stage/engine progress, from the stored snapshot once finished."""
+        state = self._state_or_none(exec_id) or {}
+        stored = state.get("final_progress")
+        if state.get("state") in FINAL_STATES and isinstance(stored, dict):
+            return stored
+        return self._progress_from(self._log_lines(exec_id))
+
+    def artifacts(self, run_dir: Path, exec_id: str, *, summary: Path | None) -> dict[str, Any]:
+        """Only what this execution actually produced gets a link (UI_001 §11)."""
         return {
             "report": f"/api/runs/{exec_id}/report" if (run_dir / "report.html").is_file() else None,
-            "viewer": f"/api/runs/{exec_id}/viewer" if summary.is_file() else None,
+            "viewer": f"/api/runs/{exec_id}/viewer" if summary is not None else None,
             "csv": (
                 f"/runs/{exec_id}/force_displacement.csv"
                 if (run_dir / "force_displacement.csv").is_file()
                 else None
             ),
-            "summary": f"/runs/{exec_id}/pipeline_summary.json" if summary.is_file() else None,
+            "summary": f"/runs/{exec_id}/pipeline_summary.json" if summary is not None else None,
         }
 
-    def status(self, exec_id: str) -> dict[str, Any]:
+    def status(self, exec_id: str, state: dict[str, Any] | None = None) -> dict[str, Any]:
         """The UI_002 §2.5 execution body."""
-        state = self.read_state(exec_id)
-        run_dir = self.base / state.get("run_dir", f"runs/{exec_id}")
-        progress = self.progress(exec_id)
+        state = state if state is not None else self.read_state(exec_id)
+        run_dir = self.run_dir_for(state)
+        final = state.get("state") in FINAL_STATES
+        stored = state.get("final_progress")
+        if final and isinstance(stored, dict):
+            progress = stored
+            log_tail = str(state.get("final_log_tail") or "")
+        else:
+            lines = self._log_lines(exec_id)
+            progress = self._progress_from(lines)
+            log_tail = self._tail_from(lines)
         timestamps = state.get("timestamps") or {}
         submitted, started, finished = (
             _parse(timestamps.get("submitted")),
             _parse(timestamps.get("started")),
             _parse(timestamps.get("finished")),
         )
-        queue_seconds = round((started - submitted).total_seconds(), 1) if started and submitted else None
+        queue_seconds = (
+            round((started - submitted).total_seconds(), 1) if started and submitted else None
+        )
         execution_seconds = (
             round((finished - started).total_seconds(), 1) if started and finished else None
         )
-        stage_seconds = dict(progress["stage_seconds"])
-        summary_path = run_dir / "pipeline_summary.json"
-        if summary_path.is_file():
+        stage_seconds = dict(progress.get("stage_seconds") or {})
+        summary_path = self._own_summary(state)
+        if summary_path is not None:
             try:
                 summary = json.loads(summary_path.read_text(encoding="utf-8"))
                 for stage in (summary.get("solver") or {}).get("stages") or []:
                     stage_seconds[str(stage.get("stage"))] = round(
                         float(stage.get("duration_s") or 0.0), 1
                     )
-            except (json.JSONDecodeError, ValueError):
+            except (json.JSONDecodeError, ValueError, OSError):
                 pass
         return {
             "exec_id": exec_id,
             "case_name": state.get("case_name"),
             "case_file": state.get("case_file"),
             "state": state.get("state"),
-            "stage": progress["stage"] if state.get("state") == "running" else None,
-            "engine_progress_pct": progress["engine_progress_pct"],
-            "console_energy_error_pct": progress["console_energy_error_pct"],
+            "stage": progress.get("stage") if state.get("state") == "running" else None,
+            "engine_progress_pct": progress.get("engine_progress_pct"),
+            "console_energy_error_pct": progress.get("console_energy_error_pct"),
             "queue_position": self.queue_position(exec_id),
             "returncode": state.get("returncode"),
             "timestamps": {
@@ -496,19 +659,19 @@ class ExecutionManager:
                 "execution_seconds": execution_seconds,
                 "stage_seconds": stage_seconds,
             },
-            "diagnostics": self.diagnostics(exec_id, state, run_dir),
-            "artifacts": self.artifacts(run_dir, exec_id),
+            "diagnostics": self.diagnostics(state, summary_path, log_tail),
+            "artifacts": self.artifacts(run_dir, exec_id, summary=summary_path),
             "run_dir": state.get("run_dir"),
             "snapshot": {
                 "input_hash": state.get("input_hash"),
                 "preflight_id": state.get("preflight_id"),
                 "case_yaml_url": f"/api/executions/{exec_id}/case",
             },
-            "log_tail": self.log_tail(exec_id),
+            "log_tail": log_tail,
         }
 
     def diagnostics(
-        self, exec_id: str, state: dict[str, Any], run_dir: Path
+        self, state: dict[str, Any], summary: Path | None, log_tail: str
     ) -> list[dict[str, Any]]:
         """Execution-level diagnostics; result-level ones live in :mod:`.results`."""
         out: list[dict[str, Any]] = []
@@ -526,10 +689,10 @@ class ExecutionManager:
                     "code": "EXECUTION_FAILED",
                     "severity": "block",
                     "message": "해석이 완료되지 못했습니다. 진단 로그를 확인하세요.",
-                    "detail": self.log_tail(exec_id, lines=5),
+                    "detail": "\n".join(log_tail.splitlines()[-5:]),
                 }
             )
-        if state.get("state") == "completed" and not (run_dir / "pipeline_summary.json").is_file():
+        if state.get("state") == "completed" and summary is None:
             out.append(
                 {
                     "code": "SUMMARY_MISSING",
@@ -539,21 +702,34 @@ class ExecutionManager:
             )
         return out
 
-    def list(self) -> dict[str, Any]:
-        """Queue + active + finished, snapshots first and legacy runs after (§2.5)."""
+    def list(
+        self, *, states: set[str] | None = None, include_legacy: bool = True
+    ) -> dict[str, Any]:
+        """Queue + active + finished, snapshots first and legacy runs after (§2.5).
+
+        ``states`` filters before any log or summary is read, which is what
+        keeps the 5-second poll of ``/api/runs`` cheap once a few hundred runs
+        have accumulated.
+        """
         items: list[dict[str, Any]] = []
         known_runs: set[str] = set()
         if self.root.is_dir():
             for state_file in sorted(self.root.glob("*/state.json")):
                 exec_id = state_file.parent.name
                 try:
-                    item = self.status(exec_id)
-                except (UiError, json.JSONDecodeError):
+                    state = json.loads(state_file.read_text(encoding="utf-8"))
+                except json.JSONDecodeError:
+                    continue
+                known_runs.add(Path(str(state.get("run_dir") or "")).name)
+                if states is not None and state.get("state") not in states:
+                    continue
+                try:
+                    item = self.status(exec_id, state)
+                except (UiError, json.JSONDecodeError, OSError):
                     continue
                 item["legacy"] = False
-                known_runs.add(Path(item.get("run_dir") or "").name)
                 items.append(item)
-        if self.runs_dir.is_dir():
+        if include_legacy and self.runs_dir.is_dir() and (states is None or "completed" in states):
             for summary in sorted(self.runs_dir.glob("*/pipeline_summary.json")):
                 name = summary.parent.name
                 if name in known_runs or name.startswith("_"):
@@ -573,7 +749,7 @@ class ExecutionManager:
                                 summary.stat().st_mtime, tz=timezone.utc
                             ).isoformat(timespec="seconds"),
                         },
-                        "artifacts": self.artifacts(summary.parent, name),
+                        "artifacts": self.artifacts(summary.parent, name, summary=summary),
                         "run_dir": f"runs/{name}",
                         "snapshot": None,
                     }
@@ -581,4 +757,4 @@ class ExecutionManager:
         return {"items": items}
 
 
-__all__ = ["FINAL_STATES", "ExecutionManager"]
+__all__ = ["FINAL_STATES", "LIVE_STATES", "ExecutionManager"]

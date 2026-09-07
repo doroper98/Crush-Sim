@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from fastapi import FastAPI, File, Response, UploadFile
+from fastapi import FastAPI, File, Request, Response, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -31,7 +31,7 @@ from . import capabilities as caps
 from . import results as results_mod
 from .assets import AssetStore
 from .errors import UiError, from_exception, install_error_handlers, not_found
-from .executions import ExecutionManager
+from .executions import LIVE_STATES, ExecutionManager
 from .graphc import GRAPH_SCHEMA_VERSION, compile_graph
 from .preflight import PreflightStore
 
@@ -66,9 +66,30 @@ def create_app(root: str | Path = ".") -> FastAPI:
     # -- assets --------------------------------------------------------------
 
     @app.post("/api/assets", status_code=202)
-    async def upload_asset(file: UploadFile = File(...)) -> dict[str, Any]:  # noqa: B008
-        data = await file.read()
-        record = assets.create(data, file.filename)
+    async def upload_asset(
+        request: Request,
+        file: UploadFile = File(...),  # noqa: B008
+    ) -> dict[str, Any]:
+        # Never hold more than the limit in memory: the declared size is
+        # checked first, and the body is then read in chunks that stop one
+        # byte past the limit instead of buffering a 2 GB "STEP file".
+        limit = caps.MAX_UPLOAD_BYTES
+        declared = file.size or int(request.headers.get("content-length") or 0)
+        if declared and declared > limit:
+            raise UiError(
+                "FILE_TOO_LARGE", detail=f"{declared} bytes > {limit}", field_path="file"
+            )
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > limit:
+                raise UiError("FILE_TOO_LARGE", detail=f">{limit} bytes", field_path="file")
+            chunks.append(chunk)
+        record = assets.create(b"".join(chunks), file.filename)
         return {"asset_id": record["id"], "status": record["status"]}
 
     @app.get("/api/assets/{asset_id}")
@@ -244,23 +265,23 @@ def create_app(root: str | Path = ".") -> FastAPI:
     @app.delete("/api/runs/{case_file}")
     def cancel_run(case_file: str) -> dict[str, Any]:
         """Dequeue a waiting run, or terminate a running one (whole group)."""
-        for item in executions.list()["items"]:
+        live = executions.list(states=set(LIVE_STATES), include_legacy=False)
+        for item in live["items"]:
             if item.get("case_file") != case_file:
                 continue
-            was = item["state"]
-            if was not in ("queued", "running", "cancelling"):
-                continue
             executions.cancel(item["exec_id"])
-            return {"cancelled": case_file, "was": was}
+            return {"cancelled": case_file, "was": item["state"]}
         raise not_found(f"{case_file}은(는) 대기 중도 실행 중도 아닙니다.")
 
     @app.get("/api/runs")
     def list_runs() -> dict[str, Any]:
         """The legacy monitor payload: active / queued / finished."""
         active, queued = [], []
-        for item in executions.list()["items"]:
-            if item.get("legacy"):
-                continue
+        # Only live executions: the finished list below is built from the run
+        # directories, so scanning (and log-parsing) every past execution here
+        # would make the 5-second poll cost grow with the run history.
+        live = executions.list(states=set(LIVE_STATES), include_legacy=False)
+        for item in live["items"]:
             if item["state"] == "queued":
                 queued.append(item.get("case_file") or f"{item['exec_id']}.yaml")
             elif item["state"] in ("running", "cancelling"):
@@ -379,16 +400,29 @@ def create_app(root: str | Path = ".") -> FastAPI:
             except (json.JSONDecodeError, TypeError, ValueError):
                 stored_revision = 0
         base_revision = payload.get("base_revision")
-        if base_revision is not None and stored_revision > int(base_revision):
-            # U41: detect only. The merge is P3 backlog; the user is told and
-            # keeps both copies rather than losing the other tab's edit.
-            raise UiError(
-                "REVISION_CONFLICT",
-                detail=f"server revision {stored_revision} > base_revision {base_revision}",
-            )
-        body = {k: v for k, v in payload.items() if k != "base_revision"}
+        if base_revision is not None:
+            try:
+                base_revision = int(base_revision)
+            except (TypeError, ValueError) as exc:
+                raise UiError(
+                    "INVALID_VALUE",
+                    "base_revision은 정수여야 합니다.",
+                    field_path="base_revision",
+                    detail=repr(payload.get("base_revision")),
+                ) from exc
+            if stored_revision > base_revision:
+                # U41: detect only. The merge is P3 backlog; the user is told
+                # and keeps both copies rather than losing the other tab's edit.
+                raise UiError(
+                    "REVISION_CONFLICT",
+                    detail=f"server revision {stored_revision} > base_revision {base_revision}",
+                )
+        body = {k: v for k, v in payload.items() if k not in ("base_revision", "revision")}
         body.setdefault("schema_version", GRAPH_SCHEMA_VERSION)
-        body["revision"] = int(payload.get("revision") or stored_revision + 1)
+        # The counter belongs to the SERVER. Echoing back the revision the
+        # client sent meant a client that re-saved what it had loaded never
+        # advanced it, so the conflict check could never fire (U41).
+        body["revision"] = stored_revision + 1
         graphs_dir.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(body, ensure_ascii=False, indent=1), encoding="utf-8")
         return {"saved": name, "revision": body["revision"]}

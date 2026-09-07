@@ -362,3 +362,49 @@ fine 대비 +5.7/+5.3 %). writer가 명시 end_time에서 램프 테이블은 �
 읽으면 0바이트다. `crushsim/ui/storage.py`(임시 파일 + `os.replace`)로 바꿔
 state/snapshot/inspect/preview/preflight를 전부 원자적으로 쓴다. 8회 연속 통과.
 
+### §13 이어서 — 코드 리뷰가 잡은 것들 (WP1 2차, 2026-09-07)
+
+리뷰가 잡아낸 결함 10개 중 다음 다섯은 "다음 사람이 모르면 같은 방식으로 다시
+짤" 종류다.
+
+**7. 런 디렉터리에 남은 이전 요약이 실행을 '완료'로 만든다.** 같은 케이스를 다시
+돌리면 `runs/<id>/pipeline_summary.json`이 이미 있다. 죽은 실행을 복원할 때 그
+파일의 존재만 보고 `completed`로 판정했고, 결과 화면은 **이전 런의 숫자**를
+새 실행 id로 보여줬다. 두 겹으로 고쳤다: (a) 실행 시작 시 그 디렉터리의
+`pipeline_summary.json`·`ui_curves.json`을 지우고, (b) 요약 파일의 mtime이
+`timestamps.started`보다 이전이면 이 실행의 산출물로 인정하지 않는다
+(`_own_summary`). artifacts 링크와 `results.build`도 같은 판정을 쓴다.
+
+**8. 취소는 큐에서 꺼낸 순간부터 Popen까지의 창에서 사라진다.** 워커가
+`_pending.pop()` 한 뒤 아직 `_processes`에 등록하기 전에 취소가 오면, 취소는
+"대기도 실행도 아님"으로 처리돼 상태만 `cancelled`가 되고 워커가 곧바로
+`running`으로 덮어썼다 — **솔버는 계속 돌았다**. 꺼낸 즉시 `_starting`에
+등록하고, 워커는 Popen 직전과 직후에 취소 플래그를 다시 확인한다(직전이면 아예
+띄우지 않고, 직후면 바로 죽인다). 취소 요청은 5초를 기다리지 않는다 — 강제
+종료 승격은 데몬 스레드가 맡는다(요청은 즉시 `cancelling`으로 답해야 한다).
+
+**9. 캐시에 무효화 키가 없으면 재실행이 옛 곡선을 그린다.** `ui_curves.json`을
+"있으면 쓴다"로 읽었더니 같은 디렉터리에 다시 돌린 런이 이전 곡선을 새 지표
+옆에 붙였다. 요약 파일의 mtime+size를 키로 저장하고 다르면 다시 만든다.
+
+**10. 목록이 로그를 두 번씩 읽는다.** `list()`가 모든 실행에 대해 `status()`를
+부르고, `status()`는 `progress()`와 `log_tail()`에서 같은 로그를 두 번 읽었다.
+5초 폴링이 런 이력에 비례해 무거워진다. 종료된 실행은 끝날 때 로그를 **한 번**
+파싱해 `final_progress`/`final_log_tail`로 state.json에 저장하고, 이후에는
+로그를 아예 열지 않는다. `list(states=…)`로 살아 있는 실행만 고르게 했다.
+
+**11. 예상 못한 예외는 계약 밖으로 샌다.** `Exception` 핸들러가 없어서
+Starlette의 text/plain 500이 그대로 나갔다 — 브라우저가 읽을 수 있는 것은
+`{code,message,severity,…}` 하나뿐인데. `INTERNAL`로 매핑하는 핸들러를 추가했다.
+테스트는 `TestClient(raise_server_exceptions=False)`가 필요하다(기본값은 예외를
+다시 던져서 응답을 볼 수 없다).
+
+**12. CI(윈도우·OCP 없음)에서 깨진 것들.** (a) `os.killpg`/`start_new_session`은
+Windows에 없다 → `CREATE_NEW_PROCESS_GROUP` + `terminate()`로 분기. (b) 테스트의
+가짜 명령 `/bin/sh -c sleep`은 Windows에서 즉시 실패해 취소 테스트가 `failed`로
+끝났다 → `sys.executable -c "time.sleep(60)"`. (c) `output.dir`은 항상 POSIX
+문자열로 쓰고, 테스트는 `Path`로 비교한다(`runs\x` != `runs/x`). (d)
+`tests/test_assembly.py`·`tests/test_skin.py`는 모듈 상단에
+`pytest.importorskip("OCP")`가 없어 CI에서 12 failed + 13 errors였다 — `cad`
+extra는 CI에 설치되지 않는다.
+
