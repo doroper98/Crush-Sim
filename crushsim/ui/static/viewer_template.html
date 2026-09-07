@@ -132,8 +132,12 @@ button.on{background:var(--ink); color:var(--bg); border-color:transparent}
   vertical-align:middle}
 .chartCard h2{margin:0 0 4px; font-size:12px; font-weight:600; color:#1d2939; letter-spacing:.02em}
 .chartCard .note{margin:4px 0 2px; font-size:11px; color:#475467; font-family:'IBM Plex Mono',monospace}
-@media (max-width:640px){
-  .chartCard{left:10px; bottom:10px; width:62vw; padding:8px 9px 4px}
+@media (max-width:760px), (pointer:coarse) and (max-width:1100px){
+  /* On a phone the card is anchored to the stage's own bottom and capped at
+     half of it: floating it at a content-sized height pushed it up over the
+     result header, and overlapping controls is exactly what U37 forbids. */
+  .chartCard{left:8px; right:8px; bottom:8px; width:auto; max-height:52%;
+             overflow:auto; padding:8px 9px 4px}
   .chartCard h2{font-size:11px}
 }
 table.dims{width:100%; border-collapse:collapse; font-size:11.5px}
@@ -165,7 +169,7 @@ select{
   .app{flex-direction:column}
   .stage{flex:1 1 auto; min-height:0}
   .side{
-    width:100%; flex:0 0 auto; max-height:52%;
+    width:100%; flex:0 0 auto; max-height:40%;
     border-left:none; border-top:1px solid var(--line);
     padding-bottom:env(safe-area-inset-bottom);
     -webkit-overflow-scrolling:touch;
@@ -180,7 +184,11 @@ select{
   button{padding:8px 12px}
   .parts .prow{grid-template-columns:24px 52px 1fr auto 42px}
   .parts .solo{padding:6px 8px}
-  .rhead{max-height:52vh; padding:10px 12px}
+  /* The judgement is what a phone reader came for, so the header keeps its
+     size (up to 46vh, then it scrolls itself) and the 3D/panel share what is
+     left. Letting it shrink cut the sentence in half mid-word. */
+  .rhead{max-height:46vh; flex:0 0 auto; padding:10px 12px}
+  .stage{min-height:200px}
   .metrics{gap:14px}
   .metrics .num{font-size:20px}
   .hud h1{font-size:13.5px; max-width:62vw}
@@ -242,7 +250,7 @@ select{
     </div>
   </div>
   <div class="side" id="side">
-    <div class="sec">
+    <div class="sec" id="timeSec">
       <h2>시간 · 프레임</h2>
       <div class="timebar">
         <button class="primary" id="play" aria-label="재생/일시정지">▶</button>
@@ -267,7 +275,7 @@ select{
       <div class="events" id="eventList"></div>
       <p class="note">이벤트를 누르면 프레임과 곡선 위치가 함께 이동합니다.</p>
     </div>
-    <div class="sec">
+    <div class="sec" id="viewSec">
       <h2>뷰</h2>
       <div class="grp">
         <button id="viewIso">Iso</button>
@@ -295,7 +303,7 @@ select{
       </div>
       <p class="note" id="navHint">드래그: 회전 · 휠: 줌 · Shift+드래그: 이동 · 위 버튼으로도 조작할 수 있습니다</p>
     </div>
-    <div class="sec parts">
+    <div class="sec parts" id="partsSec">
       <h2>파트 · 투명도</h2>
       <div class="prow"><input type="checkbox" id="v1" checked><span style="display:flex;gap:6px;align-items:center"><span class="sw" id="sw1"></span>캔</span><input type="range" id="o1" min="0" max="1" value="1" step="0.05"><button class="solo" id="solo1" aria-label="캔만 보기" title="선택 부품 보기">단독</button><span class="val" id="ov1">100%</span></div>
       <div class="prow" id="prow5" hidden><input type="checkbox" id="v5" checked><span style="display:flex;gap:6px;align-items:center"><span class="sw" id="sw5"></span>벤트</span><input type="range" id="o5" min="0" max="1" value="1" step="0.05"><button class="solo" id="solo5" aria-label="벤트만 보기" title="선택 부품 보기">단독</button><span class="val" id="ov5">100%</span></div>
@@ -305,7 +313,7 @@ select{
       <div class="grp" style="margin-top:10px"><button id="showAll">전체 보기</button></div>
       <div class="legend" id="legend"></div>
     </div>
-    <div class="sec">
+    <div class="sec" id="clipSec">
       <h2>단면</h2>
       <div class="grp">
         <button id="clipOff" class="on">끔</button>
@@ -526,6 +534,12 @@ if(!R){
       +"<span style='font-size:11px'>(앱 안의 첨부파일 미리보기에서는 3D가 동작하지 않습니다)</span></div>"});
   const card=document.getElementById("chartCard");
   if(card)card.style.display="none";
+  // Everything below this point needs the renderer, so those controls would
+  // sit there doing nothing. Hide them and leave what still works: the
+  // header's judgement/metrics and the 산출물 links (rendered above).
+  for(const id of ["timeSec","viewSec","partsSec","clipSec","eventSec"]){
+    const sec=document.getElementById(id); if(sec)sec.hidden=true;
+  }
   throw new Error("WebGL unavailable");
 }
 R.setBounds(bmin,bmax);
