@@ -477,3 +477,88 @@ def test_ab_panel_overlays_only_matching_definitions(page) -> None:
     page.unroute("**/api/executions")
     page.unroute("**/api/executions/case_a/result")
     page.unroute("**/api/executions/case_b/result")
+
+
+# ---------------------------------------------------------------- U41
+
+
+def test_u41_revision_conflict_is_detected_not_overwritten(page, server, ui_root: Path) -> None:
+    """다른 창이 먼저 저장했으면 조용히 덮어쓰지 않고 알린다."""
+    base, _app = server
+    _start_parametric(page)
+    page.click("#btnSave")
+    page.fill("#graphName", "conflict_demo.json")
+    page.click("dialog.modal button:has-text('저장')")
+    page.wait_for_function(
+        "() => document.getElementById('saveState').dataset.state === 'saved'", timeout=15_000
+    )
+    stored = json.loads((ui_root / "configs" / "graphs" / "conflict_demo.json").read_text("utf-8"))
+    assert stored["schema_version"] == 2
+    assert stored["revision"] >= 1
+
+    # 다른 창이 같은 그래프를 저장해 서버 개정을 올린다.
+    import urllib.request  # noqa: PLC0415
+
+    payload = json.dumps(dict(stored, base_revision=stored["revision"])).encode("utf-8")
+    request = urllib.request.Request(
+        base + "/api/graphs/conflict_demo.json", data=payload, method="PUT",
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310 - 로컬 테스트 서버
+        assert response.status == 200
+
+    # 이 창이 이어서 편집하면 저장이 충돌로 막힌다.
+    page.evaluate("() => { App.graph.setParam(App.graph.geometryNode().id, 'height', 70); UI.renderAll(); }")
+    page.wait_for_selector("dialog.modal[open]:has-text('다른 창에서 수정된 내용이 있습니다')", timeout=20_000)
+    assert page.inner_text("#saveState") == "저장 실패"
+    _shot(page, "11_revision_conflict.png")
+    page.click("dialog.modal button:has-text('복사본 저장')")
+    page.wait_for_function(
+        "() => document.getElementById('saveState').dataset.state === 'saved'", timeout=15_000
+    )
+    assert (ui_root / "configs" / "graphs" / "conflict_demo_copy.json").is_file()
+
+
+# ---------------------------------------------------------------- U14·U43
+
+
+def test_u14_unknown_nodes_open_read_only_and_are_preserved(page, ui_root: Path, server) -> None:
+    """미지의 노드 타입이 있는 그래프는 노드 소실 없이 읽기 전용으로 열린다."""
+    base, _app = server
+    graph = {
+        "schema_version": 2, "revision": 4, "purpose": "vent_burst",
+        "nodes": [
+            {"id": "n1", "type": "geometry", "x": 20, "y": 40,
+             "params": {"kind": "box_can", "width": 120.5, "depth": 13.1, "height": 65.0, "thickness": 0.6}},
+            {"id": "n2", "type": "thermal_source", "x": 300, "y": 40, "params": {"watts": 12}},
+        ],
+        "edges": [{"from": "n1", "to": "n2", "port": "geom"}],
+        "future_key": {"kept": True},
+    }
+    (ui_root / "configs" / "graphs" / "future.json").write_text(
+        json.dumps(graph, ensure_ascii=False), encoding="utf-8"
+    )
+    page.goto(base + "/")
+    page.wait_for_function("() => window.__firstPaintMs !== undefined", timeout=20000)
+    page.click("#startOpenGraph")
+    page.click("dialog.modal button:has-text('future.json')")
+    page.wait_for_selector("#inspector:has-text('읽기 전용')", timeout=15_000)
+    assert page.evaluate("() => App.graph.nodes.length") == 2
+    assert page.evaluate("() => App.graph.node('n2').unknown") is True
+    assert page.evaluate("() => App.graph.toJSON().future_key.kept") is True
+    assert page.evaluate("() => App.graph.readOnly") is True
+    _shot(page, "12_unknown_node.png")
+
+
+def test_u43_shipped_example_graph_opens_with_its_meaning(page, server) -> None:
+    """예제로 둘러보기: 저장된 그래프의 의미(체인·스윕·목적)가 보존된다."""
+    page.click("#startExample")
+    page.click("dialog.modal button:has-text('vent_burst_study.json')")
+    page.wait_for_function("() => App.graph.nodes.length > 5", timeout=15_000)
+    assert page.evaluate("() => App.graph.byType('vent').length") == 1
+    assert page.evaluate("() => App.graph.byType('mesh').length") == 2   # 다중 연결 = 스윕
+    page.wait_for_function(
+        "() => App.preflight && (App.preflight.combinations || {}).total === 2", timeout=30_000
+    )
+    assert "2건" in page.inner_text("#runEstimate")
+    _shot(page, "13_example_graph.png")

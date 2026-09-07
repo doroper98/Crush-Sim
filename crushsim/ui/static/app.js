@@ -2891,6 +2891,8 @@ async function boot() {
   });
 
   $("btnOpen").addEventListener("click", () => UI.showOpenDialog(false));
+  // 자동 저장은 이름이 정해진 뒤부터 돈다. 명시적 저장도 함께 둔다(§7.4).
+  $("btnSave").addEventListener("click", () => (App.graph.name ? UI.save() : UI.saveAs()));
   $("btnNew").addEventListener("click", () => { App.graph.reset(); App.asset = null; App.preflight = null; UI.showStart(); UI.renderAll(); });
   $("btnHelp").addEventListener("click", () => {
     Modal.open("도움말", el("div", {}, [
