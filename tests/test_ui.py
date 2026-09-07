@@ -316,6 +316,42 @@ def test_upload_rejects_a_file_over_the_limit(
     assert response.json()["code"] == "FILE_TOO_LARGE"
 
 
+def test_a_corrupt_step_fails_the_asset_with_a_reason(client: TestClient) -> None:
+    """U03: the file is rejected with a cause, and nothing else is touched."""
+    response = client.post(
+        "/api/assets", files={"file": ("broken.stp", b"not a step file", "application/step")}
+    )
+    assert response.status_code == 202
+    asset_id = response.json()["asset_id"]
+    deadline = time.time() + 30
+    record: dict[str, Any] = {}
+    while time.time() < deadline:
+        record = client.get(f"/api/assets/{asset_id}").json()
+        if record["status"] in ("ready", "failed"):
+            break
+        time.sleep(0.1)
+    assert record["status"] == "failed"
+    assert record["error"]["code"] == "ASSET_UNSUPPORTED"
+    assert record["error"]["message"]  # a Korean sentence, not a bare exception
+    assert record["error"]["detail"]
+
+
+def test_upload_keeps_a_hostile_filename_as_a_label_only(client: TestClient, ui_root: Path) -> None:
+    """U42: the file name never chooses a path."""
+    hostile = "../../etc/<script>alert(1)</script>.stp"
+    response = client.post(
+        "/api/assets", files={"file": (hostile, b"ISO-10303-21;\nHEADER;\n", "application/step")}
+    )
+    asset_id = response.json()["asset_id"]
+    record = client.get(f"/api/assets/{asset_id}").json()
+    # Separators become "_"; the rest is kept verbatim for display (and the
+    # front-end renders it as text, never as markup).
+    assert record["display_name"] == ".._.._etc_<script>alert(1)<_script>.stp"
+    assets_root = ui_root / "runs" / "_ui" / "assets"
+    assert [p.name for p in assets_root.iterdir()] == [asset_id]
+    assert (assets_root / asset_id / "original.stp").is_file()
+
+
 def test_unknown_asset_is_404_in_the_error_contract(client: TestClient) -> None:
     response = client.get("/api/assets/deadbeef")
     assert response.status_code == 404
@@ -436,6 +472,60 @@ def test_preflight_estimate_is_measured_or_absent(client: TestClient) -> None:
     assert plain_body["estimate"]["available"] is False
     assert plain_body["estimate"]["per_run_min"] is None
     assert "ESTIMATE_UNAVAILABLE" in {c["code"] for c in plain_body["checks"]}
+
+
+def test_preflight_blocks_an_unavailable_purpose(client: TestClient) -> None:
+    """U11: electric/thermal are declared, not silently attempted."""
+    graph = _vent_graph()
+    graph["purpose"] = "resistance"
+    body = client.post("/api/preflights", json={"graph": graph}).json()
+    assert body["runnable"] is False
+    blocked = {c["code"]: c for c in body["checks"] if c["severity"] == "block"}
+    assert "PURPOSE_UNAVAILABLE" in blocked
+    assert "백엔드 미구현" in blocked["PURPOSE_UNAVAILABLE"]["message"]
+
+
+def test_preflight_blocks_a_geometry_the_purpose_does_not_support(client: TestClient) -> None:
+    graph = _vent_graph()
+    graph["purpose"] = "axial_crush"  # parametric_can / step only
+    body = client.post("/api/preflights", json={"graph": graph}).json()
+    assert "GEOMETRY_UNSUPPORTED" in {c["code"] for c in body["checks"]}
+    assert body["runnable"] is False
+
+
+def test_preflight_requires_unit_confirmation_for_an_implausible_asset(
+    client: TestClient, ui_root: Path
+) -> None:
+    """U04: no automatic rescaling, no run until the user confirms."""
+    asset_dir = ui_root / "runs" / "_ui" / "assets" / "abc123abc123"
+    asset_dir.mkdir(parents=True)
+    (asset_dir / "original.stp").write_text("ISO-10303-21;", encoding="utf-8")
+    (asset_dir / "inspect.json").write_text(
+        json.dumps(
+            {
+                "id": "abc123abc123",
+                "display_name": "metre_export.stp",
+                "content_hash": "sha256:feed",
+                "status": "ready",
+                # 0.1205 m read as mm: far below the 5 mm plausibility floor.
+                "units": {"declared": "m", "confirmed": False, "plausible": False},
+                "dimensions_mm": [0.1205, 0.0131, 0.065],
+                "parts": [],
+                "diagnostics": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    graph = _vent_graph()
+    graph["asset_refs"] = {"n1": "abc123abc123"}
+    body = client.post("/api/preflights", json={"graph": graph}).json()
+    codes = {c["code"] for c in body["checks"] if c["severity"] == "block"}
+    assert "UNIT_CONFIRMATION_REQUIRED" in codes
+    assert body["runnable"] is False
+    # Confirming in the draft clears the block without touching the numbers.
+    graph["confirmations"] = {"units": True}
+    confirmed = client.post("/api/preflights", json={"graph": graph}).json()
+    assert "UNIT_CONFIRMATION_REQUIRED" not in {c["code"] for c in confirmed["checks"]}
 
 
 def test_preflight_blocks_an_unwired_solver(client: TestClient) -> None:

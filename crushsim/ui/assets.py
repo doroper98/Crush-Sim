@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import threading
 from pathlib import Path
 from typing import Any
@@ -42,8 +43,16 @@ PLAUSIBLE_MAX_MM = 500.0
 
 
 def _sanitise_display_name(name: str | None) -> str:
-    """The file name as a label only - path separators stripped (U42)."""
-    raw = (name or "geometry.stp").replace("\\", "/").split("/")[-1].strip()
+    """The file name as a label only (U42).
+
+    Path separators and control characters become ``_``; everything else is
+    kept verbatim, because the name is a label the user recognises and the
+    store never builds a path from it (the directory is the content hash).
+    Taking only the last path segment was tried first and mangled honest
+    names: ``</script>`` contains a slash, so ``a/<script>x</script>.stp``
+    became ``script>.stp``.
+    """
+    raw = re.sub(r"[\\/\x00-\x1f]", "_", name or "geometry.stp").strip()
     return raw[:120] or "geometry.stp"
 
 
