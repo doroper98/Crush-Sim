@@ -59,8 +59,8 @@ best coarse — refining it fails the §7 gate at every size tried).
 
 | `vent_size` | score elements | per mm of arc | initiation | opening | run time |
 |---|---|---|---|---|---|
-| – (1.2 mm uniform) | 25 | 0.6 | 0.514 MPa | 0.703 MPa | ~12 min |
-| **0.5 mm** | 180 | 4.5 | **0.303** | **0.385** | ~25 min |
+| – (1.2 mm uniform) | 25 | 0.6 | 0.514 MPa | 0.703 MPa | 11 min (engine 665 s) |
+| **0.5 mm** | 180 | 4.5 | **0.303** | **0.385** | **39 min** (engine 2361 s, 243,747 cycles) |
 | 0.3 mm | 553 | 13.8 | 0.287 | 0.366 | ~7.3 h |
 
 The uniform mesh is simply **under-resolved** — a one-element-wide score
