@@ -601,13 +601,15 @@ const App = {
   preflightState: "idle", // idle | running | ready | error
   preflightError: null,
   lastGraphHash: null,
-  submitSeq: 0,
   showSettingsGroup: true,
   compare: [],            // A/B로 고른 실행 id
   runs: [],
   results: new Map(),
   tracked: new Set(),
   lastPollOk: null,
+  consumedHash: null,     // 이미 제출한 입력 해시(연타·재제출 방지)
+  notice: null,           // 안내 흐름이 그래프를 바꿨다는 알림
+  previewHash: null,      // 미리보기를 다시 만들 필요가 있는지 판단하는 값
   pollFailed: false,
   saveTimer: null,
   previewLod: null
@@ -644,6 +646,7 @@ const Preview = {
       color: [0.62, 0.66, 0.72],
       edges: false
     });
+    this.renderer.setWireframe(false);
     this.renderer.setView("iso");
     this.renderer.requestDraw();
     App.previewLod = preview.lod;
@@ -782,8 +785,31 @@ const Guided = {
       const mesh = m.byType("mesh")[0];
       if (purposeId === "vent_burst") {
         if (geo && geo.params.kind === "parametric_can") {
-          geo.params = { kind: "box_can", width: 120.5, depth: 13.1, height: 65.0, thickness: 0.6, closed_bottom: true };
-          for (const key in geo.params) m.meta.provenance[geo.id + "." + key] = "template";
+          // 사용자가 직접 넣은 높이·두께는 살린다. 조용히 템플릿 값으로
+          // 덮으면 다른 셀을 해석한 결과를 보게 된다(리뷰 지적 10).
+          const kept = [];
+          const carry = {};
+          for (const key of ["height", "thickness"]) {
+            if (m.meta.provenance[geo.id + "." + key] === "user" && geo.params[key] !== undefined) {
+              carry[key] = geo.params[key];
+              kept.push(key === "height" ? "높이 " + num(geo.params[key]) + " mm" : "두께 " + num(geo.params[key]) + " mm");
+            }
+          }
+          const before = "Ø" + num((geo.params.radius || 0) * 2) + " × " + num(geo.params.height) + " mm 원통형 캔";
+          geo.params = Object.assign(
+            { kind: "box_can", width: 120.5, depth: 13.1, height: 65.0, thickness: 0.6, closed_bottom: true },
+            carry
+          );
+          for (const key in geo.params) {
+            m.meta.provenance[geo.id + "." + key] = carry[key] !== undefined ? "user" : "template";
+          }
+          App.notice = {
+            kind: "warn",
+            text: "'벤트 개방'은 각형 캔만 지원해 형상을 각형 캔 템플릿으로 바꿨습니다 ("
+              + before + " → " + num(geo.params.width) + "×" + num(geo.params.depth) + "×" + num(geo.params.height) + " mm)."
+              + (kept.length ? " 직접 입력한 " + kept.join(", ") + "은(는) 그대로 두었습니다." : "")
+              + " Ctrl+Z로 되돌릴 수 있습니다."
+          };
         }
         // 캔 → 캡 → 벤트 체인을 만든다(벤트는 캡 뒤에만 붙는다).
         let cap = m.byType("cap")[0];
@@ -872,14 +898,24 @@ const Guided = {
         geo.params.height = Number(dims[2].toFixed ? dims[2].toFixed(2) : dims[2]);
         for (const key of ["width", "depth", "height"]) m.meta.provenance[geo.id + "." + key] = "geometry";
       }
+      // 파라메트릭 템플릿의 값(반경·바닥 닫힘)이 남아 있으면 STEP 케이스에
+      // 그대로 컴파일된다. 형상에서 읽지 않은 값은 지운다.
+      for (const key of ["radius", "closed_bottom"]) {
+        delete geo.params[key];
+        delete m.meta.provenance[geo.id + "." + key];
+      }
       const gauged = (record.parts || []).map((p) => p.wall_thickness_mm).filter((t) => t);
       if (gauged.length) {
         geo.params.thickness = Number(gauged[0].toFixed ? gauged[0].toFixed(3) : gauged[0]);
         m.meta.provenance[geo.id + ".thickness"] = "geometry";
       } else {
+        // 게이지가 두께를 못 읽었으면 템플릿의 0.1 mm를 그대로 두면 안 된다.
+        // 비워 두고 '확인 필요'로 표시해 사용자가 넣게 한다.
+        delete geo.params.thickness;
         m.meta.provenance[geo.id + ".thickness"] = "unknown";
       }
       delete m.meta.confirmations.units;
+      delete m.meta.confirmations.thickness;
     });
   },
 
@@ -912,6 +948,17 @@ const Guided = {
         hint: "이 면은 해석 중 움직이지 않습니다."
       });
     }
+    const geo = g.geometryNode();
+    if (geo && geo.params.kind === "step") {
+      const missing = geo.params.thickness === undefined || geo.params.thickness === null;
+      out.push({
+        key: "thickness",
+        label: "판 두께",
+        detail: missing ? "확인 필요 — 형상에서 읽지 못했습니다" : num(geo.params.thickness) + " mm",
+        hint: "쉘 두께는 강성·질량·접촉에 그대로 들어갑니다. 값이 없으면 해석할 수 없습니다.",
+        unresolved: missing
+      });
+    }
     if (App.asset && App.asset.units && App.asset.units.plausible === false) {
       out.push({ key: "units", label: "단위", detail: String((App.asset.units || {}).declared || "?"), hint: "읽은 크기가 예상한 셀 크기와 맞나요?" });
     }
@@ -920,7 +967,8 @@ const Guided = {
   },
 
   pendingConfirmations() {
-    return this.confirmations().filter((c) => !App.graph.meta.confirmations[c.key]);
+    // unresolved 항목은 체크로 넘길 수 없다: 값이 실제로 채워져야 사라진다.
+    return this.confirmations().filter((c) => c.unresolved || !App.graph.meta.confirmations[c.key]);
   },
 
   confirm(key, on) {
@@ -933,49 +981,104 @@ const Guided = {
   },
 
   /** 조건 하나를 복제해 두 번째 케이스를 만든다(§7.3). */
+  /** 이 파라미터를 복제해 두 번째 케이스를 만들 수 있는가.
+
+      솔버·접촉·결과 노드는 복제해도 두 번째 케이스가 되지 않는다: 솔버를
+      복제하면 입력이 없는 두 번째 솔버가 생겨 GRAPH_INCOMPLETE로 막히고,
+      접촉은 스윕 포트가 아니라 곱집합에 들어가지 않는다. 형상 체인(캔·캡·
+      벤트)·메쉬·재료·하중만 허용한다. */
+  comparableTypes: ["geometry", "cap", "vent", "mesh", "material", "loading", "pressure"],
+
+  canCompare(node) {
+    if (!node || node.unknown) return false;
+    if (!this.comparableTypes.includes(node.type)) return false;
+    const g = App.graph;
+    if (!g.solver()) return false;
+    if (["mesh", "material", "loading", "pressure"].includes(node.type)) return true;
+    // 형상 체인의 노드는 그 아래로 메쉬에 닿아야 두 번째 갈래를 만들 수 있다.
+    return this.chainMeshes(g, node).length > 0;
+  },
+
+  /** 형상 체인 노드에서 아래로 따라가며 만나는 메쉬 노드들. */
+  chainMeshes(model, node) {
+    const out = [];
+    let cur = node;
+    let guard = 0;
+    while (cur && guard++ < 16) {
+      const consumers = model.edges.filter((e) => e.from === cur.id && e.port === "geom")
+        .map((e) => model.node(e.to)).filter(Boolean);
+      for (const consumer of consumers) if (consumer.type === "mesh") out.push(consumer);
+      cur = consumers.find((c) => c.type === "cap" || c.type === "vent");
+    }
+    return out;
+  },
+
+  /** 조건 하나를 복제해 두 번째 케이스를 만든다(§7.3).
+
+      형상 체인의 값이면 그 노드부터 메쉬까지의 **체인 전체**를 복제해 두 번째
+      갈래로 잇는다. 복제본만 만들고 잇지 않으면 그래프에 고아 노드가 남고
+      케이스는 그대로 1건이었다(리뷰 지적 1). */
   compareOne(nodeId, key, newValue) {
     const g = App.graph;
     const node = g.node(nodeId);
-    if (!node) return;
+    if (!node || !this.canCompare(node)) return false;
     g.batch("조건 하나 바꿔 비교", (m) => {
       const solver = m.solver();
       const original = m.node(nodeId);
-      const clone = {
-        id: m.newId(), type: original.type, x: original.x, y: original.y + 200,
-        params: Object.assign({}, original.params)
+      const copy = (source, params) => {
+        const made = {
+          id: m.newId(), type: source.type, x: source.x + 40, y: source.y + 210,
+          params: Object.assign({}, source.params, params || {})
+        };
+        m.nodes.push(made);
+        return made;
       };
+      // 이름이 겹치면 DUPLICATE_CASE_NAME으로 막히므로 두 갈래에 태그를 준다.
+      const tagPair = (source, index) => {
+        const base = String(source.params.tag || "").trim() || ("v" + (index + 1));
+        source.params.tag = base;
+        return base + "b";
+      };
+      const clone = copy(original, {});
       clone.params[key] = newValue;
-      if (!original.params.tag) original.params.tag = "a";
-      clone.params.tag = "b";
-      m.nodes.push(clone);
       m.meta.provenance[clone.id + "." + key] = "user";
+
       if (["mesh", "material", "loading", "pressure"].includes(original.type)) {
         const port = original.type === "mesh" ? "mesh" : (original.type === "material" ? "mat" : "load");
-        // 메쉬 노드를 복제하면 형상 입력도 같이 이어야 한다.
+        clone.params.tag = tagPair(original, 0);
         if (original.type === "mesh") {
           for (const src of m.sources(original.id, "geom")) m.edges.push({ from: src.id, to: clone.id, port: "geom" });
         }
         if (solver) m.edges.push({ from: clone.id, to: solver.id, port: port });
-      } else {
-        // 형상 체인(캔·캡·벤트)의 값이면 그 아래 메쉬까지 복제해 두 갈래로 만든다.
-        const downstream = m.edges.filter((e) => e.from === original.id && e.port === "geom").map((e) => m.node(e.to)).filter(Boolean);
-        for (const target of downstream) {
-          if (target.type === "mesh") {
-            const meshClone = {
-              id: m.newId(), type: "mesh", x: target.x, y: target.y + 200,
-              params: Object.assign({}, target.params, { tag: "b" })
-            };
-            if (!target.params.tag) target.params.tag = "a";
-            m.nodes.push(meshClone);
-            m.edges.push({ from: clone.id, to: meshClone.id, port: "geom" });
-            if (solver) m.edges.push({ from: meshClone.id, to: solver.id, port: "mesh" });
-          }
+        return;
+      }
+
+      // 형상 체인: 복제한 노드의 위쪽은 원본과 같은 입력에 잇고, 아래쪽은
+      // 체인 끝의 메쉬까지 복제해 솔버의 mesh 포트에 잇는다.
+      for (const src of m.sources(original.id, "geom")) m.edges.push({ from: src.id, to: clone.id, port: "geom" });
+      let originalCursor = original;
+      let cloneCursor = clone;
+      let meshIndex = 0;
+      let guard = 0;
+      while (originalCursor && guard++ < 16) {
+        const consumers = m.edges.filter((e) => e.from === originalCursor.id && e.port === "geom")
+          .map((e) => m.node(e.to)).filter(Boolean);
+        for (const mesh of consumers.filter((c) => c.type === "mesh")) {
+          const meshClone = copy(mesh, { tag: tagPair(mesh, meshIndex++) });
+          m.edges.push({ from: cloneCursor.id, to: meshClone.id, port: "geom" });
+          if (solver) m.edges.push({ from: meshClone.id, to: solver.id, port: "mesh" });
         }
-        for (const src of m.sources(original.id, "geom")) m.edges.push({ from: src.id, to: clone.id, port: "geom" });
+        const next = consumers.find((c) => c.type === "cap" || c.type === "vent");
+        if (!next) break;
+        const nextClone = copy(next, {});
+        m.edges.push({ from: cloneCursor.id, to: nextClone.id, port: "geom" });
+        originalCursor = next;
+        cloneCursor = nextClone;
       }
     });
     App.step = 4;
     UI.renderAll();
+    return true;
   }
 };
 
@@ -1332,8 +1435,21 @@ const Inspector = {
 
   /* -- 2단계: 목적 --------------------------------------------------- */
 
+  /** 안내 흐름이 그래프를 바꿨을 때의 알림(예: 목적에 맞춘 형상 전환). */
+  noticeBlock() {
+    if (!App.notice) return el("span");
+    const notice = App.notice;
+    return el("div", { class: "note " + (notice.kind || "") }, [
+      notice.text, " ",
+      el("button", {
+        class: "btn small", text: "확인", onclick: () => { App.notice = null; UI.renderAll(); }
+      })
+    ]);
+  },
+
   stepPurpose(panel) {
     panel.appendChild(el("h2", { class: "section-title", text: "2. 알고 싶은 것" }));
+    panel.appendChild(this.noticeBlock());
     panel.appendChild(el("p", { class: "muted", text: "이번 해석에서 무엇을 알고 싶나요?" }));
     const list = el("div", { class: "purpose-list", role: "radiogroup", "aria-label": "해석 목적" });
     const purposes = Caps.purposes();
@@ -1395,6 +1511,7 @@ const Inspector = {
   stepConditions(panel) {
     const g = App.graph;
     panel.appendChild(el("h2", { class: "section-title", text: "3. 조건" }));
+    panel.appendChild(this.noticeBlock());
     const solver = g.solver();
     if (solver) panel.appendChild(this.nameRow(solver));
 
@@ -1937,14 +2054,19 @@ const Runner = {
     if (!preflight || !preflight.runnable) return;
     const button = $("btnStart");
     button.disabled = true;
-    const key = "submit-" + preflight.input_hash + "-" + App.submitSeq;
+    // 키는 입력 해시 하나로 정해진다: 응답을 못 받고 다시 눌러도, 사전 검사를
+    // 다시 받아 눌러도 서버는 같은 실행을 돌려준다(U19). exec_id 자체가
+    // <이름>_<입력해시 6자>라 같은 조건은 애초에 같은 실행이다.
+    const key = "submit-" + preflight.input_hash;
     try {
       const body = await Api.post("/api/executions", {
         preflight_id: preflight.id,
         input_hash: preflight.input_hash,
         idempotency_key: key
       });
-      App.submitSeq += 1;
+      // 이 입력은 소비됐다. 조건을 바꾸거나 '같은 조건으로 다시 실행'을
+      // 명시적으로 누르기 전에는 다시 제출되지 않는다.
+      App.consumedHash = preflight.input_hash;
       for (const item of body.executions || []) App.tracked.add(item.exec_id);
       saveTracked();
       announce((body.executions || []).length + "건을 대기열에 등록했습니다.");
@@ -2236,6 +2358,13 @@ const ResultPresenter = {
 
 const UI = {
   renderAll() {
+    // 필드 하나를 고칠 때마다 패널을 다시 그리면 포커스가 body로 떨어져
+    // 키보드로는 다음 필드로 갈 수 없었다. 활성 요소의 id와 캐럿 위치를
+    // 기억했다가 같은 id가 다시 만들어지면 되돌린다.
+    const active = document.activeElement;
+    const focusId = active && active.id ? active.id : null;
+    const caret = active && typeof active.selectionStart === "number"
+      ? [active.selectionStart, active.selectionEnd] : null;
     GraphView.render();
     Inspector.render();
     this.renderSteps();
@@ -2248,6 +2377,15 @@ const UI = {
     $("btnRedo").disabled = !App.graph.canRedo();
     $("btnToggleSettings").setAttribute("aria-pressed", App.showSettingsGroup ? "true" : "false");
     $("projectName").textContent = App.graph.name || "새 해석";
+    if (focusId && document.activeElement !== document.getElementById(focusId)) {
+      const again = document.getElementById(focusId);
+      if (again && again.focus) {
+        again.focus();
+        if (caret && typeof again.setSelectionRange === "function") {
+          try { again.setSelectionRange(caret[0], caret[1]); } catch (err) { /* number 입력은 무시 */ }
+        }
+      }
+    }
   },
 
   renderSteps() {
@@ -2303,6 +2441,12 @@ const UI = {
     if (!geo) return;
     $("previewLabel").textContent = geo.params.kind === "step" ? "가져온 형상" : "형상 미리보기";
     if (geo.params.kind === "step") return;   // 자산 미리보기는 가져올 때 한 번 올린다
+    // 치수가 그대로인데 다시 올리면 카메라가 매번 초기화된다: 사용자가 돌려
+    // 놓은 시점이 필드를 하나 고칠 때마다 튕겨 나갔다(§3.1).
+    const hash = [geo.params.kind, geo.params.radius, geo.params.width, geo.params.depth,
+      geo.params.height].join("|");
+    if (hash === App.previewHash) return;
+    App.previewHash = hash;
     Preview.showParametric(geo.params);
   },
 
@@ -2353,7 +2497,22 @@ const UI = {
           el("button", { class: "btn small", text: "30분 목표 설정 보기", onclick: () => this.showPresetEvidence() })
         ]));
       }
-      button.disabled = !preflight.runnable || pending.length > 0;
+      const consumed = App.consumedHash && App.consumedHash === preflight.input_hash;
+      if (consumed) {
+        notices.appendChild(el("div", { class: "warn-line" }, [
+          "이 조건은 이미 대기열에 등록했습니다. 조건을 바꾸면 새 실행이 됩니다. ",
+          el("button", {
+            class: "btn small", id: "btnShowRun", text: "실행 보기",
+            onclick: () => UI.openRunPanel()
+          }),
+          " ",
+          el("button", {
+            class: "btn small", id: "btnRecheck", text: "다시 확인",
+            onclick: () => { App.consumedHash = null; Runner.preflight(true); }
+          })
+        ]));
+      }
+      button.disabled = !preflight.runnable || pending.length > 0 || !!consumed;
     }
 
     if (pending.length) {
@@ -2389,7 +2548,9 @@ const UI = {
       return;
     }
     const order = { running: 0, cancelling: 1, queued: 2, completed: 3, failed: 4, cancelled: 5, interrupted: 6 };
-    const runs = App.runs.slice().sort((a, b) => (order[a.state] || 9) - (order[b.state] || 9));
+    // ?? 가 아니라 || 를 쓰면 running(0)이 '모르는 상태'로 취급돼 맨 아래로
+    // 밀린다 - 지금 돌고 있는 해석이 목록 끝에 있었다.
+    const runs = App.runs.slice().sort((a, b) => (order[a.state] ?? 9) - (order[b.state] ?? 9));
     for (const run of runs) {
       const result = App.results.get(run.exec_id);
       const row = el("div", { class: "run-row" });
@@ -2415,6 +2576,14 @@ const UI = {
       if (artifacts.viewer) actions.appendChild(el("a", { class: "btn small", href: artifacts.viewer, target: "_blank", rel: "noopener", text: "3D 뷰어" }));
       if (artifacts.report) actions.appendChild(el("a", { class: "btn small", href: artifacts.report, target: "_blank", rel: "noopener", text: "리포트" }));
       if (artifacts.csv) actions.appendChild(el("a", { class: "btn small", href: artifacts.csv, target: "_blank", rel: "noopener", text: "CSV" }));
+      // 변형 형상 STEP은 요청할 때 만들어진다(issue #26). 대상 부품·프레임을
+      // 링크 제목에 적어 무엇을 받는지 알 수 있게 한다.
+      if (artifacts.step) {
+        actions.appendChild(el("a", {
+          class: "btn small", href: artifacts.step, target: "_blank", rel: "noopener",
+          title: "캔 부품 · 마지막 프레임 · 변형 배율 1×", text: "변형 STP"
+        }));
+      }
       if (run.state === "completed") {
         actions.appendChild(el("button", { class: "btn small", text: "조건 하나 바꿔 비교", onclick: () => this.showCompareDialog() }));
         const checked = App.compare.includes(run.exec_id);
@@ -2510,7 +2679,7 @@ const UI = {
     const candidates = [];
     for (const node of g.nodes) {
       const def = NODE_TYPES[node.type];
-      if (!def || node.unknown) continue;
+      if (!def || !Guided.canCompare(node)) continue;
       for (const field of def.fields) {
         if (field.type !== "num") continue;
         if (node.params[field.p] === undefined) continue;
@@ -2537,7 +2706,10 @@ const UI = {
           const chosen = candidates[Number(select.value)];
           const value = Number(input.value);
           if (Number.isNaN(value) || input.value.trim() === "") { announce("두 번째 값을 숫자로 입력하세요."); return true; }
-          Guided.compareOne(chosen.node.id, chosen.field.p, value);
+          if (Guided.compareOne(chosen.node.id, chosen.field.p, value) === false) {
+            announce("이 값은 두 번째 케이스로 복제할 수 없습니다.");
+            return true;
+          }
         }
       }
     ]);
@@ -2554,6 +2726,10 @@ const UI = {
   async save() {
     const graph = App.graph;
     if (!graph.name || graph.readOnly) return;
+    // 저장은 한 번에 하나만. 겹쳐 보내면 두 요청이 같은 base_revision을 들고
+    // 나가 두 번째가 REVISION_CONFLICT로 돌아온다(같은 창인데 충돌 대화상자).
+    if (this._saving) { this._saveAgain = true; return; }
+    this._saving = true;
     const state = $("saveState");
     state.dataset.state = "saving";
     state.textContent = "저장 중";
@@ -2581,6 +2757,9 @@ const UI = {
             }
           ]);
       }
+    } finally {
+      this._saving = false;
+      if (this._saveAgain) { this._saveAgain = false; this.scheduleSave(); }
     }
   },
 

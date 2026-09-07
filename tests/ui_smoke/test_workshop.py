@@ -16,6 +16,7 @@ import os
 import shutil
 import socket
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -32,7 +33,12 @@ from crushsim.ui.server import create_app  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 CHROMIUM = Path("/opt/pw-browsers/chromium")
-SCREENSHOTS = REPO / "docs" / "ui_screens"
+
+#: 스크린샷과 첫 화면 계측값은 기본적으로 임시 폴더에 쓴다. 테스트를 돌릴
+#: 때마다 docs/ui_screens/*.png가 바뀌면 커밋된 값이 흔들리기 때문이다.
+#: 문서를 갱신할 때만 CRUSHSIM_UI_SCREENS=1로 돌린다.
+_PUBLISH = os.environ.get("CRUSHSIM_UI_SCREENS") == "1"
+SCREENSHOTS = (REPO / "docs" / "ui_screens") if _PUBLISH else Path(tempfile.mkdtemp(prefix="ui_screens_"))
 
 #: 큐가 실제로 실행할 명령. 솔버 대신 잠들기만 한다.
 _SLEEP = [sys.executable, "-c", "import time; time.sleep(60)"]
@@ -575,3 +581,189 @@ def test_u43_shipped_example_graph_opens_with_its_meaning(page, server) -> None:
     )
     assert "2건" in page.inner_text("#runEstimate")
     _shot(page, "13_example_graph.png")
+
+
+# ================================================================ 리뷰 반영
+# PR #47 코드 리뷰가 지적한 결함들의 재발 방지선.
+
+
+def _vent_ready(page) -> None:
+    """치수로 시작 → 벤트 개방 → 필수 확인까지."""
+    _start_parametric(page)
+    page.click("button.step-btn:has-text('알고 싶은 것')")
+    page.click(".purpose-card:has-text('벤트 개방')")
+    page.wait_for_selector("#confirmAll")
+    page.click("#confirmAll")
+
+
+def test_review1_chain_clone_wires_a_whole_second_branch(page) -> None:
+    """리뷰 1: 캡·벤트 체인의 값을 복제하면 메쉬까지 복제돼 실제로 2건이 된다."""
+    _vent_ready(page)
+    page.click("button.step-btn:has-text('실행 확인')")
+    page.wait_for_function("() => App.preflight && App.preflight.combinations.total === 1",
+                           timeout=30_000)
+    before_nodes = page.evaluate("() => App.graph.nodes.length")
+    vent_id = page.evaluate("() => App.graph.byType('vent')[0].id")
+    assert page.evaluate(f"() => Guided.compareOne('{vent_id}', 'score_thickness', 0.04)") is True
+    # 고아 복제본이 아니라 캔→캡→벤트'→메쉬'→솔버로 이어진 두 번째 갈래여야 한다.
+    assert page.evaluate("() => App.graph.nodes.length") == before_nodes + 2   # 벤트 + 메쉬
+    assert page.evaluate("() => App.graph.byType('mesh').length") == 2
+    assert page.evaluate(
+        "() => App.graph.sources(App.graph.solver().id, 'mesh').length"
+    ) == 2
+    page.wait_for_function("() => App.preflight && App.preflight.combinations.total === 2",
+                           timeout=30_000)
+    changed = page.evaluate("() => App.preflight.cases[1].changed_vs_first")
+    assert "geometry.vent.score_thickness" in changed
+    assert changed["geometry.vent.score_thickness"] == [0.03, 0.04]
+    # 이름이 겹치면 DUPLICATE_CASE_NAME으로 막힌다.
+    names = page.evaluate("() => App.preflight.cases.map(c => c.name)")
+    assert len(set(names)) == 2
+    assert page.evaluate("() => App.preflight.runnable") is True
+
+
+def test_review1_solver_and_contact_params_are_never_offered(page) -> None:
+    """리뷰 1: 솔버·접촉 노드는 복제해도 두 번째 케이스가 되지 않으므로 후보에서 뺀다."""
+    _vent_ready(page)
+    assert page.evaluate("() => Guided.canCompare(App.graph.solver())") is False
+    assert page.evaluate("() => Guided.canCompare(App.graph.byType('contact')[0])") is False
+    assert page.evaluate("() => Guided.canCompare(App.graph.byType('vent')[0])") is True
+    assert page.evaluate("() => Guided.canCompare(App.graph.byType('mesh')[0])") is True
+    page.click("button.step-btn:has-text('실행 확인')")
+    page.click("#btnCompareOne")
+    page.wait_for_selector("dialog.modal[open] #cmpField")
+    options = page.eval_on_selector_all("#cmpField option", "els => els.map(e => e.textContent)")
+    assert options, "복제 후보가 하나도 없습니다"
+    assert not [o for o in options if "솔버" in o or "접촉" in o]
+    # 솔버 노드를 억지로 복제해도 그래프가 망가지지 않는다.
+    solver_id = page.evaluate("() => App.graph.solver().id")
+    assert page.evaluate(f"() => Guided.compareOne('{solver_id}', 'threads', 2)") is False
+    assert page.evaluate("() => App.graph.byType('solver').length") == 1
+    page.click("dialog.modal button:has-text('취소')")
+
+
+def test_review2_step_preview_drops_the_previous_wireframe(page) -> None:
+    """리뷰 2: 이전 파라메트릭 메쉬의 선 버퍼가 STEP 미리보기 위에 남으면 안 된다."""
+    _start_parametric(page)
+    page.wait_for_function("() => Preview.renderer && Preview.renderer.hasGroup('mesh')")
+    assert page.evaluate("() => Preview.renderer._groups[0].nLine > 0")   # 파라메트릭은 선을 그린다
+    page.evaluate(
+        """() => Preview.showAsset({
+             lod: 'preview_3mm',
+             positions: [0,0,0, 10,0,0, 10,10,0, 0,10,0],
+             indices: [0,1,2, 0,2,3]
+           })"""
+    )
+    assert page.evaluate("() => Preview.renderer._groups[0].nLine") == 0
+    assert page.evaluate("() => Preview.renderer.wireframe()") is False
+
+
+def test_review3_step_without_gauged_thickness_asks_for_it(page, server) -> None:
+    """리뷰 3: 두께를 못 읽으면 템플릿 0.1 mm가 남지 않고 '확인 필요'가 된다."""
+    _start_parametric(page)
+    # 두께를 보고하지 않는 자산을 흉내낸다(게이지가 실패한 STEP).
+    page.evaluate(
+        """() => {
+             AssetImport.adopt({
+               id: 'fakeasset01', display_name: 'no_gauge.stp', status: 'ready',
+               units: {declared: 'mm', confirmed: false, plausible: true},
+               dimensions_mm: [40, 40, 100],
+               parts: [{index: 1, kind: 'hollow', volume_mm3: 100, wall_thickness_mm: null,
+                        role_suggestion: 'can'}],
+               diagnostics: []
+             });
+           }"""
+    )
+    page.wait_for_function("() => App.graph.geometryNode().params.kind === 'step'")
+    params = page.evaluate("() => App.graph.geometryNode().params")
+    assert "thickness" not in params or params["thickness"] is None
+    assert "radius" not in params            # 파라메트릭 템플릿 값이 남으면 안 된다
+    assert page.evaluate("() => App.graph.provenance(App.graph.geometryNode().id, 'thickness')") == "unknown"
+    pending = page.evaluate("() => Guided.pendingConfirmations().map(c => c.key)")
+    assert "thickness" in pending
+    # 확인 버튼을 눌러도 값이 없으면 계속 확인 필요다.
+    page.click("button.step-btn:has-text('조건')")
+    page.click("#confirmAll")
+    assert "thickness" in page.evaluate("() => Guided.pendingConfirmations().map(c => c.key)")
+    assert page.eval_on_selector("#btnStart", "el => el.disabled") is True
+    # 값을 넣으면 사라진다.
+    page.evaluate(
+        """() => { App.graph.setParam(App.graph.geometryNode().id, 'thickness', 0.4);
+                   Guided.confirm('thickness', true); }"""
+    )
+    assert "thickness" not in page.evaluate("() => Guided.pendingConfirmations().map(c => c.key)")
+
+
+def test_review4_overlapping_autosaves_do_not_self_conflict(page, ui_root: Path) -> None:
+    """리뷰 4: 저장이 겹쳐도 같은 base_revision을 두 번 보내지 않는다."""
+    _start_parametric(page)
+    page.click("#btnSave")
+    page.fill("#graphName", "autosave_race.json")
+    page.click("dialog.modal button:has-text('저장')")
+    page.wait_for_function(
+        "() => document.getElementById('saveState').dataset.state === 'saved'", timeout=15_000
+    )
+    # 저장 세 개를 동시에 던진다(옛 코드에서는 두 번째가 409로 돌아왔다).
+    page.evaluate("() => { UI.save(); UI.save(); UI.save(); }")
+    page.wait_for_timeout(1500)
+    page.wait_for_function(
+        "() => document.getElementById('saveState').dataset.state === 'saved'", timeout=15_000
+    )
+    assert not page.query_selector("dialog.modal[open]")
+    stored = json.loads((ui_root / "configs" / "graphs" / "autosave_race.json").read_text("utf-8"))
+    assert stored["revision"] == page.evaluate("() => App.graph.meta.revision")
+
+
+def test_review7_double_submit_does_not_queue_twice(page, server) -> None:
+    """리뷰 7: 제출 뒤 같은 사전 검사로 다시 제출되지 않는다."""
+    _, app = server
+    before = len(app.state.executions.list()["items"])
+    _vent_ready(page)
+    # 이 테스트만의 이름을 준다. exec_id는 <이름>_<입력해시 6자>라, 다른
+    # 테스트가 같은 기본 조건으로 이미 제출했으면 같은 실행을 가리킨다.
+    page.evaluate(
+        """() => { App.graph.setParam(App.graph.solver().id, 'prefix', 'review7_case');
+                   UI.renderAll(); }"""
+    )
+    page.click("button.step-btn:has-text('실행 확인')")
+    page.wait_for_function("() => !document.getElementById('btnStart').disabled", timeout=30_000)
+    page.click("#btnStart")
+    page.wait_for_selector(".run-row", timeout=30_000)
+    page.wait_for_function("() => document.getElementById('btnStart').disabled", timeout=10_000)
+    assert "이미 대기열에 등록했습니다" in page.inner_text("#runNotices")
+    listed = app.state.executions.list()["items"]
+    assert len(listed) == before + 1
+    exec_id = listed[0]["exec_id"]
+
+    # 다시 확인을 눌러 잠금을 풀고 또 눌러도, 같은 입력이면 같은 실행이다
+    # (exec_id가 입력 해시에서 나오고 idempotency 키도 해시 하나로 정해진다).
+    page.click("#btnRecheck")
+    page.wait_for_function("() => !document.getElementById('btnStart').disabled", timeout=20_000)
+    page.click("#btnStart")
+    page.wait_for_timeout(1500)
+    again = app.state.executions.list()["items"]
+    assert len(again) == before + 1
+    assert again[0]["exec_id"] == exec_id
+
+
+def test_review9_running_rows_sort_first(page) -> None:
+    """리뷰 9: order[state] || 9 였을 때 running(0)이 맨 아래로 밀렸다."""
+    runs = {"items": [
+        {"exec_id": "done_one", "case_name": "done_one", "state": "completed", "stage": None,
+         "queue_position": None, "legacy": True,
+         "timestamps": {"submitted": None, "started": None, "finished": "2026-09-07T09:00:00Z"},
+         "artifacts": {}, "snapshot": None},
+        {"exec_id": "run_now", "case_name": "run_now", "state": "running", "stage": "solver",
+         "engine_progress_pct": 12.5, "queue_position": None, "legacy": False,
+         "timestamps": {"submitted": None, "started": None, "finished": None},
+         "timing": {}, "artifacts": {}, "snapshot": {"input_hash": "sha256:x"}},
+    ]}
+    page.route("**/api/executions", lambda route: route.fulfill(
+        status=200, content_type="application/json", body=json.dumps(runs, ensure_ascii=False)))
+    _start_parametric(page)
+    page.click("#btnRunPanel")
+    page.wait_for_selector(".run-row")
+    names = page.eval_on_selector_all(".run-row .rname", "els => els.map(e => e.textContent)")
+    assert names[0] == "run_now", f"실행 중이 맨 앞이어야 합니다: {names}"
+    assert "해석 중" in page.inner_text("#runPanel")
+    page.unroute("**/api/executions")
