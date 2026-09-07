@@ -601,6 +601,15 @@ class ExecutionManager:
                 else None
             ),
             "summary": f"/runs/{exec_id}/pipeline_summary.json" if summary is not None else None,
+            # Deformed-shape STEP is generated on demand by GET /api/runs/{id}/step
+            # (issue #26). It needs the VTK frames this run wrote, so it is
+            # offered only when the run actually produced them - otherwise the
+            # link would 409 on click.
+            "step": (
+                f"/api/runs/{exec_id}/step"
+                if summary is not None and any((run_dir / "vtk").glob("*.vtk"))
+                else None
+            ),
         }
 
     def status(self, exec_id: str, state: dict[str, Any] | None = None) -> dict[str, Any]:

@@ -261,7 +261,9 @@ var Render3D = (function () {
         }
       }
     }
-    this.setGroup("mesh", { positions: V, normals: N, colors: C, lines: L || undefined, opacity: alpha });
+    // edges:false면 **빈** 선 버퍼를 올린다. 넘기지 않으면 직전 메쉬의 선
+    // 버퍼가 그대로 남아, 새 메쉬 위에 예전 와이어프레임이 겹쳐 그려졌다.
+    this.setGroup("mesh", { positions: V, normals: N, colors: C, lines: L || new Float32Array(0), opacity: alpha });
     if (isFinite(min[0])) this.setBounds(min, max);
     return { triangles: triangles, bounds: { min: min, max: max } };
   };
