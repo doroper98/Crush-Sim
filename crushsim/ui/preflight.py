@@ -30,6 +30,7 @@ from ..units import STEP_THICKNESS_MISMATCH_MAX
 from . import capabilities, estimates, graphc
 from .assets import AssetStore
 from .errors import UiError
+from .storage import write_json_atomic
 
 
 def check(
@@ -109,9 +110,7 @@ class PreflightStore:
         """Run the checks and store the result."""
         result = build(self.base, graph, solver_node_id=solver_node_id, assets=self.assets)
         self.root.mkdir(parents=True, exist_ok=True)
-        self.path_for(result["id"]).write_text(
-            json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8"
-        )
+        write_json_atomic(self.path_for(result["id"]), result)
         self._memory[result["id"]] = result
         return result
 

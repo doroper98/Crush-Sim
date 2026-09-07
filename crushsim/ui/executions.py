@@ -33,6 +33,7 @@ from typing import Any
 import yaml
 
 from .errors import UiError
+from .storage import write_json_atomic, write_text_atomic
 
 #: Terminal states - an execution in one of these never changes again.
 FINAL_STATES = ("completed", "failed", "cancelled", "interrupted")
@@ -117,9 +118,8 @@ class ExecutionManager:
         return json.loads(path.read_text(encoding="utf-8"))
 
     def _write_state(self, state: dict[str, Any]) -> None:
-        path = self._state_path(state["exec_id"])
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
+        # Atomic: a request handler reads this file while the worker writes it.
+        write_json_atomic(self._state_path(state["exec_id"]), state)
 
     def _update(self, exec_id: str, **fields: Any) -> dict[str, Any]:
         with self._lock:
@@ -157,9 +157,7 @@ class ExecutionManager:
                 # evidence that one is running.
                 state["state"] = "interrupted"
                 state.setdefault("timestamps", {})["finished"] = _now()
-            state_file.write_text(
-                json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8"
-            )
+            write_json_atomic(state_file, state)
 
     # -- submit --------------------------------------------------------------
 
@@ -264,23 +262,19 @@ class ExecutionManager:
     ) -> dict[str, Any]:
         target = self.dir_for(exec_id)
         target.mkdir(parents=True, exist_ok=True)
-        self.case_path(exec_id).write_text(
-            yaml.safe_dump(case, sort_keys=False, allow_unicode=True), encoding="utf-8"
+        write_text_atomic(
+            self.case_path(exec_id), yaml.safe_dump(case, sort_keys=False, allow_unicode=True)
         )
-        (target / "snapshot.json").write_text(
-            json.dumps(
-                {
-                    "exec_id": exec_id,
-                    "input_hash": input_hash,
-                    "preflight_id": preflight_id,
-                    "idempotency_key": idempotency_key,
-                    "submitted": _now(),
-                    **snapshot,
-                },
-                ensure_ascii=False,
-                indent=1,
-            ),
-            encoding="utf-8",
+        write_json_atomic(
+            target / "snapshot.json",
+            {
+                "exec_id": exec_id,
+                "input_hash": input_hash,
+                "preflight_id": preflight_id,
+                "idempotency_key": idempotency_key,
+                "submitted": _now(),
+                **snapshot,
+            },
         )
         state = {
             "exec_id": exec_id,

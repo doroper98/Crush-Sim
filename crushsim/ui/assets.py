@@ -28,6 +28,7 @@ from typing import Any
 from ..errors import OptionalDependencyError
 from . import capabilities
 from .errors import UiError, code_for_exception
+from .storage import write_json_atomic
 
 #: Target element size of the preview mesh [mm]. Display only - the analysis
 #: mesh comes from the case, and the response says so with ``lod``.
@@ -134,9 +135,8 @@ class AssetStore:
         thread.start()
 
     def write_record(self, asset_id: str, record: dict[str, Any]) -> None:
-        path = self.record_path(asset_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(record, ensure_ascii=False, indent=1), encoding="utf-8")
+        # Atomic: the browser polls this file while the inspector rewrites it.
+        write_json_atomic(self.record_path(asset_id), record)
 
     def read_record(self, asset_id: str) -> dict[str, Any] | None:
         path = self.record_path(asset_id)
@@ -368,7 +368,7 @@ def build_preview(asset_dir: str | Path) -> dict[str, Any]:
         name=f"preview_{directory.name}",
     )
     payload = _preview_payload(result.mesh)
-    (directory / "preview.json").write_text(json.dumps(payload), encoding="utf-8")
+    write_json_atomic(directory / "preview.json", payload, indent=None)
     return payload
 
 

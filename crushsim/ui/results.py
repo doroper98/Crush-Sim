@@ -28,6 +28,7 @@ from ..units import (
     KINETIC_TO_INTERNAL_MAX,
 )
 from . import capabilities, estimates
+from .storage import write_json_atomic
 
 SCHEMA_VERSION = 1
 
@@ -210,7 +211,7 @@ def _curves(run_dir: Path, summary: dict[str, Any]) -> dict[str, list[list[float
             ]
     if out["pressure_time_curve"] or out["vent_open_area_curve"]:
         try:
-            cache.write_text(json.dumps(out), encoding="utf-8")
+            write_json_atomic(cache, out, indent=None)
         except OSError:
             pass
     return out

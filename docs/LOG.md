@@ -354,3 +354,11 @@ fine 대비 +5.7/+5.3 %). writer가 명시 end_time에서 램프 테이블은 �
 `runs/<exec_id>`에 쓰지만, 옛 경로로 시작한 런까지 exec_id 디렉터리로 옮기면 기존
 화면의 결과 행(케이스 이름으로 런을 찾는다)이 전부 빈다. 스냅샷만 뜨고 출력 위치는
 케이스에 적힌 그대로 둔다.
+
+**6. `Path.write_text`는 워커 스레드와 요청 핸들러 사이에서 빈 파일을 보여준다.**
+전체 스위트를 돌리면 `test_execution_snapshot_is_frozen_and_written`이 가끔
+`JSONDecodeError: Expecting value: line 1 column 1`로 죽었다(6회 중 1~2회).
+`write_text`가 먼저 truncate하기 때문에 워커가 `state.json`을 다시 쓰는 순간
+읽으면 0바이트다. `crushsim/ui/storage.py`(임시 파일 + `os.replace`)로 바꿔
+state/snapshot/inspect/preview/preflight를 전부 원자적으로 쓴다. 8회 연속 통과.
+
