@@ -1,0 +1,75 @@
+# LC-6 v5 PRESET - the 30-minute / 10 % configuration (GOAL.md).
+#
+# Same model as v5_medium (score 0.5 mm, the mesh that sits within 5 % of the
+# 0.3 mm reference). What changes is WHEN the run stops. Measured on the
+# 0.65 mm budget probe (2026-09-07): the ramp is 0.85 MPa over 3.0 ms, so
+# initiation (0.30 MPa) falls at ~1.1 ms and opening (0.385 MPa) at ~1.4 ms;
+# the engine reached 1.5 ms after 7 min of wall time, then spent 25+ min on
+# the remaining 2 ms of post-opening tearing where the timestep collapses.
+# Nothing the front-end user needs happens after opening, so end_time is
+# fixed at 1.8 ms (0.51 MPa, +32 % over opening). Expected engine time ~10 min
+# at 0.5 mm; the 0.65 mm probe showed vent_size itself buys almost nothing
+# because the post-fracture cost dominates.
+# MEASURED: (fill in from runs/lc6_pris_vent_burst_v5_preset/pipeline_summary.json)
+
+name: lc6_pris_vent_burst_v5_preset
+load_case: LC-3
+description: >-
+  Prismatic cell can (120.5 x 13.1 x 65, t0.6, braced) with a production
+  foil vent: 30 x 7 mm Al 1050-O membrane (0.1 mm) welded into the cap,
+  petal_x score pattern at 0.03 mm - internal pressure ramp to petal burst.
+
+geometry:
+  kind: box_can
+  width: 120.5
+  depth: 13.1
+  height: 65.0
+  thickness: 0.6
+  closed_bottom: true
+  closed_top: true
+  vent:
+    length: 30.0
+    width: 7.0
+    band: 1.0                 # score line width (petal_x arms catch band/2)
+    membrane_thickness: 0.1   # welded-in foil
+    score_thickness: 0.03     # coined groove residual
+    pattern: petal_x
+    material: al1050_foil
+    eps_p_max: 0.40           # soft Al elongation; can body keeps 0.35
+
+material:
+  key: ni_plated_steel_can
+  eps_p_max: 0.35
+
+mesh:
+  target_size: 1.2
+  vent_size: 0.5          # local refinement of the vent flap (score resolution)
+  recombine: true
+  curvature_points: 12
+
+loading:
+  tool: none                # pressure-driven
+  clamp_can_base: true
+  brace_walls: true         # jelly roll + module end plates on the large faces
+
+pressure:
+  peak: 0.85                # MPa - just past burst; short hold to catch the petal opening
+  rise: 3.0e-3
+  hold: 0.5e-3
+
+contact:
+  friction: 0.15
+
+solver:
+  config: configs/solver.yaml
+  threads: 4
+  end_time: 1.8e-3          # s - PRESET: stop past the opening milestone instead of the full ramp+hold (3.5 ms)
+  animation_frames: 40
+  time_history_points: 500
+  stop_on_energy_error: false  # element deletion removes IE from the balance at burst
+  stop_on_negative_volume: true
+
+output:
+  dir: runs/lc6_pris_vent_burst_v5_preset
+  render: true
+  report: true
