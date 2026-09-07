@@ -1740,15 +1740,17 @@ const Inspector = {
     const body = el("div", { class: "group-body" });
     const items = Guided.confirmations();
     for (const item of items) {
-      const done = !!App.graph.meta.confirmations[item.key];
+      const done = !item.unresolved && !!App.graph.meta.confirmations[item.key];
       const row = el("div", { class: "checkline" }, [
         el("input", {
-          type: "checkbox", id: "confirm-" + item.key, checked: done,
+          // 값이 없는 항목은 체크로 넘길 수 없다: 확인이 아니라 입력이 필요하다.
+          type: "checkbox", id: "confirm-" + item.key, checked: done, disabled: !!item.unresolved,
           onchange: (e) => Guided.confirm(item.key, e.target.checked)
         }),
         el("label", { for: "confirm-" + item.key }, [
           el("b", { text: item.label }), " ",
-          el("span", { class: "small muted", text: item.detail })
+          el("span", { class: "small muted", text: item.detail }),
+          item.unresolved ? el("span", { class: "badge unknown", text: "값 입력 필요" }) : null
         ])
       ]);
       body.appendChild(row);
@@ -1757,7 +1759,9 @@ const Inspector = {
     body.appendChild(el("button", {
       class: "btn", id: "confirmAll", text: "이 조건을 확인했습니다",
       onclick: () => {
-        App.graph.batch("필수 확인", (m) => { for (const item of items) m.meta.confirmations[item.key] = true; });
+        App.graph.batch("필수 확인", (m) => {
+          for (const item of items) if (!item.unresolved) m.meta.confirmations[item.key] = true;
+        });
         UI.renderAll();
       }
     }));
