@@ -6,6 +6,8 @@
    왜 화면에서 사라지는가)**, 이미 검증된 사실들
 2. [`docs/LOG.md`](docs/LOG.md) — **시도했다 실패한 것들과 그 이유**
 3. [`docs/SPEC-v2.1.md`](docs/SPEC-v2.1.md) — 요구사항·ADR (위반 시 리뷰 반려)
+4. [`docs/analysis/README.md`](docs/analysis/README.md) — 외부 AI(astra)와의 문답
+   체인. 홀수 = 우리, 짝수 = astra. 답이 오면 다음 홀수 번호로 검토를 적습니다.
 
 ## 기록 규칙 — 이게 가장 중요합니다
 

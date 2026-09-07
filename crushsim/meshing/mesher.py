@@ -1239,8 +1239,9 @@ def mesh_step_surfaces(
 ) -> MeshResult:
     """Mesh the surfaces of a STEP file as shells.
 
-    Solids in the file are replaced by their boundary faces (FR-02: the outer
-    skin is meshed, the wall thickness is a shell property). Imported CAD is
+    Solids in the file are replaced by their boundary faces. FR-02 asks for
+    the outer skin only, but today *all* boundary faces are meshed, so a
+    thin-walled solid yields two shells (docs/LOG.md §10). Imported CAD is
     healed and then defeatured: strip faces below the §7 minimum edge length
     are removed, and sub-target fillet bands and corner arcs are meshed at
     feature size instead of being subdivided into slivers.
@@ -1281,8 +1282,12 @@ def mesh_step_surfaces(
         # (measured on a CATIA can export: gate FAIL 0.02 -> PASS 0.38).
         _defeature_strip_faces(gmsh)
         _constrain_micro_features(gmsh, target_size)
-        # Solids are never volume-meshed: generate(2) touches surfaces only, so
-        # the result is the outer skin as shells (FR-02).
+        # Solids are never volume-meshed: generate(2) touches surfaces only.
+        # KNOWN GAP: every boundary face of a thin-walled solid is meshed, so
+        # the result is BOTH skins (two shells one wall thickness apart), not
+        # the single outer skin FR-02 asks for. Measured on cylin_can.stp:
+        # nodes at R 22.6 and 23.0 mm. See docs/LOG.md §10 and
+        # docs/analysis/analysis_001.md §1.2 before trusting STEP-case results.
         if not gmsh.model.getEntities(2):
             raise MeshingError(f"STEP file {p} contains no meshable surfaces")
 
