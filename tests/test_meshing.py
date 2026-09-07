@@ -192,6 +192,22 @@ def test_shell_mesh_npz_round_trip(can_mesh_fixture: ShellMesh, tmp_path: Path) 
     back = read_mesh_npz(path)
     assert back.n_nodes == can_mesh_fixture.n_nodes
     assert np.array_equal(back.quads, can_mesh_fixture.quads)
+    assert back.element_thickness is None
+    assert back.metadata == {}
+
+
+def test_shell_mesh_npz_keeps_element_thickness_and_metadata(
+    can_mesh_fixture: ShellMesh, tmp_path: Path
+) -> None:
+    # A gauged per-element thickness (the vent score residual) must survive
+    # the archive, or the deck silently reverts to the nominal thickness.
+    mesh = can_mesh_fixture.renumber(0)
+    mesh.element_thickness = np.linspace(0.1, 0.4, mesh.n_elements)
+    mesh.metadata = {"seated_offset_mm": [0.0, 0.0, 65.0], "skin": {"kind": "hollow"}}
+    back = read_mesh_npz(write_mesh_npz(mesh, tmp_path / "mesh.npz"))
+    assert back.element_thickness is not None
+    assert np.allclose(back.element_thickness, mesh.element_thickness)
+    assert back.metadata == mesh.metadata
 
 
 def test_read_mesh_npz_missing_raises(tmp_path: Path) -> None:
@@ -472,3 +488,55 @@ def test_vent_size_refines_the_flap_only():
     assert limits["min_sicn"] == 0.3
     assert limits["max_aspect_ratio"] == 5.0
     assert limits["min_edge_length"] == pytest.approx(0.1)
+
+
+class TestStepCasePath:
+    """``geometry.kind: step`` meshes ONE shell (outer skin), mass-gated.
+
+    Until analysis_003 the pipeline handed the raw solid to the mesher and got
+    both skins back - two shells one wall apart, each carrying the case
+    thickness (Honda_Can.stp: nodes at y = ±5.90 and ±6.28, +83 % mass).
+    """
+
+    def _case(self, tmp_path: Path, example_step: Path, thickness: float):
+        from crushsim.config import load_case
+
+        text = (
+            "name: step_probe\nload_case: LC-2\n"
+            f"geometry:\n  kind: step\n  step_path: {example_step}\n  thickness: {thickness}\n"
+            "material:\n  key: aluminum_3003\n"
+            "loading:\n  tool: platen\n  direction: [0.0, 1.0, 0.0]\n  travel: 5.0\n"
+            "mesh:\n  target_size: 2.0\n"
+        )
+        path = tmp_path / "step_probe.yaml"
+        path.write_text(text, encoding="utf-8")
+        return load_case(path)
+
+    def test_one_skin_and_a_passing_mass_gate(self, tmp_path: Path, example_step: Path) -> None:
+        pytest.importorskip("OCP")
+        from crushsim.pipeline import build_geometry, build_meshes
+
+        case = self._case(tmp_path, example_step, 0.38)
+        meshes = build_meshes(case, build_geometry(case), outdir=tmp_path / "m")
+        mesh = meshes["can"].mesh
+        # The wall runs along y after seating; nodes must sit on ONE radius.
+        lo, hi = mesh.bounding_box()
+        mid = np.abs(mesh.nodes[:, 0] - (lo[0] + hi[0]) / 2) < 0.15 * (hi[0] - lo[0])
+        near = np.abs(mesh.nodes[mid][:, 2] - (lo[2] + hi[2]) / 2) < 0.5
+        radii = np.unique(np.abs(mesh.nodes[mid][near][:, 1] - (lo[1] + hi[1]) / 2).round(1))
+        assert radii.size == 1, f"two skins would show two radii, got {radii}"
+        assert mesh.metadata["skin"]["kind"] == "hollow"
+        assert mesh.metadata["skin"]["dropped_faces"] > 0
+        assert mesh.metadata["idealisation_gate"]["passed"] is True
+        assert abs(mesh.metadata["shell_mass_error"]) < 0.10
+
+    def test_case_thickness_must_match_the_gauged_wall(
+        self, tmp_path: Path, example_step: Path
+    ) -> None:
+        pytest.importorskip("OCP")
+        from crushsim.errors import CrushSimError
+        from crushsim.pipeline import build_geometry, build_meshes
+
+        case = self._case(tmp_path, example_step, 0.3)  # what every lc2 case said
+        with pytest.raises(CrushSimError, match="geometry.thickness: 0.38"):
+            build_meshes(case, build_geometry(case), outdir=tmp_path / "m")

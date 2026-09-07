@@ -240,6 +240,101 @@ def _seated_can_proxy(mesh: Any, case: CaseConfig) -> CanShell:
     return make_can(radius, height, case.geometry.thickness)
 
 
+def _mesh_step_can(
+    case: CaseConfig, *, target: float, outdir: Path, enforce_gate: bool
+) -> MeshResult:
+    """Mesh an imported STEP can as ONE shell: outer skin only, mass-gated.
+
+    A thin-walled solid's boundary is two skins plus the end strips, and
+    meshing it as-is (what this path did until EXP-004/analysis_003) yields
+    two shells one wall apart, each carrying the case thickness - measured on
+    Honda_Can.stp: nodes at y = ±5.90 and ±6.28, +83 % shell mass. So the
+    solid goes through :func:`extract_shell_skins` first (cavity lining
+    dropped, wall gauged by ray), the surviving skin is meshed, and the result
+    is judged by mass conservation (FR-02 / ADR-06). A sheet body (no solid)
+    needs no idealisation and is meshed directly.
+
+    Raises:
+        CrushSimError: If the file holds more than one solid (assemblies are
+            not a ``kind: step`` case yet - see ``meshing/assembly.py``), or the
+            case thickness disagrees with the gauged wall by more than
+            :data:`STEP_THICKNESS_MISMATCH_MAX` - the deck would carry a wall
+            the CAD does not have.
+        GateFailure: If the shell does not carry the solid's mass and
+            ``enforce_gate``.
+    """
+    from .errors import GateFailure, GeometryError  # noqa: PLC0415
+    from .geometry.skin import extract_shell_skins, shell_mass_error  # noqa: PLC0415
+    from .meshing.gates import evaluate_idealisation_gate  # noqa: PLC0415
+    from .units import STEP_THICKNESS_MISMATCH_MAX  # noqa: PLC0415
+
+    source = case.geometry.step_path
+    assert source is not None
+    mesh_kwargs: dict[str, Any] = dict(
+        target_size=target,
+        min_size=case.mesh.min_size,
+        max_size=case.mesh.max_size,
+        recombine=case.mesh.recombine,
+        curvature_points=case.mesh.curvature_points,
+        out_path=outdir / "can.msh",
+        enforce=enforce_gate,
+        name="CAN",
+    )
+    try:
+        skins = extract_shell_skins(source, outdir / "can_skin.brep")
+    except GeometryError as exc:
+        if "contains no solids" not in str(exc):
+            raise
+        # A surface/sheet body is already the single surface a shell needs.
+        result = mesh_step_surfaces(source, **mesh_kwargs)
+        result.mesh.metadata["skin"] = {"kind": "sheet", "note": str(exc)}
+        return result
+    if len(skins) != 1:
+        raise CrushSimError(
+            f"{source} holds {len(skins)} solids; geometry.kind: step models one "
+            "can. An assembly (can + cap + vent) is meshed by "
+            "crushsim.meshing.assembly.mesh_step_assembly, which has no case "
+            "kind yet (EXP-004/005)."
+        )
+    skin = skins[0]
+    gauged = skin.wall_thickness_mm
+    nominal = case.geometry.thickness
+    if gauged > 0.0 and abs(nominal - gauged) > STEP_THICKNESS_MISMATCH_MAX * gauged:
+        raise CrushSimError(
+            f"geometry.thickness {nominal:g} mm disagrees with the wall gauged from "
+            f"{source.name} ({gauged:.3f} mm) by more than "
+            f"{STEP_THICKNESS_MISMATCH_MAX:.0%}. The deck would carry a wall the "
+            f"CAD does not have - set geometry.thickness: {gauged:.3g}"
+        )
+    result = mesh_step_surfaces(outdir / "can_skin.brep", **mesh_kwargs)
+    error = shell_mass_error(
+        meshed_area_mm2=result.mesh.area(),
+        thickness_mm=nominal,
+        solid_volume_mm3=skin.volume_mm3,
+    )
+    gate = evaluate_idealisation_gate(
+        part="CAN",
+        mass_error=error,
+        info={
+            "source": str(source),
+            "meshed_area_mm2": result.mesh.area(),
+            "solid_volume_mm3": skin.volume_mm3,
+            "gauged_wall_mm": gauged,
+            "case_thickness_mm": nominal,
+            "thickness_uniformity": skin.uniformity,
+        },
+    )
+    result.mesh.source = str(source)
+    result.mesh.metadata["skin"] = skin.summary()
+    result.mesh.metadata["idealisation_gate"] = gate.to_dict()
+    result.mesh.metadata["shell_mass_error"] = error
+    if not gate.passed and enforce_gate:
+        raise GateFailure(
+            f"Shell idealisation of {source.name} failed (§FR-02):\n" + gate.describe()
+        )
+    return result
+
+
 def build_meshes(
     case: CaseConfig,
     geometry: GeometryStage,
@@ -315,17 +410,7 @@ def build_meshes(
     elif case.geometry.kind == "step":
         if case.geometry.step_path is None:  # pragma: no cover - validated at load time
             raise CrushSimError("geometry.kind == 'step' requires geometry.step_path")
-        can_mesh = mesh_step_surfaces(
-            case.geometry.step_path,
-            target_size=target,
-            min_size=case.mesh.min_size,
-            max_size=case.mesh.max_size,
-            recombine=case.mesh.recombine,
-            curvature_points=case.mesh.curvature_points,
-            out_path=outdir / "can.msh",
-            enforce=enforce_gate,
-            name="CAN",
-        )
+        can_mesh = _mesh_step_can(case, target=target, outdir=outdir, enforce_gate=enforce_gate)
         can_mesh.mesh.seat_on_floor()
         seated = build_geometry(case, can_override=_seated_can_proxy(can_mesh.mesh, case))
         geometry.can = seated.can
@@ -464,6 +549,19 @@ def run_pipeline(
             f"min SICN {mesh_result.quality.min_sicn:.3f}, "
             f"gate {'PASS' if mesh_result.gate.passed else 'FAIL'}"
         )
+    skin = result.meshes["can"].mesh.metadata.get("skin")
+    if skin and skin.get("kind") != "sheet":
+        error = result.meshes["can"].mesh.metadata.get("shell_mass_error", 0.0)
+        gate = result.meshes["can"].mesh.metadata.get("idealisation_gate") or {}
+        note = (
+            "STEP shell idealisation: outer skin only "
+            f"({skin['kept_faces']} faces kept, {skin['dropped_faces']} cavity/duplicate "
+            f"faces dropped), wall gauged {skin['wall_thickness_mm']:.3f} mm, "
+            f"shell mass error {error:+.1%} "
+            f"(gate {'PASS' if gate.get('passed') else 'FAIL'})."
+        )
+        result.notices.append(note)
+        emit(f"  {note}")
     seated_offset = result.meshes["can"].mesh.metadata.get("seated_offset_mm")
     if seated_offset is not None:
         lo, hi = result.meshes["can"].mesh.bounding_box()

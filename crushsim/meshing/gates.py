@@ -229,7 +229,11 @@ def evaluate_solution_gate(
             value=float(hourglass_ratio),
             limit=HOURGLASS_TO_INTERNAL_MAX,
             mode="max",
-            recommendation="Keep the fully integrated shell formulation (Ishell=24) and refine the mesh.",
+            recommendation=(
+                "Keep the QEPH shell (Ishell=24: reduced in-plane integration "
+                "with physical hourglass stabilisation - the 5 through-thickness "
+                "points do not make it fully integrated) and refine the mesh."
+            ),
         ),
         GateMetric(
             name="kinetic_over_internal",

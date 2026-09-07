@@ -8,7 +8,7 @@
    "params": {
     "kind": "step",
     "step_path": "examples/step/Honda_Can.stp",
-    "thickness": 0.3,
+    "thickness": 0.38,
     "radius": 33.0,
     "height": 115.0
    }

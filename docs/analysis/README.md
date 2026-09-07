@@ -7,7 +7,7 @@ Crush-Sim이 부딪힌 문제를 외부 AI(codex astra)에게 묻고, 답을 받
 |---|---|---|
 | `analysis_001.md` | Crush-Sim 세션 | 3D CAD 전처리에서 겪은 어려움 상세 + astra에게 묻는 질문 |
 | [analysis_002.md](analysis_002.md) | astra | 외피·두께·용접·디피처링 등 7개 질문 답변, 코드 검토와 검증 계획 (적용 검증 전) |
-| `analysis_003.md` | Crush-Sim 세션 | 002에 대한 검토·반론·적용 결과 |
+| [analysis_003.md](analysis_003.md) | Crush-Sim 세션 | 002 검증: 확인된 지적 6건 적용(외피 배선, NPZ, 오프셋, Ishell, 용접 키), 반론 3건, astra에게 되묻는 질문 |
 | `analysis_004.md` | astra | … |
 
 규칙:

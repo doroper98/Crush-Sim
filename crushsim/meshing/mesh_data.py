@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -85,6 +87,24 @@ class ShellMesh:
     def triangle_fraction(self) -> float:
         """Triangles as a fraction of all shell elements."""
         return self.n_tris / self.n_elements if self.n_elements else 0.0
+
+    def area(self) -> float:
+        """Total element area [mm²] (Newell's normal, valid for warped quads)."""
+        index = {int(t): i for i, t in enumerate(self.node_ids)}
+        total = 0.0
+        for block, corners in ((self.quads, 4), (self.tris, 3)):
+            if block.size == 0:
+                continue
+            rows = np.vectorize(index.__getitem__)(block)
+            pts = self.nodes[rows]
+            n = np.zeros((pts.shape[0], 3), dtype=float)
+            for k in range(corners):
+                a, b = pts[:, k], pts[:, (k + 1) % corners]
+                n[:, 0] += (a[:, 1] - b[:, 1]) * (a[:, 2] + b[:, 2])
+                n[:, 1] += (a[:, 2] - b[:, 2]) * (a[:, 0] + b[:, 0])
+                n[:, 2] += (a[:, 0] - b[:, 0]) * (a[:, 1] + b[:, 1])
+            total += float((np.linalg.norm(n, axis=1) / 2.0).sum())
+        return total
 
     def bounding_box(self) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
         """Axis-aligned bounding box ``(min, max)`` [mm]."""
@@ -204,6 +224,10 @@ def write_mesh_npz(mesh: ShellMesh, path: str | Path) -> Path:
     """Persist a :class:`ShellMesh` next to the ``.msh`` for downstream stages."""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
+    # element_thickness and metadata travel too: a per-element gauge (the
+    # vent score residual) that is lost between the meshing stage and the deck
+    # writer silently reverts the part to its nominal thickness (found in
+    # review, docs/analysis/analysis_002.md §8 - the round trip returned None).
     np.savez(
         p,
         node_ids=mesh.node_ids,
@@ -212,6 +236,12 @@ def write_mesh_npz(mesh: ShellMesh, path: str | Path) -> Path:
         tris=mesh.tris,
         name=np.array(mesh.name),
         source=np.array(mesh.source),
+        element_thickness=(
+            np.zeros(0, dtype=float)
+            if mesh.element_thickness is None
+            else np.asarray(mesh.element_thickness, dtype=float)
+        ),
+        metadata=np.array(json.dumps(mesh.metadata, default=str)),
     )
     return p
 
@@ -226,11 +256,19 @@ def read_mesh_npz(path: str | Path) -> ShellMesh:
     if not p.is_file():
         raise MeshingError(f"Mesh archive not found: {p}")
     data = np.load(p, allow_pickle=False)
+    thickness = None
+    if "element_thickness" in data.files and data["element_thickness"].size:
+        thickness = data["element_thickness"]
+    metadata: dict[str, Any] = {}
+    if "metadata" in data.files:
+        metadata = json.loads(str(data["metadata"]))
     return ShellMesh(
         node_ids=data["node_ids"],
         nodes=data["nodes"],
         quads=data["quads"],
         tris=data["tris"],
+        element_thickness=thickness,
         name=str(data["name"]),
         source=str(data["source"]),
+        metadata=metadata,
     )
