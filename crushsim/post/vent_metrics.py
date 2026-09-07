@@ -105,8 +105,17 @@ def rupture_log(out_text: str) -> list[tuple[int, float]]:
     return events
 
 
-def vent_metrics(run_dir: str | Path) -> dict | None:
+def vent_metrics(run_dir: str | Path, *, parts: list[dict] | None = None) -> dict | None:
     """Opening milestones + open-area curve for a foil-vent run, or None.
+
+    Args:
+        run_dir: The run directory (``deck/`` with the starter and listing).
+        parts: Deck part summaries (``[{name, role, part_id}, ...]``). The
+            pipeline passes its own, because on a fresh ``csim all`` this runs
+            BEFORE ``pipeline_summary.json`` exists - reading the summary here
+            returned None on every first pass and the cached milestones only
+            ever appeared after a re-post (found on the 0.65 mm budget probe,
+            2026-09-07). When omitted, the summary on disk is read.
 
     Returns:
         ``{t_initiation_s, t_opening_s, vent_area_mm2, score_elements,
@@ -118,11 +127,14 @@ def vent_metrics(run_dir: str | Path) -> dict | None:
     summary_path = run / "pipeline_summary.json"
     starters = sorted((run / "deck").glob("*_0000.rad"))
     listings = sorted((run / "deck").glob("*_0001.out"))
-    if not (summary_path.is_file() and starters and listings):
+    if not (starters and listings):
         return None
-    parts = (json.loads(summary_path.read_text(encoding="utf-8")).get("deck") or {}).get(
-        "parts"
-    ) or []
+    if parts is None:
+        if not summary_path.is_file():
+            return None
+        parts = (json.loads(summary_path.read_text(encoding="utf-8")).get("deck") or {}).get(
+            "parts"
+        ) or []
     membrane = next(
         (p for p in parts if p.get("role") == "deformable" and "MEMBRANE" in str(p.get("name"))),
         None,

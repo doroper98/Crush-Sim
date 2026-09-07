@@ -756,7 +756,8 @@ def _post_process(
             from .post.vent_metrics import vent_metrics  # noqa: PLC0415
 
             peak, rise = result.case.pressure.peak, result.case.pressure.rise
-            metrics_v = vent_metrics(result.run_dir)
+            parts = result.deck.summary().get("parts") if result.deck else None
+            metrics_v = vent_metrics(result.run_dir, parts=parts)
             if metrics_v is not None:
                 def _mpa(t: float | None) -> float | None:
                     return None if t is None else peak * min(t / rise, 1.0) if rise > 0 else peak

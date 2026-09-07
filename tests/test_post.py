@@ -552,6 +552,21 @@ def test_vent_metrics_milestones_from_a_synthetic_run(tmp_path) -> None:
 
     m = vent_metrics(tmp_path)
     assert m["vent_area_mm2"] == pytest.approx(4.0)
+    # On a fresh `csim all` the summary does not exist yet when the pipeline
+    # asks: the parts must be accepted directly, or the cache never fills.
+    (tmp_path / "pipeline_summary.json").unlink()
+    assert vent_metrics(tmp_path) is None
+    direct = vent_metrics(
+        tmp_path,
+        parts=[{"name": "VENT_MEMBRANE", "role": "deformable", "part_id": 2}],
+    )
+    assert direct is not None and direct["t_opening_s"] == pytest.approx(1.0e-3)
+    (tmp_path / "pipeline_summary.json").write_text(
+        json.dumps({"deck": {"parts": [
+            {"name": "VENT_MEMBRANE", "role": "deformable", "part_id": 2},
+        ]}}),
+        encoding="utf-8",
+    )
     assert m["score_elements"] == 2
     assert m["score_ruptured"] == 2
     assert m["t_initiation_s"] == pytest.approx(1.0e-3)
