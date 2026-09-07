@@ -9,6 +9,12 @@
 # scale roughly with 1/min_edge, so ~25 min is expected; the question is
 # whether initiation/opening stay within 10 % of the 0.3 mm reference
 # (0.287 / 0.366 MPa -> must land in 0.258-0.316 / 0.329-0.403).
+# TRIED 0.7 mm first: refused by the mesh gate - min edge 0.218 mm < limit
+# vent_size/3 = 0.233 mm. The finest edges come from the score-arc imprint and
+# sit near 0.21 mm whatever vent_size is (0.5 mm case: 0.208 mm), so the
+# vent_size/3 cost guard, meant for deliberate refinement, bites when the
+# vent_size is COARSENED. 0.65 mm keeps the limit (0.217) under the imprint
+# edge; the gate logic itself is left alone until analysis_005 decides.
 # MEASURED: (fill in from runs/lc6_pris_vent_burst_v5_budget/pipeline_summary.json)
 
 name: lc6_pris_vent_burst_v5_budget
@@ -42,7 +48,7 @@ material:
 
 mesh:
   target_size: 1.2
-  vent_size: 0.7          # BUDGET probe: coarsest score mesh that may still sit within 10 % of fine
+  vent_size: 0.65         # BUDGET probe: coarsest score mesh that may still sit within 10 % of fine
   recombine: true
   curvature_points: 12
 
