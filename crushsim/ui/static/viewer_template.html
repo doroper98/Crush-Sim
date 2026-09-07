@@ -223,6 +223,9 @@ select{
 </div>
 
 <script type="application/json" id="simdata">__DATA__</script>
+<!-- render3d.js is inlined here by viewergen.py so the exported file stays
+     a single standalone HTML with no network request (UI_001 §15). -->
+<script>__RENDER3D__</script>
 <script>
 "use strict";
 const D = JSON.parse(document.getElementById("simdata").textContent);
@@ -248,61 +251,34 @@ for(let i=0;i<pos[0].length;i+=3) for(let k=0;k<3;k++){const v=pos[0][i+k]; if(v
 const center=[(bmin[0]+bmax[0])/2,(bmin[1]+bmax[1])/2,(bmin[2]+bmax[2])/2];
 const diag=Math.hypot(bmax[0]-bmin[0],bmax[1]-bmin[1],bmax[2]-bmin[2]);
 
-// ---------- WebGL ----------
+// ---------- WebGL (render3d.js, inlined above) ----------
 const canvas=document.getElementById("gl");
 // Some in-app preview webviews (a file opened inside a messaging or mail app,
-// iOS Quick Look) render HTML but refuse WebGL. Without this guard the very
-// next line throws, the page keeps its panel but the model never appears and
-// no control responds - so say what happened instead of failing silently.
-const gl=canvas.getContext("webgl",{antialias:true})
-       ||canvas.getContext("experimental-webgl",{antialias:true});
-if(!gl){
-  const msg=document.createElement("div");
-  msg.style.cssText="position:absolute;inset:0;display:flex;align-items:center;"
-    +"justify-content:center;padding:24px;text-align:center;line-height:1.6;color:var(--muted)";
-  msg.innerHTML="<div><b style='color:var(--ink)'>3D 뷰를 표시할 수 없습니다</b><br>"
-    +"이 화면은 WebGL을 지원하지 않습니다.<br>"
-    +"파일을 저장한 뒤 <b>Safari·Chrome 같은 브라우저에서 직접 열어</b> 주세요.<br>"
-    +"<span style='font-size:11px'>(앱 안의 첨부파일 미리보기에서는 3D가 동작하지 않습니다)</span></div>";
-  canvas.parentNode.appendChild(msg);
-  canvas.style.display="none";
+// iOS Quick Look) render HTML but refuse WebGL. Render3D.create returns null
+// there instead of throwing, so say what happened rather than leaving a panel
+// whose controls do nothing.
+const R=Render3D.create(canvas,{clearColor:()=>
+  getComputedStyle(document.documentElement).getPropertyValue("--viewport").trim()});
+if(!R){
+  Render3D.showUnavailable(canvas,{
+    style:"position:absolute;inset:0;display:flex;align-items:center;justify-content:center;"
+      +"padding:24px;text-align:center;line-height:1.6;color:var(--muted)",
+    html:"<div><b style='color:var(--ink)'>3D 뷰를 표시할 수 없습니다</b><br>"
+      +"이 화면은 WebGL을 지원하지 않습니다.<br>"
+      +"파일을 저장한 뒤 <b>Safari·Chrome 같은 브라우저에서 직접 열어</b> 주세요.<br>"
+      +"<span style='font-size:11px'>(앱 안의 첨부파일 미리보기에서는 3D가 동작하지 않습니다)</span></div>"});
   throw new Error("WebGL unavailable");
 }
-const VS=`attribute vec3 aPos; attribute vec3 aNrm; attribute vec4 aCol;
-uniform mat4 uMVP; uniform mat3 uNrm; varying vec3 vN; varying vec4 vC; varying vec3 vW;
-void main(){ gl_Position=uMVP*vec4(aPos,1.0); vN=uNrm*aNrm; vC=aCol; vW=aPos; }`;
-const FS=`precision mediump float; varying vec3 vN; varying vec4 vC; varying vec3 vW;
-uniform vec4 uClip; uniform float uClipOn; uniform vec3 uLight;
-void main(){
-  if(uClipOn>0.5 && dot(vW,uClip.xyz)>uClip.w) discard;
-  float d=abs(dot(normalize(vN),normalize(uLight)));
-  float shade=0.45+0.55*d;
-  gl_FragColor=vec4(vC.rgb*shade, vC.a);
-}`;
-function mkProg(vs,fs){
-  const p=gl.createProgram();
-  for(const [t,src] of [[gl.VERTEX_SHADER,vs],[gl.FRAGMENT_SHADER,fs]]){
-    const s=gl.createShader(t); gl.shaderSource(s,src); gl.compileShader(s);
-    if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw gl.getShaderInfoLog(s);
-    gl.attachShader(p,s);
-  }
-  gl.linkProgram(p); return p;
-}
-const prog=mkProg(VS,FS);
-const loc={aPos:gl.getAttribLocation(prog,"aPos"),aNrm:gl.getAttribLocation(prog,"aNrm"),aCol:gl.getAttribLocation(prog,"aCol"),
-  uMVP:gl.getUniformLocation(prog,"uMVP"),uNrm:gl.getUniformLocation(prog,"uNrm"),uClip:gl.getUniformLocation(prog,"uClip"),
-  uClipOn:gl.getUniformLocation(prog,"uClipOn"),uLight:gl.getUniformLocation(prog,"uLight")};
+R.setBounds(bmin,bmax);
+R.setView("iso");
+const requestDraw=()=>R.requestDraw();
 
-// per-part expanded triangle buffers (rebuilt on frame/color change)
+// per-part element lists; the triangle soup itself is rebuilt per frame below
 const partIds=[1,2,3,4,5];
 const quadsByPart={};
 for(const pid of partIds){
   const idx=[]; for(let q=0;q<NQ;q++) if(part[q]===pid) idx.push(q);
   quadsByPart[pid]=idx;
-}
-const buffers={}; // pid -> {vbo,nbo,cbo,ebo(lines),nTri,nLine}
-for(const pid of partIds){
-  buffers[pid]={vbo:gl.createBuffer(),nbo:gl.createBuffer(),cbo:gl.createBuffer(),lbo:gl.createBuffer(),nTri:0,nLine:0};
 }
 
 // colormaps
@@ -315,14 +291,14 @@ const partColor={1:[0.78,0.31,0.24],2:[0.62,0.66,0.72],3:[0.35,0.42,0.55],4:[0.4
 // The vent-foil row only shows when the run actually has one.
 if(quadsByPart[5]&&quadsByPart[5].length){const r=document.getElementById("prow5");if(r)r.hidden=false;}
 
+// The camera (rotation, distance, pan) belongs to the renderer; this object
+// keeps only what the viewer itself owns.
 const state={t:0, playing:false, speed:1, wire:false, ghost:false, colorMode:"part",
   vis:{1:true,2:true,3:true,4:true,5:true}, opa:{1:1,2:0.35,3:0.6,4:0.35,5:1},
-  clipAxis:-1, clipPos:0.5, clipFlip:false,
-  rotX:-1.05, rotZ:0.7, dist:diag*1.9, pan:[0,0]};
+  clipAxis:-1, clipPos:0.5, clipFlip:false};
 
 // Undeformed reference: the CAN part at frame 0 (the meshed STP shape),
 // drawn as a translucent grey ghost so deformation reads against the original.
-let ghostB=null;
 function buildGhost(){
   const pid=1; if(!quadsByPart[pid]) return;
   const idx=quadsByPart[pid], nq=idx.length, P0=pos[0];
@@ -334,9 +310,7 @@ function buildGhost(){
     for(const t3 of [0,1,2, 0,2,3]){V[vp]=p[t3][0];V[vp+1]=p[t3][1];V[vp+2]=p[t3][2];vp+=3;}
     for(const e of [0,1, 1,2, 2,3, 3,0]){L[lp]=p[e][0];L[lp+1]=p[e][1];L[lp+2]=p[e][2];lp+=3;}
   }
-  ghostB={vbo:gl.createBuffer(), lbo:gl.createBuffer(), nTri:nq*6, nLine:nq*8};
-  gl.bindBuffer(gl.ARRAY_BUFFER,ghostB.vbo); gl.bufferData(gl.ARRAY_BUFFER,V,gl.STATIC_DRAW);
-  gl.bindBuffer(gl.ARRAY_BUFFER,ghostB.lbo); gl.bufferData(gl.ARRAY_BUFFER,L,gl.STATIC_DRAW);
+  R.setOverlay({positions:V,lines:L});
 }
 
 function frameLerp(){
@@ -385,151 +359,19 @@ function rebuild(){
         L[lp]=p[e][0];L[lp+1]=p[e][1];L[lp+2]=p[e][2];lp+=3;
       }
     }
-    const B=buffers[pid];
-    gl.bindBuffer(gl.ARRAY_BUFFER,B.vbo); gl.bufferData(gl.ARRAY_BUFFER,V,gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER,B.nbo); gl.bufferData(gl.ARRAY_BUFFER,N,gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER,B.cbo); gl.bufferData(gl.ARRAY_BUFFER,C,gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER,B.lbo); gl.bufferData(gl.ARRAY_BUFFER,L,gl.DYNAMIC_DRAW);
-    B.nTri=nq*6; B.nLine=nq*8;
+    R.setGroup(pid,{positions:V,normals:N,colors:C,lines:L,
+                    visible:state.vis[pid],opacity:state.opa[pid]});
   }
 }
 
-// mat helpers
-function persp(fov,asp,near,far){
-  const f=1/Math.tan(fov/2), o=new Float32Array(16);
-  o[0]=f/asp;o[5]=f;o[10]=(far+near)/(near-far);o[11]=-1;o[14]=2*far*near/(near-far);
-  return o;
-}
-function mul(a,b){
-  const o=new Float32Array(16);
-  for(let i=0;i<4;i++)for(let j2=0;j2<4;j2++){let s=0;for(let k=0;k<4;k++)s+=a[k*4+j2]*b[i*4+k];o[i*4+j2]=s;}
-  return o;
-}
-function camera(){
-  const cz=Math.cos(state.rotZ),sz=Math.sin(state.rotZ),cx=Math.cos(state.rotX),sx=Math.sin(state.rotX);
-  // world -> view: translate(-center-pan), rotZ, rotX, translate(0,0,-dist)
-  const T=(x,y,z)=>new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, x,y,z,1]);
-  const RZ=new Float32Array([cz,sz,0,0, -sz,cz,0,0, 0,0,1,0, 0,0,0,1]);
-  const RX=new Float32Array([1,0,0,0, 0,cx,sx,0, 0,-sx,cx,0, 0,0,0,1]);
-  let M=T(-center[0],-center[1],-center[2]);
-  M=mul(RZ,M); M=mul(RX,M); M=mul(T(state.pan[0],state.pan[1],-state.dist),M);
-  return M;
-}
-// A phone reports devicePixelRatio 3: rendering this many elements at 3x
-// costs ~9x the fill of 1x for no visible gain on a small screen, and it is
-// what makes a big model stutter there. Cap the backing store at 2x.
-const RENDER_DPR=Math.min(devicePixelRatio||1, 2);
-function draw(){
-  const w=Math.round(canvas.clientWidth*RENDER_DPR), h=Math.round(canvas.clientHeight*RENDER_DPR);
-  if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;}
-  gl.viewport(0,0,w,h);
-  const cs=getComputedStyle(document.documentElement);
-  const bg=cs.getPropertyValue("--viewport").trim();
-  const r=parseInt(bg.slice(1,3),16)/255,g=parseInt(bg.slice(3,5),16)/255,b2=parseInt(bg.slice(5,7),16)/255;
-  gl.clearColor(r,g,b2,1);
-  gl.enable(gl.DEPTH_TEST); gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
-  gl.useProgram(prog);
-  const V=camera(), P=persp(0.6,w/h,diag*0.02,diag*10), MVP=mul(P,V);
-  gl.uniformMatrix4fv(loc.uMVP,false,MVP);
-  // normal matrix ~ rotation part of V
-  const nm=new Float32Array([V[0],V[1],V[2],V[4],V[5],V[6],V[8],V[9],V[10]]);
-  gl.uniformMatrix3fv(loc.uNrm,false,nm);
-  gl.uniform3f(loc.uLight,0.4,0.35,0.85);
-  // clip plane
-  if(state.clipAxis>=0){
-    const n=[0,0,0]; n[state.clipAxis]=state.clipFlip?-1:1;
-    const lo=bmin[state.clipAxis], hi=bmax[state.clipAxis];
-    let d=lo+(hi-lo)*state.clipPos; if(state.clipFlip) d=-d;
-    gl.uniform4f(loc.uClip,n[0],n[1],n[2],d); gl.uniform1f(loc.uClipOn,1);
-  } else gl.uniform1f(loc.uClipOn,0);
-
-  const order=partIds.filter(p=>state.vis[p]).sort((a,b3)=>state.opa[b3]-state.opa[a]);
-  for(const pid of order){
-    const B=buffers[pid], transparent=state.opa[pid]<0.999;
-    if(transparent){gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.depthMask(false);}
-    else {gl.disable(gl.BLEND);gl.depthMask(true);}
-    gl.bindBuffer(gl.ARRAY_BUFFER,B.vbo);gl.enableVertexAttribArray(loc.aPos);gl.vertexAttribPointer(loc.aPos,3,gl.FLOAT,false,0,0);
-    gl.bindBuffer(gl.ARRAY_BUFFER,B.nbo);gl.enableVertexAttribArray(loc.aNrm);gl.vertexAttribPointer(loc.aNrm,3,gl.FLOAT,false,0,0);
-    gl.bindBuffer(gl.ARRAY_BUFFER,B.cbo);gl.enableVertexAttribArray(loc.aCol);gl.vertexAttribPointer(loc.aCol,4,gl.FLOAT,false,0,0);
-    gl.drawArrays(gl.TRIANGLES,0,B.nTri);
-    if(state.wire){
-      gl.disableVertexAttribArray(loc.aCol);
-      gl.vertexAttrib4f(loc.aCol,0.25,0.28,0.33,Math.min(0.5,state.opa[pid]+0.2));
-      gl.disableVertexAttribArray(loc.aNrm); gl.vertexAttrib3f(loc.aNrm,0,0,1);
-      gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
-      gl.bindBuffer(gl.ARRAY_BUFFER,B.lbo);gl.enableVertexAttribArray(loc.aPos);gl.vertexAttribPointer(loc.aPos,3,gl.FLOAT,false,0,0);
-      gl.drawArrays(gl.LINES,0,B.nLine);
-      gl.enableVertexAttribArray(loc.aNrm); gl.enableVertexAttribArray(loc.aCol);
-    }
-  }
-  gl.depthMask(true);
-  if(state.ghost && ghostB){
-    gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.depthMask(false);
-    gl.bindBuffer(gl.ARRAY_BUFFER,ghostB.vbo);gl.enableVertexAttribArray(loc.aPos);gl.vertexAttribPointer(loc.aPos,3,gl.FLOAT,false,0,0);
-    gl.disableVertexAttribArray(loc.aNrm); gl.vertexAttrib3f(loc.aNrm,0,0,1);
-    gl.disableVertexAttribArray(loc.aCol); gl.vertexAttrib4f(loc.aCol,0.45,0.50,0.60,0.25);
-    gl.drawArrays(gl.TRIANGLES,0,ghostB.nTri);
-    gl.vertexAttrib4f(loc.aCol,0.40,0.45,0.55,0.55);
-    gl.bindBuffer(gl.ARRAY_BUFFER,ghostB.lbo);gl.vertexAttribPointer(loc.aPos,3,gl.FLOAT,false,0,0);
-    gl.drawArrays(gl.LINES,0,ghostB.nLine);
-    gl.enableVertexAttribArray(loc.aNrm); gl.enableVertexAttribArray(loc.aCol);
-    gl.depthMask(true);
-  }
-}
+// The projection, the camera matrix and the draw loop live in render3d.js.
+// What stays here is what knows about *this* data: quads, parts, colour maps.
 
 // ---------- interaction ----------
-// Pointer events cover mouse, pen and touch alike. Two live pointers are a
-// pinch: their distance zooms and their midpoint pans, which is the only way
-// to zoom or pan on a touchscreen (there is no wheel and no shift key).
-const clampDist=d=>Math.max(diag*0.25,Math.min(diag*6,d));
-const pointers=new Map();
-let drag=null, pinch=null;
-function pinchState(){
-  const [a,b]=[...pointers.values()];
-  return {d:Math.hypot(a.x-b.x,a.y-b.y), cx:(a.x+b.x)/2, cy:(a.y+b.y)/2};
-}
-canvas.addEventListener("pointerdown",e=>{
-  pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
-  canvas.setPointerCapture(e.pointerId);
-  if(pointers.size===2){ drag=null; pinch=Object.assign(pinchState(),{dist:state.dist}); }
-  else if(pointers.size===1){
-    drag={x:e.clientX,y:e.clientY,pan:e.shiftKey||e.button===2};
-    canvas.classList.add("dragging");
-  }
-});
-canvas.addEventListener("pointermove",e=>{
-  if(!pointers.has(e.pointerId))return;
-  pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
-  if(pinch&&pointers.size===2){
-    const now=pinchState();
-    state.dist=clampDist(pinch.dist*(pinch.d/Math.max(now.d,1e-6)));
-    const s=state.dist*0.0011;
-    state.pan[0]+=(now.cx-pinch.cx)*s; state.pan[1]-=(now.cy-pinch.cy)*s;
-    pinch.cx=now.cx; pinch.cy=now.cy; pinch.d=now.d; pinch.dist=state.dist;
-    requestDraw();
-    return;
-  }
-  if(!drag)return;
-  const dx=e.clientX-drag.x, dy=e.clientY-drag.y; drag.x=e.clientX;drag.y=e.clientY;
-  if(drag.pan){const s=state.dist*0.0011; state.pan[0]+=dx*s; state.pan[1]-=dy*s;}
-  else {state.rotZ+=dx*0.008; state.rotX+=dy*0.008; state.rotX=Math.max(-Math.PI,Math.min(0,state.rotX));}
-  requestDraw();
-});
-function endPointer(e){
-  pointers.delete(e.pointerId);
-  if(pointers.size<2)pinch=null;
-  if(pointers.size===0){drag=null;canvas.classList.remove("dragging");}
-  else if(!pinch){ // one finger left after a pinch: keep orbiting from here
-    const [p]=[...pointers.values()];
-    drag={x:p.x,y:p.y,pan:false};
-  }
-}
-canvas.addEventListener("pointerup",endPointer);
-canvas.addEventListener("pointercancel",endPointer);
-canvas.addEventListener("wheel",e=>{e.preventDefault();state.dist=clampDist(state.dist*Math.exp(e.deltaY*0.0012));requestDraw();},{passive:false});
-canvas.addEventListener("contextmenu",e=>e.preventDefault());
-// iOS Safari still fires its own page zoom on a double tap over the canvas.
-canvas.addEventListener("dblclick",e=>e.preventDefault());
+// Orbit, pan, pinch and wheel zoom all live in render3d.js: mouse, pen and
+// touch go through the same pointer handlers there, and the workshop preview
+// gets the identical gestures for free.
+R.attachControls();
 
 // ---------- UI ----------
 const $=id=>document.getElementById(id);
@@ -558,20 +400,20 @@ playEl.addEventListener("click",()=>{
   lastTs=null; if(state.playing) raf=requestAnimationFrame(tick); else cancelAnimationFrame(raf);
 });
 $("speed").addEventListener("input",e=>{state.speed=+e.target.value;$("speedVal").textContent=state.speed.toFixed(2).replace(/0+$/,"").replace(/\.$/,"")+"×";});
-$("viewIso").addEventListener("click",()=>{state.rotX=-1.05;state.rotZ=0.7;state.pan=[0,0];state.dist=diag*1.9;requestDraw();});
-$("viewFront").addEventListener("click",()=>{state.rotX=-Math.PI/2;state.rotZ=0;state.pan=[0,0];state.dist=diag*1.9;requestDraw();});
-$("viewTop").addEventListener("click",()=>{state.rotX=0;state.rotZ=0;state.pan=[0,0];state.dist=diag*1.9;requestDraw();});
-$("wire").addEventListener("click",e=>{state.wire=!state.wire;e.target.classList.toggle("on",state.wire);requestDraw();});
-$("ghost").addEventListener("click",e=>{if(!ghostB)buildGhost();state.ghost=!state.ghost;e.target.classList.toggle("on",state.ghost);requestDraw();});
+$("viewIso").addEventListener("click",()=>{R.setView("iso");requestDraw();});
+$("viewFront").addEventListener("click",()=>{R.setView("front");requestDraw();});
+$("viewTop").addEventListener("click",()=>{R.setView("top");requestDraw();});
+$("wire").addEventListener("click",e=>{state.wire=!state.wire;R.setWireframe(state.wire);e.target.classList.toggle("on",state.wire);requestDraw();});
+$("ghost").addEventListener("click",e=>{if(!R.hasOverlay())buildGhost();state.ghost=!state.ghost;R.showOverlay(state.ghost);e.target.classList.toggle("on",state.ghost);requestDraw();});
 $("colorMode").addEventListener("change",e=>{state.colorMode=e.target.value;updateCbar();rebuild();requestDraw();});
 for(const pid of partIds){
   if(!$("v"+pid)) continue;
-  $("v"+pid).addEventListener("change",e=>{state.vis[pid]=e.target.checked;requestDraw();});
+  $("v"+pid).addEventListener("change",e=>{state.vis[pid]=e.target.checked;R.setGroupState(pid,{visible:state.vis[pid]});requestDraw();});
   $("o"+pid).addEventListener("input",e=>{state.opa[pid]=+e.target.value;$("ov"+pid).textContent=Math.round(state.opa[pid]*100)+"%";rebuild();requestDraw();});
   const c=partColor[pid]; $("sw"+pid).style.background=`rgb(${c[0]*255|0},${c[1]*255|0},${c[2]*255|0})`;
 }
 function setClip(ax){
-  state.clipAxis=ax;
+  state.clipAxis=ax; R.setClip({axis:ax});
   for(const [id,v] of [["clipOff",-1],["clipX",0],["clipY",1],["clipZ",2]])
     $(id).classList.toggle("on",ax===v);
   requestDraw();
@@ -580,8 +422,8 @@ $("clipOff").addEventListener("click",()=>setClip(-1));
 $("clipX").addEventListener("click",()=>setClip(0));
 $("clipY").addEventListener("click",()=>setClip(1));
 $("clipZ").addEventListener("click",()=>setClip(2));
-$("clipFlip").addEventListener("click",e=>{state.clipFlip=!state.clipFlip;e.target.classList.toggle("on",state.clipFlip);requestDraw();});
-$("clipPos").addEventListener("input",e=>{state.clipPos=+e.target.value;$("clipVal").textContent=Math.round(state.clipPos*100)+"%";requestDraw();});
+$("clipFlip").addEventListener("click",e=>{state.clipFlip=!state.clipFlip;R.setClip({flip:state.clipFlip});e.target.classList.toggle("on",state.clipFlip);requestDraw();});
+$("clipPos").addEventListener("input",e=>{state.clipPos=+e.target.value;R.setClip({pos:state.clipPos});$("clipVal").textContent=Math.round(state.clipPos*100)+"%";requestDraw();});
 
 function updateCbar(){
   const on=state.colorMode!=="part";
@@ -743,8 +585,6 @@ function drawChart(){
   ctx.fillText(tag,Math.min(px(x)+6*DP,w-mr-tagW-2*DP),Math.max(py(y)-6*DP,mt+10*DP));
 }
 
-let drawQueued=false;
-function requestDraw(){if(drawQueued)return;drawQueued=true;requestAnimationFrame(()=>{drawQueued=false;draw();});}
 // Name the gestures the device actually has.
 if(matchMedia("(pointer:coarse)").matches)
   $("navHint").textContent="한 손가락: 회전 · 두 손가락: 확대·이동";

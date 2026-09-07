@@ -20,6 +20,11 @@ import numpy as np
 from ..errors import PostProcessError
 
 _TEMPLATE = Path(__file__).parent / "static" / "viewer_template.html"
+#: The shared WebGL renderer (UI_002 §1.1). It is *inlined* into the generated
+#: viewer rather than fetched at run time: a file the user downloads has to
+#: open from disk with no server behind it (UI_001 §15), and a <script src>
+#: pointing at /static would leave the 3D view blank the moment the file moves.
+_RENDER3D = Path(__file__).parent / "static" / "render3d.js"
 
 _VTK_QUAD = 9
 _VTK_TRIANGLE = 5
@@ -403,6 +408,9 @@ def generate_viewer(
         pass
 
     html = _TEMPLATE.read_text(encoding="utf-8")
+    # Renderer first: the run data substituted below is user-derived text, and
+    # a case named "__RENDER3D__" must not be able to inject a script body.
+    html = html.replace("__RENDER3D__", _RENDER3D.read_text(encoding="utf-8"))
     html = html.replace("__TITLE__", title)
     html = html.replace("__NOTE__", (note or f"{title} 런의 실제 프레임 데이터로") + thickness_note)
     html = html.replace("__DATA__", json.dumps(data))
