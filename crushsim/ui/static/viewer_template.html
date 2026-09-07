@@ -434,10 +434,18 @@ function setBadge(node,klass,text){
     const open=box.hidden; box.hidden=!open;
     e.target.setAttribute("aria-expanded",String(open));
   });
-  // ≤3 headline metrics, the targeted one first; curves are the section below.
-  const scalars=(r.metrics||[]).filter(m=>m.kind==="scalar");
-  const key=(r.target||{}).metric_key;
-  scalars.sort((a,b)=>(a.key===key?0:1)-(b.key===key?0:1));
+  // ≤3 headline metrics. WHICH three is decided once, on the server
+  // (results.key_metrics), and shipped as D.key_metrics; re-implementing the
+  // rule here is how the viewer and the workshop would start leading with
+  // different numbers for the same run. The local sort is the fallback for a
+  // payload generated before that field existed.
+  const byKey=new Map((r.metrics||[]).map(m=>[m.key,m]));
+  let scalars=(D.key_metrics||[]).map(k=>byKey.get(k)).filter(Boolean);
+  if(!scalars.length){
+    scalars=(r.metrics||[]).filter(m=>m.kind==="scalar");
+    const key=(r.target||{}).metric_key;
+    scalars.sort((a,b)=>(a.key===key?0:1)-(b.key===key?0:1));
+  }
   const ul=el("hdrMetrics");
   for(const m of scalars.slice(0,3)){
     const li=document.createElement("li"), lab=document.createElement("span");
@@ -479,11 +487,22 @@ function setBadge(node,klass,text){
   // Served through the API the run is /api/runs/<id>/…; downloaded next to the
   // run it is a plain sibling file. Both are resolved here so one generated
   // file works in both places.
-  const api=location.pathname.match(/^(.*\/api\/runs\/[^/]+)\/viewer$/);
-  const to=name=>api?api[1]+"/"+name.replace(/\.html$/,""):name;
+  // Only report/viewer/step have API routes; every other file of a run is
+  // served by the static mount at /runs/<id>/…. Sending pipeline_summary.json
+  // to /api/runs/<id>/pipeline_summary.json was a 404.
+  const api=location.pathname.match(/^(.*)\/api\/runs\/([^/]+)\/viewer$/);
+  const API_ROUTES={"report.html":"report","viewer.html":"viewer"};
+  const to=name=>{
+    if(name.charAt(0)==="/")return name;       // already an absolute API path
+    if(!api)return name;                       // opened as a file: sibling path
+    const route=API_ROUTES[name];
+    return route?`${api[1]}/api/runs/${api[2]}/${route}`
+                :`${api[1]}/runs/${api[2]}/${name}`;
+  };
   const rows=[];
   if((r.artifacts||{}).report)rows.push(["리포트 열기",to("report.html")]);
   if((r.artifacts||{}).summary)rows.push(["요약 JSON",to("pipeline_summary.json")]);
+  if((r.artifacts||{}).csv)rows.push(["하중–변위 CSV",to("force_displacement.csv")]);
   for(const [text,href] of rows){
     const a=document.createElement("a");
     a.href=href; a.textContent=text; box.append(a);

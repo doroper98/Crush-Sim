@@ -491,7 +491,8 @@
   <div><span>입력 스냅샷 해시</span><span><code>{{ ex.get('input_hash') or res.get('snapshot_hash')|orunknown }}</code></span></div>
   <div><span>그래프 개정</span><span>{{ ex.get('graph_revision') or res.get('graph_revision')|orunknown }}</span></div>
   <div><span>실행 시각</span><span>{{ res.get('executed_at')|orunknown }}</span></div>
-  <div><span>완료 단계</span><span>{{ (deck or {}).get('run_name')|orunknown }}</span></div>
+  <div><span>완료 단계</span><span>{{ stages_completed|join(' → ')|orunknown }}</span></div>
+  <div><span>런 이름</span><span>{{ (deck or {}).get('run_name')|orunknown }}</span></div>
 </div>
 
 {% if notices %}

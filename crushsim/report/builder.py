@@ -61,6 +61,8 @@ class ReportContext:
     """Execution snapshot: exec id, input hash, graph revision, provenance."""
     timings: dict[str, float] = field(default_factory=dict)
     """Wall-clock seconds per pipeline stage (UI_001 §11 시간)."""
+    stages_completed: list[str] = field(default_factory=list)
+    """Stages this run actually finished - a skipped solver must be visible."""
 
     @property
     def unverified(self) -> bool:
@@ -89,6 +91,7 @@ class ReportContext:
             "result": self.result,
             "execution": self.execution,
             "timings": self.timings,
+            "stages_completed": self.stages_completed,
             "stage_timings": self.stage_timings,
         }
 
@@ -176,6 +179,7 @@ def build_context(
     result: dict[str, Any] | None = None,
     execution: dict[str, Any] | None = None,
     timings: dict[str, float] | None = None,
+    stages_completed: list[str] | None = None,
 ) -> ReportContext:
     """Assemble the report context from the pipeline's stage outputs."""
     gate_results = list(gates or [])
@@ -225,6 +229,7 @@ def build_context(
         result=result,
         execution=dict(execution or {}),
         timings=dict(timings or {}),
+        stages_completed=list(stages_completed or []),
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
     )
 

@@ -561,6 +561,7 @@ def _assemble(
     state: dict[str, Any],
     status: dict[str, Any],
     case_path: Path | None,
+    executed_at: str | None = None,
 ) -> dict[str, Any]:
     """Assemble the §2.6 body from already-gathered pieces.
 
@@ -612,7 +613,7 @@ def _assemble(
         "execution_id": exec_id,
         "state": state.get("state"),
         "case_name": state.get("case_name") or (summary or {}).get("case") or exec_id,
-        "executed_at": _executed_at(state, summary_path),
+        "executed_at": _executed_at(state, summary_path, executed_at),
         "snapshot_hash": state.get("input_hash") or snapshot.get("input_hash"),
         "graph_revision": snapshot.get("graph_revision"),
         "legacy": not snapshot,
@@ -632,16 +633,32 @@ def _assemble(
     }
 
 
-def _executed_at(state: dict[str, Any], summary_path: Path) -> str | None:
-    """When the run finished: the state file first, the summary's mtime after."""
-    finished = (state.get("timestamps") or {}).get("finished")
-    if finished:
-        return str(finished)
+def _executed_at(
+    state: dict[str, Any], summary_path: Path, explicit: str | None = None
+) -> str | None:
+    """When the run finished, or None - never a timestamp from another run.
+
+    Order: what the caller knows (the pipeline holds its own finish time and
+    is rendering the report *before* the summary file exists), then the state
+    file, then the summary's mtime - and that last one only when the file is
+    newer than this execution started. A re-run into the same directory finds
+    the previous run's file there, and printing that as "실행 시각" is worse
+    than printing 정보 없음.
+    """
+    if explicit:
+        return str(explicit)
+    timestamps = state.get("timestamps") or {}
+    if timestamps.get("finished"):
+        return str(timestamps["finished"])
     try:
         stamp = summary_path.stat().st_mtime
     except OSError:
         return None
-    return datetime.fromtimestamp(stamp, tz=timezone.utc).isoformat(timespec="seconds")
+    written = datetime.fromtimestamp(stamp, tz=timezone.utc)
+    started = _parse_stamp(timestamps.get("started"))
+    if started is not None and written < started:
+        return None  # the file predates this execution: it is not ours
+    return written.isoformat(timespec="seconds")
 
 
 def build(base: Path, exec_id: str, manager: Any) -> dict[str, Any]:
@@ -680,6 +697,65 @@ def _read_summary(path: Path | None) -> dict[str, Any] | None:
         return None
 
 
+def repo_root_for(run_dir: Path) -> Path:
+    """The repository root a run directory sits under.
+
+    ``runs/<case>/`` is written relative to the root, which is where the
+    execution snapshots (``runs/_ui/executions/``) are looked up from. This
+    lived in three copies (pipeline twice, viewergen once); one wrong copy is
+    a report that silently loses its provenance.
+    """
+    run_dir = Path(run_dir)
+    return run_dir.parent.parent if run_dir.parent.name == "runs" else Path.cwd()
+
+
+def execution_id_for(base: Path, run_dir: Path) -> str | None:
+    """The execution that wrote ``run_dir``, by its own state file.
+
+    The legacy adapter (``POST /api/runs/{case_file}``) uses the case-file
+    stem as the exec id while the run directory comes from the case's
+    ``output.dir``, so the two names differ and matching on the directory name
+    alone found no snapshot - the viewer and the report then disagreed with
+    ``/api/executions/<id>/result`` about the same run. The state files are
+    the mapping; the directory name is only the fallback.
+    """
+    base, run_dir = Path(base), Path(run_dir)
+    root = base / "runs" / "_ui" / "executions"
+    if root.is_dir():
+        try:
+            resolved = run_dir.resolve()
+        except OSError:  # pragma: no cover - unreadable path
+            resolved = run_dir
+        for state_file in sorted(root.glob("*/state.json")):
+            state = _read_json(state_file)
+            stored = state.get("run_dir")
+            if not stored:
+                continue
+            candidate = Path(stored)
+            if not candidate.is_absolute():
+                candidate = base / candidate
+            try:
+                same = candidate.resolve() == resolved
+            except OSError:  # pragma: no cover - unreadable path
+                same = candidate == run_dir
+            if same:
+                return str(state.get("exec_id") or state_file.parent.name)
+    fallback = root / run_dir.name
+    return run_dir.name if fallback.is_dir() else None
+
+
+def execution_snapshot(base: Path, run_dir: Path) -> dict[str, Any]:
+    """The frozen execution snapshot for a run directory, or ``{}``.
+
+    Shared by the result contract, the viewer and the report so all three see
+    the same provenance (or the same nothing, for a CLI run).
+    """
+    exec_id = execution_id_for(base, run_dir)
+    if exec_id is None:
+        return {}
+    return _read_json(Path(base) / "runs" / "_ui" / "executions" / exec_id / "snapshot.json")
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
@@ -696,6 +772,7 @@ def build_for_run(
     *,
     summary: dict[str, Any] | None = None,
     exec_id: str | None = None,
+    executed_at: str | None = None,
 ) -> dict[str, Any]:
     """The §2.6 result body for a run directory, without an execution manager.
 
@@ -710,10 +787,14 @@ def build_for_run(
         run_dir: The run's output directory.
         summary: The pipeline summary, when the caller already holds it (the
             pipeline writes the file only *after* the report is rendered).
-        exec_id: Execution id, when it differs from the directory name.
+        exec_id: Execution id, when the caller already knows it. Otherwise it
+            is resolved from the execution state files (the legacy adapter's
+            exec id is not the run directory's name).
+        executed_at: When the run finished, when the caller knows it - the
+            pipeline does, and its summary file does not exist yet.
     """
     base, run_dir = Path(base), Path(run_dir)
-    exec_id = exec_id or run_dir.name
+    exec_id = exec_id or execution_id_for(base, run_dir) or run_dir.name
     exec_dir = base / "runs" / "_ui" / "executions" / exec_id
     snapshot = _read_json(exec_dir / "snapshot.json")
     state = _read_json(exec_dir / "state.json")
@@ -754,6 +835,7 @@ def build_for_run(
         state=state,
         status=status,
         case_path=case_path if case_path.is_file() else None,
+        executed_at=executed_at,
     )
 
 
@@ -785,7 +867,10 @@ __all__ = [
     "build",
     "build_for_run",
     "evaluate_target",
+    "execution_id_for",
+    "execution_snapshot",
     "judgement",
     "key_metrics",
+    "repo_root_for",
     "validation_block",
 ]

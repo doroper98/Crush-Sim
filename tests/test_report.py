@@ -254,6 +254,7 @@ def _full_report(make_case, material_card, tmp_path: Path) -> str:
         execution=_EXECUTION,
         timings={"geometry": 2.0, "meshing": 30.0, "deck": 4.0, "solver": 813.3,
                  "post": 40.0, "total": 890.0},
+        stages_completed=["geometry", "meshing", "deck", "solver", "post"],
     )
     return render_report(context, tmp_path / "report.html").read_text(encoding="utf-8")
 
@@ -335,3 +336,22 @@ def test_report_escapes_a_hostile_case_name(make_case, material_card, tmp_path: 
     html = render_report(context, tmp_path / "report.html").read_text(encoding="utf-8")
     assert "<script>alert(1)</script>" not in html
     assert "&lt;script&gt;" in html
+
+
+def test_report_lists_the_stages_that_actually_ran(make_case, material_card, tmp_path: Path) -> None:
+    """Review 6: 완료 단계 is the stage list, not the deck's run name.
+
+    A skipped solver has to be visible here - "완료 단계" printing a run name
+    said nothing about whether the run reached the solver at all.
+    """
+    html = _full_report(make_case, material_card, tmp_path)
+    assert "geometry → meshing → deck → solver → post" in html
+    context = build_context(
+        case=make_case("rep"),
+        material=material_card,
+        report_dir=tmp_path,
+        stages_completed=["geometry", "meshing", "deck"],
+    )
+    partial = render_report(context, tmp_path / "report.html").read_text(encoding="utf-8")
+    assert "geometry → meshing → deck" in partial
+    assert "solver" not in partial.split("완료 단계")[1][:200]

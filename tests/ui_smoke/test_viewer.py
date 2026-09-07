@@ -223,6 +223,57 @@ def test_mobile_390px_controls_are_reachable(viewer_html: Path, browser) -> None
     page.close()
 
 
+def test_links_point_at_routes_that_exist_when_served_by_the_api(
+    viewer_html: Path, browser
+) -> None:
+    """Review 1: only report/viewer have API routes; other files come from /runs.
+
+    The page is fulfilled locally at an API-shaped URL - no network, and no
+    server to start - so the runtime link resolver can be checked in the shape
+    it actually has to handle.
+    """
+    html = viewer_html.read_text(encoding="utf-8")
+    page = _page(browser)
+    page.route(
+        "**/api/runs/**",
+        lambda route: route.fulfill(status=200, content_type="text/html", body=html),
+    )
+    page.goto("http://viewer.test/api/runs/lc6_demo/viewer")
+    page.wait_for_selector("#links a")
+    hrefs = page.eval_on_selector_all("#links a", "els => els.map(e => e.getAttribute('href'))")
+    assert "/api/runs/lc6_demo/report" in hrefs, hrefs
+    # A JSON/CSV artefact has no API route: it is served by the static mount.
+    for href in hrefs:
+        if href.endswith(".json") or href.endswith(".csv"):
+            assert href.startswith("/runs/lc6_demo/"), href
+        else:
+            assert "pipeline_summary" not in href
+    assert not any(h.startswith("/api/runs/lc6_demo/pipeline_summary") for h in hrefs)
+    page.close()
+
+
+def test_the_header_uses_the_servers_choice_of_key_metrics(viewer_html: Path, browser) -> None:
+    """Review 9: which three metrics lead is decided once, on the server."""
+    payload = json.loads(
+        re.search(
+            r'<script type="application/json" id="simdata">(.*?)</script>',
+            viewer_html.read_text(encoding="utf-8"),
+            re.S,
+        ).group(1)
+    )
+    assert payload["key_metrics"], "the server did not ship its metric choice"
+    page = _page(browser)
+    page.goto(viewer_html.as_uri())
+    page.wait_for_selector("#hdrMetrics li")
+    labels = page.eval_on_selector_all(
+        "#hdrMetrics li .def", "els => els.map(e => e.textContent)"
+    )
+    by_key = {m["key"]: m for m in payload["result"]["metrics"]}
+    expected = [by_key[k]["definition_id"] for k in payload["key_metrics"][:3]]
+    assert labels == expected
+    page.close()
+
+
 def test_embedded_result_matches_the_contract(viewer_html: Path) -> None:
     """The header data is the server's result contract, not a viewer invention."""
     html = viewer_html.read_text(encoding="utf-8")

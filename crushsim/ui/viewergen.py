@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+import warnings
 from html import escape
 from pathlib import Path
 from typing import Any
@@ -290,6 +291,10 @@ def _dims_lines(summary: dict) -> list[list[str]]:
 #: UI_001 §10.3 / U39 - a standalone viewer must stay under 16 MB.
 VIEWER_MAX_BYTES = 16 * 1024 * 1024
 
+
+class ViewerSizeWarning(UserWarning):
+    """The finished viewer is over the size budget even at the frame floor."""
+
 #: A still frame is a fallback, not an album: anything larger is dropped
 #: rather than spent against the 16 MB budget.
 _FALLBACK_IMAGE_MAX_BYTES = 3 * 1024 * 1024
@@ -315,25 +320,35 @@ def _fit_to_limit(
     render: Any,
     *,
     limit: int = VIEWER_MAX_BYTES,
-) -> tuple[str, list[int]]:
+) -> tuple[str, list[int], bool]:
     """Render, and while the page is over ``limit`` halve the frames kept.
 
-    ``render(indices) -> str`` builds the whole page; only the number of
-    displayed frames is reduced. Metrics and curves are never touched (U39) -
-    they are computed by the pipeline from every saved frame, and a viewer
-    that quietly recomputed them from a thinned sequence would report
-    different numbers than the report next to it.
+    ``render(indices, over_limit=…) -> str`` builds the whole page; only the
+    number of displayed frames is reduced. Metrics and curves are never
+    touched (U39) - they are computed by the pipeline from every saved frame,
+    and a viewer that quietly recomputed them from a thinned sequence would
+    report different numbers than the report next to it.
+
+    Returns (html, kept indices, over_limit). ``over_limit`` is True when even
+    the floor - first, last and the event frames - does not fit: the geometry
+    itself is bigger than the budget. The page is still written (a reader with
+    a 20 MB file is better served than one with none), but it must not claim
+    to have been reduced to fit, so the final pass is rendered again with the
+    honest note.
     """
     current = list(indices)
-    html = render(current)
+    html = render(current, False)
     floor = max(2, len(keep))
     while len(html.encode("utf-8")) > limit and len(current) > floor:
         reduced = _subsample(current, keep, max(floor, len(current) // 2))
         if len(reduced) >= len(current):
             break  # cannot thin any further without dropping a kept frame
         current = reduced
-        html = render(current)
-    return html, current
+        html = render(current, False)
+    if len(html.encode("utf-8")) > limit:
+        html = render(current, True)
+        return html, current, True
+    return html, current, False
 
 
 def _event_frames(curve: dict | None, times: list[float]) -> set[int]:
@@ -378,10 +393,9 @@ def _result_contract(run: Path, summary: dict) -> dict[str, Any] | None:
     try:
         from . import results  # noqa: PLC0415 - avoids an import cycle at module load
 
-        # runs/<case>/ sits under the repository root, which is where the
-        # execution snapshots (runs/_ui/executions/) are looked up from.
-        root = run.parent.parent if run.parent.name == "runs" else run.parent
-        return results.build_for_run(root, run, summary=summary or None)
+        return results.build_for_run(
+            results.repo_root_for(run), run, summary=summary or None
+        )
     except Exception:  # noqa: BLE001 - a missing contract shows 정보 없음, never a crash
         return None
 
@@ -502,6 +516,14 @@ def generate_viewer(
 
     if result is None:
         result = _result_contract(run, summary)
+    key_metric_keys: list[str] = []
+    if result:
+        try:
+            from . import results as _results  # noqa: PLC0415 - optional import cycle
+
+            key_metric_keys = [m["key"] for m in _results.key_metrics(result)]
+        except Exception:  # noqa: BLE001 - the header falls back to its own order
+            key_metric_keys = []
 
     # The viewer draws the shell mid-surface, so the wall looks paper-thin;
     # state explicitly that the thickness is a solved property, not omitted.
@@ -524,6 +546,12 @@ def generate_viewer(
     index_type: Any = np.uint16 if n_points < 65536 else np.uint32
     quads_b64 = _b64(quads.astype(index_type))
     part_b64 = _b64(part_canon)
+    # Encoded once. The size loop below may render the page several times, and
+    # base64-encoding every frame again on each pass was the expensive half of
+    # a 41-frame regeneration for data that never changes.
+    pos_b64 = [_b64(p) for p in positions]
+    vm_b64 = [_b64(v) for v in von_mises]
+    ps_b64 = [_b64(p) for p in plastic]
     score_b64 = _b64(score_mask) if score_mask.any() else None
     fallback = _fallback_image(run)
     template = _TEMPLATE.read_text(encoding="utf-8")
@@ -533,19 +561,31 @@ def generate_viewer(
     n_all = len(files)
     keep_frames = {0, n_all - 1} | _event_frames(curve_payload, times)
 
-    def render(indices: list[int]) -> str:
+    def render(indices: list[int], over_limit: bool) -> str:
         reduction = None
-        if len(indices) < n_all:
+        if len(indices) < n_all or over_limit:
+            limit_mb = max_bytes / (1024 * 1024)
+            message = (
+                f"파일 크기 제한({limit_mb:g} MB)으로 표시 프레임을 "
+                f"{n_all}→{len(indices)}개로 줄였습니다. "
+                "이벤트 프레임과 처음·마지막은 남겼고, 지표·곡선 데이터는 그대로입니다."
+            )
+            if over_limit:
+                # Never claim a reduction that did not achieve the budget: the
+                # floor (first, last, events) plus the mesh itself is already
+                # bigger than the limit.
+                message = (
+                    f"표시 프레임을 {n_all}→{len(indices)}개까지 줄였지만 "
+                    f"파일이 여전히 {limit_mb:g} MB 제한을 넘습니다 "
+                    "(형상 자체가 큽니다). 지표·곡선 데이터는 그대로입니다."
+                )
             reduction = {
                 "original_frames": n_all,
                 "kept_frames": len(indices),
                 "limit_bytes": max_bytes,
+                "over_limit": over_limit,
                 "reason": "SIZE_LIMIT",
-                "message": (
-                    f"파일 크기 제한({max_bytes // (1024 * 1024)} MB)으로 표시 프레임을 "
-                    f"{n_all}→{len(indices)}개로 줄였습니다. "
-                    "이벤트 프레임과 처음·마지막은 남겼고, 지표·곡선 데이터는 그대로입니다."
-                ),
+                "message": message,
             }
         data = {
             "meta": {
@@ -564,11 +604,15 @@ def generate_viewer(
             "part": part_b64,
             "score": score_b64,
             "times": [times[i] for i in indices],
-            "pos": [_b64(positions[i]) for i in indices],
-            "vm": [_b64(von_mises[i]) for i in indices],
-            "ps": [_b64(plastic[i]) for i in indices] if plastic else [],
+            "pos": [pos_b64[i] for i in indices],
+            "vm": [vm_b64[i] for i in indices],
+            "ps": [ps_b64[i] for i in indices] if ps_b64 else [],
             "curve": curve_payload,
             "result": result,
+            # item: the ≤3 headline metrics are chosen by the server, once
+            # (results.key_metrics), so the viewer and the workshop cannot
+            # drift apart on which three they are.
+            "key_metrics": key_metric_keys,
             "fallback": fallback,
         }
         text = note or f"{title} 런의 실제 프레임 데이터로"
@@ -578,10 +622,23 @@ def generate_viewer(
         html = html.replace("__NOTE__", escape(text + thickness_note))
         return html.replace("__DATA__", _json_for_script(data))
 
-    html, _kept = _fit_to_limit(list(range(n_all)), keep_frames, render, limit=max_bytes)
+    html, kept, over_limit = _fit_to_limit(
+        list(range(n_all)), keep_frames, render, limit=max_bytes
+    )
 
     target = Path(out_path) if out_path else run / "viewer.html"
     target.write_text(html, encoding="utf-8")
+    if over_limit:
+        # The caller decides what to do about it (the server logs a notice);
+        # silently handing back an oversized "standalone" file is what U39
+        # exists to prevent.
+        warnings.warn(
+            f"{target.name}: {target.stat().st_size / 1024 / 1024:.1f} MB "
+            f"(limit {max_bytes / 1024 / 1024:g} MB) with {len(kept)} of {n_all} frames - "
+            "the mesh alone exceeds the budget; the page says so in its note.",
+            ViewerSizeWarning,
+            stacklevel=2,
+        )
     return target
 
 

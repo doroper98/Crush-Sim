@@ -14,6 +14,7 @@ import json
 import math
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -831,8 +832,16 @@ def _result_contract(result: PipelineResult) -> dict[str, Any] | None:
     try:
         from .ui import results as ui_results  # noqa: PLC0415 - optional UI layer
 
-        root = result.run_dir.parent.parent if result.run_dir.parent.name == "runs" else Path.cwd()
-        return ui_results.build_for_run(root, result.run_dir, summary=result.summary())
+        return ui_results.build_for_run(
+            ui_results.repo_root_for(result.run_dir),
+            result.run_dir,
+            summary=result.summary(),
+            # The pipeline knows when this run finished; the summary file it
+            # would otherwise be read from does not exist yet (it is written
+            # after the report), and a re-run's directory still holds the
+            # previous run's file.
+            executed_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        )
     except Exception:  # noqa: BLE001 - the report is still written without it
         return None
 
@@ -840,18 +849,17 @@ def _result_contract(result: PipelineResult) -> dict[str, Any] | None:
 def _execution_snapshot(run_dir: Path) -> dict[str, Any]:
     """The UI execution snapshot for this run, when it was started from the UI.
 
-    Just a JSON file next to the run (``runs/_ui/executions/<id>/``); a run
+    Resolved through :func:`crushsim.ui.results.execution_snapshot` so the
+    report, the viewer and ``/api/executions/<id>/result`` look it up the same
+    way (the legacy adapter's exec id is not the run directory's name). A run
     started from the CLI has none and the report prints 정보 없음.
     """
-    root = run_dir.parent.parent if run_dir.parent.name == "runs" else Path.cwd()
-    path = root / "runs" / "_ui" / "executions" / run_dir.name / "snapshot.json"
-    if not path.is_file():
-        return {}
     try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+        from .ui import results as ui_results  # noqa: PLC0415 - optional UI layer
+
+        return ui_results.execution_snapshot(ui_results.repo_root_for(run_dir), run_dir)
+    except Exception:  # noqa: BLE001 - the report is still written without it
         return {}
-    return loaded if isinstance(loaded, dict) else {}
 
 
 def _write_report(result: PipelineResult) -> Path:
@@ -909,5 +917,6 @@ def _write_report(result: PipelineResult) -> Path:
         artifacts=artifacts,
         report_dir=result.run_dir,
         notices=result.notices,
+        stages_completed=list(result.stages_completed),
     )
     return render_report(context, result.run_dir / "report.html")

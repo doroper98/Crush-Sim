@@ -1300,13 +1300,14 @@ def test_oversized_viewer_drops_frames_but_keeps_first_last_and_events() -> None
 
     rendered: list[list[int]] = []
 
-    def render(indices: list[int]) -> str:
+    def render(indices: list[int], over_limit: bool) -> str:
         rendered.append(list(indices))
         return "x" * (len(indices) * 1000)
 
     keep = {0, 99, 40}  # first, last, the frame an event lands on
-    html, kept = _fit_to_limit(list(range(100)), keep, render, limit=20_000)
+    html, kept, over = _fit_to_limit(list(range(100)), keep, render, limit=20_000)
     assert len(html.encode("utf-8")) <= 20_000
+    assert over is False
     assert keep <= set(kept), "a kept frame was thinned away"
     assert len(kept) < 100
     assert kept == sorted(kept)
@@ -1318,9 +1319,180 @@ def test_size_policy_never_thins_below_the_kept_frames() -> None:
     from crushsim.ui.viewergen import _fit_to_limit
 
     keep = {0, 9, 3, 6}
-    html, kept = _fit_to_limit(list(range(10)), keep, lambda idx: "x" * 10_000, limit=1)
+    html, kept, over = _fit_to_limit(
+        list(range(10)), keep, lambda idx, over_limit: "x" * 10_000, limit=1
+    )
     assert set(kept) == keep
+    assert over is True
     assert html  # a page is still produced - the reader gets the events
+
+
+def test_a_page_that_cannot_fit_says_so_instead_of_claiming_it_fits() -> None:
+    """Review 5: the note must not claim a reduction that did not work.
+
+    The synthetic payload has a fixed part (the mesh) larger than the limit on
+    its own, so no amount of frame thinning helps.
+    """
+    from crushsim.ui.viewergen import _fit_to_limit
+
+    seen: list[bool] = []
+
+    def render(indices: list[int], over_limit: bool) -> str:
+        seen.append(over_limit)
+        return "M" * 5_000 + "f" * (len(indices) * 100)  # mesh alone > limit
+
+    html, kept, over = _fit_to_limit(list(range(20)), {0, 19}, render, limit=4_000)
+    assert over is True
+    assert seen[-1] is True, "the final page was not re-rendered with the honest note"
+    assert seen[0] is False
+    assert set(kept) == {0, 19}
+    assert len(html.encode("utf-8")) > 4_000  # it really is still over
+
+
+def test_generate_viewer_warns_when_the_page_cannot_fit(monkeypatch, tmp_path) -> None:
+    """The caller has to be able to notice; a silent oversized file is the bug."""
+    import re
+    import warnings
+
+    from crushsim.ui import viewergen
+
+    run = tmp_path / "runs" / "tiny"
+    (run / "vtk").mkdir(parents=True)
+    (run / "vtk" / "a.vtk").write_text("", encoding="utf-8")
+    monkeypatch.setattr(viewergen, "_TEMPLATE", tmp_path / "tpl.html")
+    (tmp_path / "tpl.html").write_text(
+        '<p>__TITLE__ __NOTE__</p><script type="application/json" '
+        'id="simdata">__DATA__</script><script>__RENDER3D__</script>',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(viewergen, "_RENDER3D", tmp_path / "r.js")
+    (tmp_path / "r.js").write_text("/* renderer */", encoding="utf-8")
+
+    class _Mesh:
+        n_points = 4
+        celltypes = [9]
+        cell_data = {
+            "PART_ID": [1],
+            "2DELEM_Von_Mises": [1.0],
+            "2DELEM_Plastic_Strain": [0.0],
+        }
+        cell_connectivity = [0, 1, 2, 3]
+        offset = [0, 4]
+        points = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]]
+        field_data: dict[str, Any] = {}
+
+    monkeypatch.setitem(__import__("sys").modules, "pyvista", type("pv", (), {"read": staticmethod(lambda _p: _Mesh())}))
+    monkeypatch.setitem(__import__("sys").modules, "pandas", type("pd", (), {}))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        out = viewergen.generate_viewer(run, title="tiny", max_bytes=10)
+    assert out.is_file()
+    assert any(w.category is viewergen.ViewerSizeWarning for w in caught)
+    payload = json.loads(
+        re.search(
+            r'id="simdata">(.*?)</script>', out.read_text(encoding="utf-8"), re.S
+        ).group(1)
+    )
+    assert payload["meta"]["frame_reduction"]["over_limit"] is True
+    assert "여전히" in payload["meta"]["frame_reduction"]["message"]
+
+
+def test_executed_at_never_borrows_another_runs_timestamp(tmp_path) -> None:
+    """Review 2: a summary older than this execution is not this run's clock."""
+    import os
+
+    from crushsim.ui.results import _executed_at
+
+    summary = tmp_path / "pipeline_summary.json"
+    summary.write_text("{}", encoding="utf-8")
+    os.utime(summary, (1_000_000_000, 1_000_000_000))  # 2001, long before "started"
+    state = {"timestamps": {"started": "2026-09-07T14:00:00+00:00", "finished": None}}
+    assert _executed_at(state, summary) is None
+    # What the caller knows wins over any file on disk.
+    assert _executed_at(state, summary, "2026-09-07T14:20:00+00:00") == "2026-09-07T14:20:00+00:00"
+    # A finished execution reports its own finish time.
+    done = {"timestamps": {"started": "2026-09-07T14:00:00+00:00", "finished": "2026-09-07T14:15:00+00:00"}}
+    assert _executed_at(done, summary) == "2026-09-07T14:15:00+00:00"
+    # No state at all: the file's mtime is all there is, and it is used.
+    assert _executed_at({}, summary) is not None
+
+
+def test_the_snapshot_is_found_when_the_exec_id_is_not_the_directory_name(
+    ui_root: Path,
+) -> None:
+    """Review 4: the legacy adapter's exec id differs from its run directory."""
+    from crushsim.ui import results
+
+    exec_dir = ui_root / "runs" / "_ui" / "executions" / "case_stem"
+    exec_dir.mkdir(parents=True)
+    (exec_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "exec_id": "case_stem",
+                "run_dir": "runs/other_output_dir",
+                "case_name": "레거시 실행",
+                "input_hash": "sha256:deadbeef",
+                "state": "completed",
+                "timestamps": {"submitted": None, "started": None, "finished": None},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (exec_dir / "snapshot.json").write_text(
+        json.dumps({"legacy": True, "case_name": "레거시 실행", "purpose": "vent_burst"}),
+        encoding="utf-8",
+    )
+    run_dir = ui_root / "runs" / "other_output_dir"
+    run_dir.mkdir(parents=True)
+    (run_dir / "pipeline_summary.json").write_text(json.dumps(_VENT_SUMMARY), encoding="utf-8")
+
+    assert results.execution_id_for(ui_root, run_dir) == "case_stem"
+    assert results.execution_snapshot(ui_root, run_dir)["purpose"] == "vent_burst"
+    body = results.build_for_run(ui_root, run_dir)
+    assert body["execution_id"] == "case_stem"
+    assert body["legacy"] is False, "the snapshot was found, so this is not a legacy run"
+    assert body["purpose"] == "vent_burst"
+    assert body["snapshot_hash"] == "sha256:deadbeef"
+
+
+def test_repo_root_helper_is_the_one_used_everywhere() -> None:
+    from crushsim.ui.results import repo_root_for
+
+    assert repo_root_for(Path("/work/repo/runs/case_a")) == Path("/work/repo")
+
+
+def test_a_malformed_graph_draft_is_a_block_check_not_a_500(client: TestClient) -> None:
+    """Review 3: provenance/confirmations of the wrong shape must not crash."""
+    graph = _vent_graph()
+    graph["provenance"] = "geometry"  # a string where an object belongs
+    response = client.post("/api/preflights", json={"graph": graph})
+    assert response.status_code == 200
+    body = response.json()
+    blocked = [c for c in body["checks"] if c["code"] == "INVALID_VALUE"]
+    assert any(c["field_path"] == "provenance" for c in blocked)
+    assert body["runnable"] is False
+    assert body["provenance"] == {}
+
+    graph = _vent_graph()
+    graph["provenance"] = {"n3.thickness": "invented", "n4.size": "geometry"}
+    graph["confirmations"] = {"material": "yes"}
+    body = client.post("/api/preflights", json={"graph": graph}).json()
+    paths = {c["field_path"] for c in body["checks"] if c["code"] == "INVALID_VALUE"}
+    assert paths == {"provenance.n3.thickness", "confirmations.material"}
+    # The well-formed entries still travel into the snapshot.
+    assert body["provenance"] == {"n4.size": "geometry"}
+    assert body["confirmations"] == {}
+
+
+def test_a_wellformed_draft_keeps_its_provenance(client: TestClient) -> None:
+    graph = _vent_graph()
+    graph["provenance"] = {"n3.thickness": "geometry"}
+    graph["confirmations"] = {"material": True}
+    body = client.post("/api/preflights", json={"graph": graph}).json()
+    assert body["provenance"] == {"n3.thickness": "geometry"}
+    assert body["confirmations"] == {"material": True}
+    assert not [c for c in body["checks"] if c["code"] == "INVALID_VALUE"]
+
 
 
 def test_event_frames_are_the_nearest_saved_frame() -> None:

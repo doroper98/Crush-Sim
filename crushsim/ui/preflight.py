@@ -183,6 +183,65 @@ def _vent_checks(case: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+#: UI_002 §2.3 - where a value in the graph came from.
+PROVENANCE_VALUES = ("geometry", "template", "user", "unknown")
+
+
+def _metadata_checks(graph: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Validate ``provenance`` / ``confirmations`` and return what is usable.
+
+    These come from a saved graph draft, so a hand-edited (or older) file can
+    carry anything at all. Copying them with ``dict(...)`` turned a string or
+    a list into a ``ValueError`` inside ``POST /api/preflights`` - a 500 with
+    no field to point at. Bad shapes now become one ``INVALID_VALUE`` block
+    check naming the field, and the rest of the preflight still runs.
+    """
+    checks: list[dict[str, Any]] = []
+    clean: dict[str, Any] = {"provenance": {}, "confirmations": {}}
+
+    def bad(field_path: str, detail: str) -> None:
+        checks.append(
+            check(
+                "INVALID_VALUE",
+                "block",
+                "그래프 초안의 값 형식이 올바르지 않습니다. 초안을 다시 저장하세요.",
+                field_path=field_path,
+                actions=["fix_value"],
+                detail=detail,
+            )
+        )
+
+    raw_prov = graph.get("provenance")
+    if raw_prov is None:
+        pass
+    elif not isinstance(raw_prov, dict):
+        bad("provenance", f"expected an object, got {type(raw_prov).__name__}")
+    else:
+        for key, value in raw_prov.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                bad(f"provenance.{key}", f"expected string -> string, got {value!r}")
+            elif value not in PROVENANCE_VALUES:
+                bad(
+                    f"provenance.{key}",
+                    f"expected one of {'|'.join(PROVENANCE_VALUES)}, got {value!r}",
+                )
+            else:
+                clean["provenance"][key] = value
+
+    raw_conf = graph.get("confirmations")
+    if raw_conf is None:
+        pass
+    elif not isinstance(raw_conf, dict):
+        bad("confirmations", f"expected an object, got {type(raw_conf).__name__}")
+    else:
+        for key, value in raw_conf.items():
+            if not isinstance(key, str) or not isinstance(value, bool):
+                bad(f"confirmations.{key}", f"expected string -> bool, got {value!r}")
+            else:
+                clean["confirmations"][key] = value
+    return checks, clean
+
+
 def _asset_records(graph: dict[str, Any], assets: AssetStore) -> list[dict[str, Any]]:
     """What the report has to say about every geometry file used (UI_001 §11).
 
@@ -217,7 +276,10 @@ def _asset_checks(graph: dict[str, Any], assets: AssetStore) -> tuple[list[dict[
     """Asset readiness, unit confirmation - and the content hashes for the input hash."""
     out: list[dict[str, Any]] = []
     hashes: list[str] = []
-    confirmations = graph.get("confirmations") or {}
+    # A malformed draft is reported by _metadata_checks; here it must simply
+    # not crash the unit check that reads it.
+    raw_confirmations = graph.get("confirmations")
+    confirmations = raw_confirmations if isinstance(raw_confirmations, dict) else {}
     for node_id, asset_id in (graph.get("asset_refs") or {}).items():
         try:
             record = assets.get(str(asset_id))
@@ -435,6 +497,8 @@ def build(
 
     asset_checks, asset_hashes = _asset_checks(resolved, assets)
     checks.extend(asset_checks)
+    metadata_checks, metadata = _metadata_checks(resolved)
+    checks.extend(metadata_checks)
     checks.extend(_purpose_checks(resolved, cases))
 
     for entry in cases:
@@ -551,8 +615,9 @@ def build(
         "targets": list(resolved.get("targets") or []),
         # Carried into the execution snapshot so the report can state where
         # each condition came from and which file the geometry is (UI_001 §11).
-        "provenance": dict(resolved.get("provenance") or {}),
-        "confirmations": dict(resolved.get("confirmations") or {}),
+        # Validated above: only well-formed entries travel into the snapshot.
+        "provenance": metadata["provenance"],
+        "confirmations": metadata["confirmations"],
         "assets": _asset_records(resolved, assets),
         "cases": [
             {
