@@ -15,7 +15,7 @@ description: >-
 geometry:
   kind: step
   step_path: examples/step/cylin_can.stp
-  thickness: 0.3        # mm; shell thickness assigned to the imported skin
+  thickness: 0.4        # mm; wall gauged by ray from cylin_can.stp (R 23.0 outer / 22.6 inner); must match the CAD within 10 %
   radius: 24.9          # nominal only: the mesh is auto-seated on the floor
   height: 95.0
 

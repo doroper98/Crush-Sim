@@ -146,6 +146,16 @@ Diagnostics like thickness uniformity do NOT separate the two - a passing part
 measured 43 % uniform and a failing one 90 % - so they are reported, not gated.
 """
 
+STEP_THICKNESS_MISMATCH_MAX: Final[float] = 0.10
+"""Largest |geometry.thickness - gauged wall| / gauged wall a STEP case may carry.
+
+The case's thickness is what the deck uses, the gauged wall is what the CAD
+has; a mismatch beyond this puts the shell's mass off by the same fraction
+before anything else is wrong. Matches SHELL_MASS_ERROR_MAX so the two gates
+agree. Measured: every lc2 STEP case said 0.3 mm on a 0.38/0.40 mm wall.
+"""
+
+
 SHELL_WELD_SEAM_FRACTION_MIN: Final[float] = 0.5
 """Fraction of the shorter part's boundary that a weld must actually share.
 

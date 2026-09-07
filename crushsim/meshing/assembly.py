@@ -74,7 +74,8 @@ class AssemblyMesh:
     weld_counts: dict[str, int] = field(default_factory=dict)
     """Shared-node count per declared weld pair."""
     weld_seam_fractions: dict[str, float] = field(default_factory=dict)
-    """Shared boundary fraction per welded part - the value the gate judges."""
+    """Shared boundary fraction per declared weld pair (``"HOST-GUEST"``), the
+    guest's shared rim length over its whole rim - the value the gate judges."""
 
     def part(self, name: str) -> AssemblyPart:
         """Look one part up by name.
@@ -330,7 +331,13 @@ def _judge(assembly: AssemblyMesh, enforce: bool) -> None:
                 thickness_mm=part.thickness_mm,
                 solid_volume_mm3=volume,
             )
-        seam = assembly.weld_seam_fractions.get(part.name)
+        # The part is judged on its weakest declared weld.
+        seams = [
+            value
+            for key, value in assembly.weld_seam_fractions.items()
+            if key.split("-", 1)[1] == part.name
+        ]
+        seam = min(seams) if seams else None
         part.gate = evaluate_idealisation_gate(
             part=part.name,
             mass_error=error,
@@ -398,7 +405,9 @@ def _check_welds(assembly: AssemblyMesh, welds: list[tuple[str, str]]) -> None:
                 "touching after idealisation - check the gap between them, and "
                 f"whether the case should map {right} onto {left}'s plane."
             )
-        assembly.weld_seam_fractions[right] = _seam_fraction(guest, a & b)
+        # Keyed per pair, not per guest: a guest welded to two hosts would
+        # otherwise keep only the last measurement (review, analysis_002 §4.3).
+        assembly.weld_seam_fractions[f"{left}-{right}"] = _seam_fraction(guest, a & b)
 
 
 def _seam_fraction(part: AssemblyPart, shared: set[int]) -> float:

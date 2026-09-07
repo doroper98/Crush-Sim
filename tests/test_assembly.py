@@ -228,7 +228,7 @@ class TestIdealisationGate:
 
     def test_weld_is_judged_by_seam_length(self, welded) -> None:
         """Shared nodes > 0 is not a weld - two parts can graze at a corner."""
-        assert welded.weld_seam_fractions["VENT"] > 0.9
+        assert welded.weld_seam_fractions["CAP-VENT"] > 0.9
         vent_gate = welded.part("VENT").gate
         seam = next(m for m in vent_gate.metrics if m.name == "weld_seam_fraction")
         assert seam.passed

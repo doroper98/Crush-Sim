@@ -120,6 +120,38 @@ class TestOffset:
         assert ratio < 0.999, "an inward offset on a closed box must shrink its area"
         assert np.abs(mesh.nodes).max() < s
 
+    def test_offset_mitres_the_corners(self) -> None:
+        """A box wall t=2 offsets to the box of half-size s-1, corner included.
+
+        Moving along the averaged unit normal put a cube corner 0.577 mm along
+        each axis instead of 1.0 (review finding, analysis_002 §3.5): the
+        offset planes meet further out than t/2 along the bisector.
+        """
+        s = 10.0
+        nodes = np.array(
+            [
+                [-s, -s, -s], [s, -s, -s], [s, s, -s], [-s, s, -s],
+                [-s, -s, s], [s, -s, s], [s, s, s], [-s, s, s],
+            ],
+            dtype=float,
+        )
+        quads = np.array(
+            [
+                [1, 2, 3, 4], [5, 6, 7, 8], [1, 2, 6, 5],
+                [2, 3, 7, 6], [3, 4, 8, 7], [4, 1, 5, 8],
+            ],
+            dtype=np.int64,
+        )
+        mesh = ShellMesh(
+            node_ids=np.arange(1, 9, dtype=np.int64),
+            nodes=nodes,
+            quads=quads,
+            tris=np.zeros((0, 3), dtype=np.int64),
+            name="box",
+        )
+        offset_to_mid_surface(mesh, 2.0)
+        assert np.allclose(np.abs(mesh.nodes), s - 1.0, atol=1e-9)
+
     def test_zero_thickness_raises(self) -> None:
         with pytest.raises(GeometryError, match="must be > 0"):
             offset_to_mid_surface(self._plate(), 0.0)

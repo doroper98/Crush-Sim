@@ -129,26 +129,26 @@ class SkinResult:
 def _require_occ() -> dict[str, Any]:
     """Import the OCP names this module needs, or say what to install."""
     try:
-        from OCP.BRep import BRep_Builder  # noqa: PLC0415
-        from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing  # noqa: PLC0415
-        from OCP.BRepAdaptor import BRepAdaptor_Surface  # noqa: PLC0415
-        from OCP.BRepBndLib import BRepBndLib  # noqa: PLC0415
-        from OCP.BRepGProp import BRepGProp  # noqa: PLC0415
-        from OCP.BRepLProp import BRepLProp_SLProps  # noqa: PLC0415
-        from OCP.BRepTools import BRepTools  # noqa: PLC0415
-        from OCP.Bnd import Bnd_Box  # noqa: PLC0415
-        from OCP.GProp import GProp_GProps  # noqa: PLC0415
-        from OCP.IntCurvesFace import IntCurvesFace_ShapeIntersector  # noqa: PLC0415
-        from OCP.STEPControl import STEPControl_Reader  # noqa: PLC0415
-        from OCP.TopAbs import TopAbs_FACE, TopAbs_REVERSED, TopAbs_SOLID  # noqa: PLC0415
-        from OCP.TopExp import TopExp_Explorer  # noqa: PLC0415
-        from OCP.TopoDS import TopoDS, TopoDS_Compound  # noqa: PLC0415
-        from OCP.gp import gp_Dir, gp_Lin, gp_Pnt  # noqa: PLC0415
+        from OCP.BRep import BRep_Builder  # noqa: F401, PLC0415
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing  # noqa: F401, PLC0415
+        from OCP.BRepAdaptor import BRepAdaptor_Surface  # noqa: F401, PLC0415
+        from OCP.BRepBndLib import BRepBndLib  # noqa: F401, PLC0415
+        from OCP.BRepGProp import BRepGProp  # noqa: F401, PLC0415
+        from OCP.BRepLProp import BRepLProp_SLProps  # noqa: F401, PLC0415
+        from OCP.BRepTools import BRepTools  # noqa: F401, PLC0415
+        from OCP.Bnd import Bnd_Box  # noqa: F401, PLC0415
+        from OCP.GProp import GProp_GProps  # noqa: F401, PLC0415
+        from OCP.IntCurvesFace import IntCurvesFace_ShapeIntersector  # noqa: F401, PLC0415
+        from OCP.STEPControl import STEPControl_Reader  # noqa: F401, PLC0415
+        from OCP.TopAbs import TopAbs_FACE, TopAbs_REVERSED, TopAbs_SOLID  # noqa: F401, PLC0415
+        from OCP.TopExp import TopExp_Explorer  # noqa: F401, PLC0415
+        from OCP.TopoDS import TopoDS, TopoDS_Compound  # noqa: F401, PLC0415
+        from OCP.gp import gp_Dir, gp_Lin, gp_Pnt  # noqa: F401, PLC0415
     except ImportError as exc:  # pragma: no cover - OCP is the cad extra
-        from ..errors import OptionalDependencyError  # noqa: PLC0415
+        from ..errors import OptionalDependencyError  # noqa: F401, PLC0415
 
         raise OptionalDependencyError("OCP", "cad", purpose="STEP shell idealisation") from exc
-    return locals()
+    return locals()  # returned by name, hence the F401 waivers above
 
 
 def extract_shell_skins(
@@ -194,6 +194,7 @@ def extract_shell_skins(
     builder.MakeCompound(compound)
 
     target = Path(out_path)
+    target.parent.mkdir(parents=True, exist_ok=True)  # BRepTools.Write fails silently otherwise
     results: list[SkinResult] = []
     explorer = occ["TopExp_Explorer"](shape, occ["TopAbs_SOLID"])
     index = 0
@@ -572,11 +573,30 @@ def offset_to_mid_surface(mesh: Any, thickness_mm: float) -> float:
             np.add.at(normals, rows[:, k], n)
         area_before += float(area.sum())
 
-    lengths = np.linalg.norm(normals, axis=1)
-    usable = lengths > 0.0
-    unit = np.zeros_like(normals)
-    unit[usable] = normals[usable] / lengths[usable, None]
-    moved = nodes - unit * (thickness_mm / 2.0)
+    # Mitred offset. Moving every node by t/2 along its *averaged* unit
+    # normal is only right where the incident faces are coplanar. At a fold
+    # the offset surfaces of the two planes intersect further away - by
+    # 1/cos(half angle) - and at a cube corner the averaged-normal move lands
+    # 0.577 mm along each axis instead of 1.0 mm (found in review,
+    # docs/analysis/analysis_002.md §3.5). So per node the distinct face
+    # normals are collected and the displacement d solves d.n_i = t/2 for all
+    # of them in the least-squares sense: exact for one plane, the bisector
+    # rule for two, the offset-plane intersection for three. The move is
+    # capped at 2 x t/2 so a knife-edge fold (or a misoriented face) cannot
+    # throw a node across the part.
+    half = thickness_mm / 2.0
+    displacement = np.zeros_like(nodes)
+    for node_row, face_normals in _distinct_normals_per_node(mesh, nodes, index).items():
+        stacked = np.asarray(face_normals, dtype=float)
+        if stacked.shape[0] == 1:
+            move = stacked[0] * half
+        else:
+            move, *_ = np.linalg.lstsq(stacked, np.full(stacked.shape[0], half), rcond=None)
+        length = float(np.linalg.norm(move))
+        if length > 2.0 * half:
+            move = move * (2.0 * half / length)
+        displacement[node_row] = move
+    moved = nodes - displacement
     mesh.nodes = moved
 
     area_after = 0.0
@@ -590,6 +610,45 @@ def offset_to_mid_surface(mesh: Any, thickness_mm: float) -> float:
     mesh.metadata["area_before_offset_mm2"] = area_before
     mesh.metadata["area_after_offset_mm2"] = area_after
     return area_after / area_before if area_before > 0 else 1.0
+
+
+
+def _distinct_normals_per_node(mesh: Any, nodes: Any, index: dict[int, int]) -> dict[int, list[Any]]:
+    """Outward unit normals of the distinct planes meeting at each node.
+
+    Faces whose normals agree within about 10 degrees count as one plane, so a
+    node inside a flat, finely meshed panel offsets by exactly t/2 however many
+    elements touch it.
+    """
+    import numpy as np  # noqa: PLC0415
+
+    centre = nodes.mean(axis=0)
+    same_plane = float(np.cos(np.radians(10.0)))
+    per_node: dict[int, list[Any]] = {}
+    for block, corners in ((mesh.quads, 4), (mesh.tris, 3)):
+        if block.size == 0:
+            continue
+        rows = np.vectorize(index.__getitem__)(block)
+        pts = nodes[rows]
+        n = np.zeros((pts.shape[0], 3), dtype=float)
+        for k in range(corners):
+            a, b = pts[:, k], pts[:, (k + 1) % corners]
+            n[:, 0] += (a[:, 1] - b[:, 1]) * (a[:, 2] + b[:, 2])
+            n[:, 1] += (a[:, 2] - b[:, 2]) * (a[:, 0] + b[:, 0])
+            n[:, 2] += (a[:, 0] - b[:, 0]) * (a[:, 1] + b[:, 1])
+        face_centre = pts.mean(axis=1)
+        flip = np.einsum("ij,ij->i", n, face_centre - centre) < 0.0
+        n[flip] *= -1.0
+        lengths = np.linalg.norm(n, axis=1)
+        for i in range(pts.shape[0]):
+            if lengths[i] <= 0.0:
+                continue
+            unit = n[i] / lengths[i]
+            for k in range(corners):
+                bucket = per_node.setdefault(int(rows[i, k]), [])
+                if not any(float(np.dot(unit, seen)) >= same_plane for seen in bucket):
+                    bucket.append(unit)
+    return per_node
 
 
 ELEMENT_GAUGE_OUTLIER_FACTOR: Final[float] = 3.0
