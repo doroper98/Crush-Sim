@@ -15,7 +15,11 @@
 # vent_size/3 cost guard, meant for deliberate refinement, bites when the
 # vent_size is COARSENED. 0.65 mm keeps the limit (0.217) under the imprint
 # edge; the gate logic itself is left alone until analysis_005 decides.
-# MEASURED: (fill in from runs/lc6_pris_vent_burst_v5_budget/pipeline_summary.json)
+# MEASURED (2026-09-07): engine 2,808 s (46.8 min, 282,200 cycles) - SLOWER than
+# the 0.5 mm run (39 min). Initiation 0.314 / opening 0.389 MPa (+9.3 % / +6.4 %
+# vs 0.3 mm), energy error 12.7 %. Coarsening the score buys nothing because the
+# post-fracture timestep collapse dominates; the budget answer is end_time
+# (see lc6_pris_vent_burst_v5_preset.yaml). Kept as the record of that finding.
 
 name: lc6_pris_vent_burst_v5_budget
 load_case: LC-3

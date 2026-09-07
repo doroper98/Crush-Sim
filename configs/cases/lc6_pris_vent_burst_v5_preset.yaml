@@ -10,7 +10,12 @@
 # fixed at 1.8 ms (0.51 MPa, +32 % over opening). Expected engine time ~10 min
 # at 0.5 mm; the 0.65 mm probe showed vent_size itself buys almost nothing
 # because the post-fracture cost dominates.
-# MEASURED: (fill in from runs/lc6_pris_vent_burst_v5_preset/pipeline_summary.json)
+# MEASURED (2026-09-07, 4-core container): engine 813 s (13.6 min, 87,491
+# cycles), mesh-to-report 14.4 min. Initiation 0.303 / opening 0.385 MPa -
+# identical to the full 3.5 ms run (same model, same 1.36 ms) and +5.7 % / +5.3 %
+# vs the 0.3 mm reference. Energy error 6.7 % (element deletion; 5 % gate).
+# This is the repository's first preset that meets GOAL.md's <= 30 min and
+# <= 10 % together. Calibrate once on the reference laptop.
 
 name: lc6_pris_vent_burst_v5_preset
 load_case: LC-3

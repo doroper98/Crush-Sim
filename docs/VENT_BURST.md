@@ -61,6 +61,8 @@ best coarse — refining it fails the §7 gate at every size tried).
 |---|---|---|---|---|---|
 | – (1.2 mm uniform) | 25 | 0.6 | 0.514 MPa | 0.703 MPa | 11 min (engine 665 s) |
 | **0.5 mm** | 180 | 4.5 | **0.303** | **0.385** | **39 min** (engine 2361 s, 243,747 cycles) |
+| 0.65 mm (probe) | 136 | 3.4 | 0.314 | 0.389 | 47 min - slower than 0.5 mm: post-fracture timestep dominates |
+| **0.5 mm + end_time 1.8 ms (PRESET)** | 180 | 4.5 | **0.303** | **0.385** | **13.6 min** engine, 14.4 min total - the ≤30 min / ≤10 % preset |
 | 0.3 mm | 553 | 13.8 | 0.287 | 0.366 | ~7.3 h |
 
 The uniform mesh is simply **under-resolved** — a one-element-wide score
