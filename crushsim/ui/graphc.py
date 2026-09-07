@@ -159,12 +159,37 @@ def preset_for(graph: dict[str, Any], solver: dict[str, Any]) -> dict[str, Any] 
     return capabilities.default_mesh_preset(purpose_id)
 
 
-def _apply_preset(case: dict[str, Any], preset: dict[str, Any]) -> None:
-    """Write the preset's mesh refinement and end time into a case mapping."""
-    if preset.get("vent_size_mm") is not None and case.get("geometry", {}).get("vent"):
-        case.setdefault("mesh", {})["vent_size"] = preset["vent_size_mm"]
+def _apply_preset(case: dict[str, Any], preset: dict[str, Any]) -> dict[str, Any]:
+    """Fill the preset's mesh refinement and end time into a case mapping.
+
+    A preset is a *default*, not an override: a value the user set in the graph
+    wins and is reported back as ``overridden``. Silently replacing an explicit
+    0.3 mm sweep branch with the preset's 0.5 mm collapsed two cases into one
+    identical case in testing - and the estimate would then have claimed a
+    measured 14.4 minutes for a model nobody measured.
+
+    Returns:
+        ``{"applied": {path: value}, "overridden": {path: [preset, user]}}``.
+    """
+    applied: dict[str, Any] = {}
+    overridden: dict[str, Any] = {}
+    mesh = case.setdefault("mesh", {})
+    vent_size = preset.get("vent_size_mm")
+    if vent_size is not None and case.get("geometry", {}).get("vent"):
+        if mesh.get("vent_size") is None:
+            mesh["vent_size"] = vent_size
+            applied["mesh.vent_size"] = vent_size
+        elif mesh["vent_size"] != vent_size:
+            overridden["mesh.vent_size"] = [vent_size, mesh["vent_size"]]
+    solver = case.setdefault("solver", {})
     end_time = preset.get("end_time_s")
-    case.setdefault("solver", {})["end_time"] = "auto" if end_time is None else end_time
+    wanted = "auto" if end_time is None else end_time
+    if solver.get("end_time") in (None, "auto"):
+        solver["end_time"] = wanted
+        applied["solver.end_time"] = wanted
+    elif solver["end_time"] != wanted:
+        overridden["solver.end_time"] = [wanted, solver["end_time"]]
+    return {"applied": applied, "overridden": overridden}
 
 
 def compile_graph(
@@ -353,14 +378,17 @@ def _compile_one(
         "render": bool(sv.get("render")),
         "report": bool(sv.get("report")),
     }
-    if preset is not None:
-        _apply_preset(case, preset)
+    preset_result = (
+        _apply_preset(case, preset) if preset is not None else {"applied": {}, "overridden": {}}
+    )
     return {
         "file": f"{name}.yaml",
         "name": name,
         "yaml": case,
         "solver_node_id": solver["id"],
         "preset_id": preset["id"] if preset else None,
+        "preset_applied": preset_result["applied"],
+        "preset_overridden": preset_result["overridden"],
         "changed_vs_first": {},
     }
 
