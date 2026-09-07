@@ -408,3 +408,52 @@ Windows에 없다 → `CREATE_NEW_PROCESS_GROUP` + `terminate()`로 분기. (b) 
 `pytest.importorskip("OCP")`가 없어 CI에서 12 failed + 13 errors였다 — `cad`
 extra는 CI에 설치되지 않는다.
 
+
+## 14. UI WP2 작업실 — 자리표시자가 사라진 이유, calc(fr), 한글 케이스 이름 (2026-09-07)
+
+WP2(안내형 그래프 작업실, `static/index.html` + `app.css` + `app.js` +
+`render3d.js`)에서 부딪힌 것들. 문법이 통과하고 테스트가 초록이어도 **화면을
+실제로 열어 보기 전까지는 셋 다 보이지 않았다** — 스크린샷을 남기는 이유다.
+
+**1. 워크트리 밖에서 스크립트를 실행하면 다른 체크아웃의 코드가 돈다.**
+`crushsim`은 `/home/user/Crush-Sim`(메인 체크아웃)을 가리키는 editable 설치다.
+`python /tmp/…/make_run.py`처럼 워크트리 밖 스크립트를 실행하면 `sys.path[0]`이
+스크립트 폴더라 cwd가 무시되고, **메인 체크아웃의 옛 `viewer_template.html`**이
+쓰였다. 뷰어를 생성했는데 방금 넣은 `__RENDER3D__` 자리표시자가 결과물에 없어
+한참을 헤맸다. 워크트리에서 도구 스크립트를 돌릴 때는 `PYTHONPATH=<워크트리>`를
+붙인다(`python -m pytest`는 cwd가 sys.path에 들어가므로 영향이 없다).
+
+**2. `calc()`에 `fr`은 쓸 수 없다.** 중앙 분할을
+`grid-template-rows: minmax(120px, calc(100fr - var(--split)))`로 썼더니 규칙
+전체가 무효가 되고 그래프 칸이 최소 높이(120 px)로 찌그러졌다. 브라우저는
+아무 오류도 내지 않는다. 비율은 `--split`과 `--split-rest` 두 변수에 함께 써
+넣는다.
+
+**3. `hidden` 속성은 `display:flex`에 진다.** 시작 영역(`.start-overlay`)을
+`el.hidden = true`로만 감췄더니 작업실 위에 계속 떠 있었다 — 클릭은 통과하는데
+화면은 시작 카드였다. `[hidden]{display:none}`을 명시해야 한다.
+
+**4. 기본 검토 이름을 한글로 두면 실행 이름이 전부 같아진다.** `graphc`는
+케이스 이름에서 영숫자·`_`·`-` 외를 `_`로 바꾸고 앞머리의 비영숫자를 떼므로
+"새_검토"는 빈 문자열이 되고 fallback `graph_case`가 된다. 두 케이스를 만들면
+`DUPLICATE_CASE_NAME`으로 막힌다. 기본값을 ASCII로 두고, 입력한 이름이 바뀔 때는
+"실행 이름: …"을 필드 아래에 보여 준다(표시명과 실행 ID의 분리, UI_001 §6.2).
+
+**5. `gl.readPixels`로는 그림을 검사할 수 없다.** `preserveDrawingBuffer` 없이
+합성이 끝난 캔버스는 항상 `(0,0,0,0)`이다. 렌더러가 실제로 무엇을 그렸는지
+확인하려면 요소 스크린샷을 찍어 배경색과 다른 픽셀을 센다(클립 평면 검증:
+174048 → 141484 픽셀).
+
+**6. 200 % 확대 테스트를 뷰포트 720 px로 재현하면 안 된다.** 768 px 미만은
+설계상 결과 열람 안내 화면이라 제출 버튼의 크기가 0이 되고, "버튼이 사라졌다"는
+잘못된 실패가 난다. 1600 px 창의 200 %인 **800 px**로 재고, 720 px 아래는
+"안내 문구가 보이는지"를 따로 확인한다.
+
+**7. 설치된 크로미움과 playwright 파이썬 패키지의 빌드 번호가 다르다.**
+`/opt/pw-browsers`에는 1194가 있고 playwright 1.62는 1234를 찾는다.
+`playwright install`은 금지이므로 `executable_path="/opt/pw-browsers/chromium"`로
+직접 가리킨다(스모크 테스트 fixture가 그렇게 한다).
+
+**8. STEP만 붙이면 실행할 수 없는 그래프가 남는다.** 자산을 형상 노드에 연결하는
+것만으로는 메쉬·재료·하중·솔버가 없어 사전 검사가 `GRAPH_INCOMPLETE`에서 멈춘다.
+가져오기 직후 뼈대를 세우고 형상만 STEP으로 바꾼다.
