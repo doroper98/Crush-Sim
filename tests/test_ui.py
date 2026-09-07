@@ -1282,3 +1282,116 @@ def test_legacy_launch_records_a_real_digest(client: TestClient, ui_root: Path) 
         (ui_root / "configs" / "cases" / "ui_case.yaml").read_text(encoding="utf-8").encode()
     ).hexdigest()
     assert state["input_hash"] == f"sha256:{expected}"
+
+
+# ---------------------------------------------------------------------------
+# UI_002 §3 WP3 - viewer payload: size policy, events, result contract
+# ---------------------------------------------------------------------------
+
+
+def test_oversized_viewer_drops_frames_but_keeps_first_last_and_events() -> None:
+    """U39: over 16 MB the frame count falls; metrics and curves do not.
+
+    The renderer here is synthetic - a page whose size is proportional to the
+    frames it carries - so the policy is tested without a 10-minute solver run
+    and without a VTK sequence.
+    """
+    from crushsim.ui.viewergen import _fit_to_limit
+
+    rendered: list[list[int]] = []
+
+    def render(indices: list[int]) -> str:
+        rendered.append(list(indices))
+        return "x" * (len(indices) * 1000)
+
+    keep = {0, 99, 40}  # first, last, the frame an event lands on
+    html, kept = _fit_to_limit(list(range(100)), keep, render, limit=20_000)
+    assert len(html.encode("utf-8")) <= 20_000
+    assert keep <= set(kept), "a kept frame was thinned away"
+    assert len(kept) < 100
+    assert kept == sorted(kept)
+    assert len(rendered) > 1, "the page was never re-rendered smaller"
+
+
+def test_size_policy_never_thins_below_the_kept_frames() -> None:
+    """An impossible limit stops at the event frames instead of looping."""
+    from crushsim.ui.viewergen import _fit_to_limit
+
+    keep = {0, 9, 3, 6}
+    html, kept = _fit_to_limit(list(range(10)), keep, lambda idx: "x" * 10_000, limit=1)
+    assert set(kept) == keep
+    assert html  # a page is still produced - the reader gets the events
+
+
+def test_event_frames_are_the_nearest_saved_frame() -> None:
+    from crushsim.ui.viewergen import _event_frames
+
+    times = [0.0, 0.001, 0.002, 0.003]
+    curve = {"marks": [{"t": 0.00104}, {"t": 0.0029}, {"t": None}]}
+    assert _event_frames(curve, times) == {1, 3}
+    assert _event_frames(None, times) == set()
+
+
+def test_the_json_payload_cannot_close_its_own_script_tag() -> None:
+    """U42: a case named with markup is text, not a new element."""
+    from crushsim.ui.viewergen import _json_for_script
+
+    text = _json_for_script({"case": "</script><img src=x onerror=alert(1)>"})
+    assert "</script>" not in text
+    assert json.loads(text)["case"] == "</script><img src=x onerror=alert(1)>"
+
+
+def test_result_for_a_run_directory_without_a_snapshot_is_legacy(ui_root: Path) -> None:
+    """The viewer/report path: no execution snapshot, nothing invented (U43)."""
+    from crushsim.ui import results
+
+    run_dir = ui_root / "runs" / "old_run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "pipeline_summary.json").write_text(json.dumps(_VENT_SUMMARY), encoding="utf-8")
+    body = results.build_for_run(ui_root, run_dir)
+    assert body["legacy"] is True
+    assert body["target"] is None and body["target_status"] == "none"
+    assert body["changed_vs_first"] == {}
+    assert body["preset_id"] is None
+    assert body["executed_at"] is not None  # the summary's mtime, not a guess
+    # The numbers themselves are the same ones the execution path reports.
+    metrics = {m["key"]: m for m in body["metrics"]}
+    assert metrics["vent_opening_pressure"]["value"] == pytest.approx(0.3853333, abs=1e-6)
+    assert body["judgement"]["caveat"] == "재료 모델이 검증되지 않아 참고용으로 표시합니다."
+
+
+def test_key_metrics_lead_with_the_targeted_one() -> None:
+    from crushsim.ui.results import key_metrics
+
+    result = {
+        "target": {"metric_key": "b"},
+        "metrics": [
+            {"key": "a", "kind": "scalar"},
+            {"key": "b", "kind": "scalar"},
+            {"key": "c", "kind": "scalar"},
+            {"key": "d", "kind": "scalar"},
+            {"key": "curve", "kind": "curve"},
+        ],
+    }
+    assert [m["key"] for m in key_metrics(result)] == ["b", "a", "c"]
+
+
+def test_the_solution_gate_metric_wins_over_the_flat_energy_field(ui_root: Path) -> None:
+    """One gate, one number.
+
+    ``energy.kinetic_over_internal`` is the global ratio (a driven rigid tool
+    dominates it); the §7 gate judges the deformable part's KE. Reading the
+    flat field reported KINETIC_ABOVE_GATE next to a gate that passed.
+    """
+    from crushsim.ui import results
+
+    summary = json.loads(json.dumps(_VENT_SUMMARY))
+    summary["post"]["energy"]["kinetic_over_internal"] = 0.561
+    summary["post"]["energy"]["gate"]["metrics"] = [
+        {"name": "kinetic_over_internal", "value": 0.0016772938053450604, "limit": 0.05},
+        {"name": "energy_error", "value": 0.06661471589135248, "limit": 0.05},
+    ]
+    block = results.validation_block(ui_root, summary, {}, {"state": "completed"})
+    codes = {d["code"] for d in block["diagnostics"]}
+    assert "KINETIC_ABOVE_GATE" not in codes
+    assert "ENERGY_ERROR_ABOVE_GATE" in codes
