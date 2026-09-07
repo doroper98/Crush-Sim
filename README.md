@@ -9,6 +9,7 @@ CATPart → STEP → Gmsh 쉘 메싱 → **OpenRadioss** explicit 해석 → 애
 - 실행계획: [`docs/EXECUTION_PLAN.md`](docs/EXECUTION_PLAN.md) (Phase별 WBS·게이트)
 - 벤트 파단 모델링: [`docs/VENT_BURST.md`](docs/VENT_BURST.md) (각형 셀 스코어 벤트 — 구성·판정·메쉬·보정)
 - 외부 AI 문답: [`docs/analysis/`](docs/analysis/README.md) (CAD 전처리 난제 → astra 답변 → 검토, 번호 순)
+- UI 구축: [`docs/UI_001.md`](docs/UI_001.md) (astra 권고안) → [`docs/UI_002.md`](docs/UI_002.md) (구현 계획·계약·작업 패키지)
 - Python 패키지 `crushsim` · CLI `csim` · 단위계 **mm·s·tonne·N·MPa** (ADR-04)
 
 > 물리는 자체 구현하지 않는다(ADR-01). 계산은 배치, 시각화는 결과 파일 기반(ADR-02).
